@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aura Studio</title>
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/shell.css">
+<link rel="stylesheet" href="css/normals.css">
+</head>
+<body>
+<div id="app"></div>
+
+<!-- Order matters: each file uses what the files above it put on window.Aura. -->
+<!-- Core, shared by every tool. -->
+<script src="js/core/dom.js"></script>
+<script src="js/core/emitter.js"></script>
+<script src="js/core/storage.js"></script>
+<script src="js/core/history.js"></script>
+<script src="js/core/fs.js"></script>
+<script src="js/core/project.js"></script>
+<script src="js/core/png.js"></script>
+<script src="js/core/viewport.js"></script>
+<script src="js/core/ui/toast.js"></script>
+<script src="js/core/ui/dialog.js"></script>
+<script src="js/core/ui/commands.js"></script>
+<script src="js/core/ui/controls.js"></script>
+<script src="js/core/studio.js"></script>
+
+<!-- Tools. -->
+<script src="js/tools/legacy/legacy.js"></script>
+<script src="js/tools/normals/generator.js"></script>
+<script src="js/tools/normals/renderer.js"></script>
+<script src="js/tools/normals/mgcb.js"></script>
+<script src="js/tools/normals/overrides.js"></script>
+<script src="js/tools/normals/sheets.js"></script>
+<script src="js/tools/normals/compute.js"></script>
+<script src="js/tools/normals/tool.js"></script>
+
+<script src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,97 @@
+/* Normal maps tool. */
+.nm { position: absolute; inset: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr) 320px; }
+.nm.no-list { grid-template-columns: 0 minmax(0, 1fr) 320px; }
+.nm.no-list .nm-list { visibility: hidden; }
+
+.nm-list { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.nm-list .head { padding: 10px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--line); }
+.nm-list .items { flex: 1; padding: 4px 0 10px; }
+.nm-list .group-head {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 12px 4px; border: 0; background: transparent;
+  color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; font-weight: 650; justify-content: flex-start;
+  min-height: 0; border-radius: 0;
+}
+.nm-list .group-head:hover { color: var(--text); background: transparent; border: 0; }
+.nm-list .group-head .chev { font-size: 9px; transition: transform .15s; }
+.nm-list .group-head.collapsed .chev { transform: rotate(-90deg); }
+.nm-sheet {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 6px; padding: 6px 12px 6px 11px; cursor: pointer;
+  border-left: 3px solid transparent; align-items: center;
+}
+.nm-sheet:hover { background: var(--panel-2); }
+.nm-sheet.active { background: var(--accent-soft); border-left-color: var(--accent); }
+.nm-sheet .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.nm-sheet .path { grid-column: 1 / -1; color: var(--faint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nm-sheet .badges { display: flex; gap: 3px; }
+
+.nm-stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.nm-toolbar {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--panel); border-bottom: 1px solid var(--line);
+  flex-wrap: wrap; row-gap: 6px;
+}
+.nm-toolbar .group { display: flex; align-items: center; gap: 4px; }
+.nm-toolbar .brush { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.nm-toolbar .brush input[type=range] { width: 80px; }
+.nm-toolbar .brush output { min-width: 22px; color: var(--text); font-variant-numeric: tabular-nums; }
+.zoom-label { min-width: 48px; text-align: center; font-variant-numeric: tabular-nums; color: var(--muted); }
+.swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
+
+.nm-viewport { position: relative; flex: 1; min-height: 0; background: var(--canvas-bg); overflow: hidden; }
+.nm-viewport canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+.nm-viewport canvas.overlay-layer { pointer-events: none; }
+.nm-viewport canvas.panning { cursor: grabbing !important; }
+.nm-viewport canvas.can-pan { cursor: grab !important; }
+.nm-float {
+  position: absolute; display: flex; align-items: center; gap: 2px; background: rgba(27, 30, 34, .92); border: 1px solid var(--line);
+  border-radius: 8px; padding: 3px; box-shadow: 0 4px 14px rgba(0, 0, 0, .35); backdrop-filter: blur(4px);
+}
+.nm-float .seg { background: transparent; border: 0; padding: 0; }
+.nm-views { top: 10px; left: 10px; }
+.nm-zoom { bottom: 10px; right: 10px; }
+.nm-float button { min-height: 26px; }
+.nm-float .sep-v { margin: 3px 2px; }
+.nm-viewport .float-hint {
+  position: absolute; left: 10px; bottom: 10px; color: var(--muted); font-size: 11.5px; background: rgba(0, 0, 0, .5);
+  padding: 4px 9px; border-radius: 6px; pointer-events: none; max-width: calc(100% - 20px);
+}
+.nm-viewport .drop {
+  position: absolute; inset: 8px; display: none; align-items: center; justify-content: center; text-align: center; padding: 20px;
+  font-size: 15px; background: rgba(95, 211, 176, .1); border: 2px dashed var(--accent); border-radius: 12px; pointer-events: none;
+}
+.nm-viewport.dragging .drop { display: flex; }
+.nm-viewport .welcome { pointer-events: none; }
+.nm-viewport .welcome .card { pointer-events: auto; }
+
+.nm-panel { background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.nm-panel .scroll { flex: 1; }
+.nm-info { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 12px; }
+.nm-info dt { color: var(--muted); }
+.nm-info dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nm-presets { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
+.nm-presets button { min-height: 24px; padding: 0 8px; font-size: 12px; }
+.nm-nudge { display: grid; grid-template-columns: repeat(3, 30px); grid-template-rows: repeat(2, 26px); gap: 3px; }
+.nm-nudge button { min-height: 0; padding: 0; }
+.nm-nudge .up { grid-column: 2; grid-row: 1; }
+.nm-nudge .left { grid-column: 1; grid-row: 2; }
+.nm-nudge .down { grid-column: 2; grid-row: 2; }
+.nm-nudge .right { grid-column: 3; grid-row: 2; }
+.nm-import-row { display: flex; gap: 12px; align-items: center; margin: 6px 0 4px; }
+.nm-import-row .offset { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.nm-save { border-top: 1px solid var(--line); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; background: var(--panel); box-shadow: 0 -8px 16px rgba(0, 0, 0, .18); }
+.nm-save .opts { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.nm-save .opts label { display: flex; gap: 6px; align-items: center; cursor: pointer; color: var(--muted); }
+.nm-save .buttons { display: flex; gap: 6px; }
+.nm-save .buttons .primary { flex: 1; }
+.nm-save .where { color: var(--faint); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+
+@media (max-width: 1180px) {
+  .nm { grid-template-columns: 220px minmax(0, 1fr) 290px; }
+}
+@media (max-width: 960px) {
+  .nm, .nm.no-list { grid-template-columns: 0 minmax(0, 1fr) 280px; }
+  .nm .nm-list { visibility: hidden; }
+  .nm.show-list { grid-template-columns: 220px minmax(0, 1fr) 0; }
+  .nm.show-list .nm-list { visibility: visible; }
+  .nm.show-list .nm-panel { visibility: hidden; }
+}

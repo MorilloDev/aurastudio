@@ -1,0 +1,99 @@
+/* The studio frame: header with tool tabs and the project, the tool area, the status bar, and the overlays every tool
+   shares (toasts, command palette, dialogs, shortcut help). */
+#app { display: grid; grid-template-rows: 44px 1fr 26px; height: 100vh; }
+
+.shell-head {
+  display: flex; align-items: center; gap: 10px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.shell-logo { font-weight: 750; letter-spacing: .3px; white-space: nowrap; display: flex; align-items: center; gap: 7px; }
+.shell-logo i { width: 18px; height: 18px; border-radius: 5px; background: conic-gradient(from 210deg, #5fd3b0, #7fb2ff, #c48cff, #5fd3b0); display: inline-block; }
+.shell-tabs { display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.shell-tabs::-webkit-scrollbar { display: none; }
+.shell-tab {
+  position: relative; min-height: 32px; border: 0; background: transparent; color: var(--muted); padding: 0 12px; gap: 7px;
+}
+.shell-tab:hover:not(:disabled) { background: var(--panel-2); border: 0; color: var(--text); }
+.shell-tab.active { color: var(--text); background: var(--panel-2); }
+.shell-tab.active::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -6px; height: 2px; background: var(--accent); border-radius: 2px; }
+.shell-tab .dot { display: none; }
+.shell-tab.dirty .dot { display: inline-block; }
+.shell-tab .legacy { font-size: 9.5px; color: var(--faint); border: 1px solid var(--line); border-radius: 4px; padding: 0 3px; }
+.shell-spacer { flex: 1; }
+.shell-project { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.shell-project .name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.shell-project .name b { color: var(--text); font-weight: 600; }
+
+.shell-body { position: relative; min-height: 0; min-width: 0; }
+.tool-host { position: absolute; inset: 0; display: none; min-height: 0; }
+.tool-host.active { display: block; }
+.tool-host > iframe { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
+
+.shell-status {
+  display: flex; align-items: center; gap: 14px; padding: 0 12px; background: var(--panel); border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 12px; min-width: 0; white-space: nowrap;
+}
+.shell-status .msg { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.shell-status .msg.ok { color: var(--accent); }
+.shell-status .msg.warn { color: var(--warn); }
+.shell-status .msg.bad { color: var(--bad); }
+.shell-status .slot { font-variant-numeric: tabular-nums; }
+.shell-status .spinner { visibility: hidden; }
+.shell-status.busy .spinner { visibility: visible; }
+.shell-status .help { cursor: pointer; }
+.shell-status .help:hover { color: var(--text); }
+
+/* Toasts stack bottom-right and never cover each other. */
+.toasts { position: fixed; left: 50%; transform: translateX(-50%); bottom: 38px; align-items: center; display: flex; flex-direction: column; gap: 8px; z-index: 50; pointer-events: none; max-width: min(440px, calc(100vw - 28px)); }
+.toast {
+  pointer-events: auto; display: flex; gap: 10px; align-items: flex-start; background: var(--panel-2); border: 1px solid var(--line);
+  border-left: 3px solid var(--info); border-radius: var(--radius); padding: 9px 10px 9px 12px; box-shadow: var(--shadow);
+  animation: toast-in .16s ease-out; line-height: 1.45;
+}
+.toast.ok { border-left-color: var(--accent); }
+.toast.warn { border-left-color: var(--warn); }
+.toast.bad { border-left-color: var(--bad); }
+.toast .body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toast .body small { display: block; color: var(--muted); margin-top: 2px; }
+.toast button { min-height: 22px; padding: 0 7px; }
+.toast.leaving { opacity: 0; transform: translateX(10px); transition: opacity .18s, transform .18s; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* Modal layer: dialogs, the command palette and the shortcut sheet. */
+.overlay { position: fixed; inset: 0; background: rgba(5, 7, 9, .55); display: flex; align-items: flex-start; justify-content: center; z-index: 60; padding-top: 12vh; }
+.overlay.center { align-items: center; padding-top: 0; }
+.dialog {
+  background: var(--panel); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow);
+  width: min(460px, calc(100vw - 32px)); padding: 18px; display: flex; flex-direction: column; gap: 12px;
+}
+.dialog h2 { margin: 0; font-size: 15px; }
+.dialog p { margin: 0; color: var(--muted); line-height: 1.55; }
+.dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+.palette { background: var(--panel); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow); width: min(600px, calc(100vw - 32px)); overflow: hidden; }
+.palette input { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; min-height: 44px; padding: 0 16px; font-size: 14px; background: var(--panel); }
+.palette input:focus-visible { outline: none; }
+.palette .items { max-height: 50vh; overflow: auto; padding: 6px; }
+.palette .item { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 6px; cursor: pointer; }
+.palette .item .group { color: var(--faint); font-size: 11px; min-width: 86px; }
+.palette .item .title { flex: 1; }
+.palette .item.sel { background: var(--accent-soft); }
+.palette .item.disabled { opacity: .45; }
+.palette .none { padding: 14px; color: var(--muted); }
+
+.keysheet { background: var(--panel); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow); width: min(780px, calc(100vw - 32px)); max-height: 76vh; overflow: auto; padding: 18px 20px; }
+.keysheet h2 { margin: 0 0 12px; font-size: 15px; }
+.keysheet .cols { columns: 2 300px; column-gap: 28px; }
+.keysheet .grp { break-inside: avoid; margin-bottom: 14px; }
+.keysheet h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 6px; }
+.keysheet .k { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; border-bottom: 1px dashed var(--line); }
+.keysheet .k span:last-child { white-space: nowrap; }
+
+/* Welcome screen shown until a project is open. */
+.welcome { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.welcome .card { width: min(560px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 26px; box-shadow: var(--shadow); }
+.welcome h1 { margin: 0 0 6px; font-size: 20px; }
+.welcome p { color: var(--muted); line-height: 1.6; margin: 0 0 16px; }
+.welcome .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.welcome .actions button { min-height: 36px; }
+.welcome .tip { margin-top: 18px; font-size: 12px; color: var(--faint); }
