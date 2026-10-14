@@ -1,9 +1,10 @@
 "use strict";
 
 // Bloques: builds tile sprites (cube, slab, stair, fence…) from face textures of an atlas or a loose texture, with
-// relief, edge control, hairs, the face light of the Blender materials, ambient occlusion, depth and a grayscale pass,
-// rendered with the game's camera — and every variant the tile's "art" map needs (states × front / back) in one go.
-// Everything heavy is in engine.js / shapes.js / hair.js; this file is the panel, the picker, the previews and saving.
+// procedural ragged edges painted with the face's own texture, hairs, the face light of the Blender materials, ambient
+// occlusion, depth and a grayscale pass, rendered with the game's camera — and every variant the tile's "art" map needs
+// (states × front / back) in one go. The heavy parts are engine.js / shapes.js / hair.js; this file is the panel, the
+// picker, the previews and saving.
 (function (Aura) {
   const { h } = Aura.dom;
   const { section, slider, select, checkbox, segmented, numberPair } = Aura.controls;
@@ -36,8 +37,7 @@
 
   // Option keys each panel section owns, for its own reset button.
   const SECTION_KEYS = {
-    relief: ["relief", "source", "sampling", "res", "depth", "steps", "threshold", "autoContrast", "invert", "faces"],
-    edges: ["edges", "edgeFalloff", "autoFit", "chips", "lip", "lipChance", "seed"],
+    mask: ["mask", "autoFit", "chips", "seed"],
     hair: ["hair"],
     light: ["shading", "shade", "ao", "aoDistance", "aoStrength", "aoSteps", "aoSamples"],
     pixel: ["edgeLight", "outline", "cleanup", "grayFromTexture"],
@@ -240,6 +240,7 @@
           this.#save(); this.#rebuildPanel(); this.#schedule();
         }) },
         shapeSel.el, ...params,
+        this.#slider("Resolución", "res", 16, 64, 16, "Cubitos por lado del bloque: 32 = uno cada 2 px de un sprite de 64; 64 = uno por pixel (bordes y formas más finos)"),
         this.#choice("Texturas", "texMode", [["auto", "Auto"], ["follow", "Giran"], ["world", "Fijas"]]),
         this.#choice("Ajuste", "uvMode", [["world", "Mundo"], ["fit", "Estirar"]]),
         h("p", { class: "note" }, h("b", null, "Auto:"), " la textura gira con la pieza solo en «horizontal» (troncos tumbados). ",
@@ -264,35 +265,31 @@
         onChange: (v) => this.#setPiece((p) => { p.frontSide = v; }) }).el);
       const variants = section({ id: "bk-variants", title: "Variantes" }, ...variantControls);
 
-      const relief = section({ id: "bk-relief", title: "Relieve", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.relief)) },
-        this.#choice("Relieve", "relief", [["none", "Plano"], ["in", "Tallado"], ["out", "Saliente"]]),
-        this.#choice("Altura de", "source", [["luma", "Brillo"], ["alpha", "Alfa"]]),
-        this.#choice("Lectura", "sampling", [["min", "Mínimo"], ["avg", "Media"], ["max", "Máximo"]]),
-        this.#slider("Resolución", "res", 4, 64, 1, "Cubitos por lado del bloque. Más = relieve más fino. Usa múltiplos de 16 para que las formas encajen exactas."),
-        this.#slider("Profundidad", "depth", 1, 6, 1, "En cubitos"),
-        this.#slider("Niveles", "steps", 1, 6, 1),
-        this.#slider("Umbral", "threshold", 0, 0.95, 0.01),
-        this.#check("Contraste automático", "autoContrast", "Estira lo más oscuro y lo más claro de cada cara a 0..1"),
-        this.#check("Invertir", "invert"),
-        h("div", { class: "bk-row3" }, this.#check("Arriba", "faces.top"), this.#check("Izq.", "faces.left"), this.#check("Der.", "faces.right")));
-
-      const edges = section({ id: "bk-edges", title: "Bordes", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.edges)) },
-        h("p", { class: "note" }, "Dónde puede salir el relieve fuera de la pieza. Los lados verticales del sprite se quedan planos para no salirse."),
+      // Edge masks: the faces carry on past their edges in a ragged outline, painted with their own texture. Nothing is
+      // read from the texture's brightness any more: the shape of the edge is procedural.
+      const maskSection = section({ id: "bk-mask", title: "Bordes procedurales", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.mask)) },
+        this.#check("Bordes irregulares", "mask.enabled", "La textura sigue sin cortes en las lenguas que salen del borde"),
+        h("p", { class: "note" }, "Atrás = las esquinas de arriba que marcaste; delante = cuelga sobre los lados; abajo = bajo los lados. ",
+          "Se aplican a los bordes de cualquier forma (escalera, losa, valla…) y nunca pasan de los lados del sprite."),
         h("div", { class: "bk-zones" },
-          this.#check("Arriba izq.", "edges.topLeft"), this.#check("Arriba der.", "edges.topRight"),
-          this.#check("Abajo izq.", "edges.bottomLeft"), this.#check("Abajo der.", "edges.bottomRight")),
-        this.#check("Relieve en los lados verticales", "edges.sides"),
-        this.#slider("Suavizado borde", "edgeFalloff", 0, 8, 1, "Cubitos en los que el relieve se apaga hacia un borde plano"),
+          this.#check("Atrás izq.", "mask.zones.backLeft"), this.#check("Atrás der.", "mask.zones.backRight"),
+          this.#check("Delante izq.", "mask.zones.frontLeft"), this.#check("Delante der.", "mask.zones.frontRight"),
+          this.#check("Abajo izq.", "mask.zones.bottomLeft"), this.#check("Abajo der.", "mask.zones.bottomRight")),
+        this.#choice("Forma", "mask.style", [["spikes", "Fibras"], ["waves", "Ondas"], ["blocks", "Dientes"]]),
+        this.#slider("Largo", "mask.length", 0, 10, 1, "En cubitos (con resolución 64, un cubito ≈ un pixel)"),
+        this.#slider("Densidad", "mask.density", 0, 1, 0.01, "Cuánto del borde sale"),
+        this.#slider("Variación", "mask.variation", 0, 1, 0.01),
+        this.#slider("Ancho", "mask.width", 1, 6, 1, "Cubitos por lengua (fibras / dientes) o por onda"),
+        h("div", { class: "row" }, this.#slider("Semilla bordes", "mask.seed", 1, 9999, 1),
+          h("button", { onclick: () => { this.o.mask.seed = 1 + Math.floor(Math.random() * 9999); this.#save(); this.#rebuildPanel(); this.#schedule(); } }, "Otra")),
+        h("div", { class: "bk-sep" }),
         this.#check("Ajustar dentro del sprite", "autoFit"),
         this.#slider("Desgaste aristas", "chips", 0, 1, 0.01),
-        this.#slider("Labio colgante", "lip", 0, 8, 1, "Lo de arriba cuelga sobre los lados (césped, nieve, musgo)"),
-        this.#slider("Prob. labio", "lipChance", 0, 1, 0.01),
-        h("div", { class: "row" }, this.#slider("Semilla", "seed", 1, 9999, 1),
-          h("button", { onclick: () => { this.o.seed = 1 + Math.floor(Math.random() * 9999); this.#save(); this.#rebuildPanel(); this.#schedule(); } }, "Otra")));
+        this.#slider("Semilla desgaste", "seed", 1, 9999, 1));
 
       const hair = section({ id: "bk-hair", title: "Pelitos", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.hair)) },
         this.#check("Pelitos en los bordes", "hair.enabled", "Hebras de 1 px: fibras de corteza, hierba, raíces"),
-        h("p", { class: "note" }, "Los bordes de atrás son las esquinas marcadas de arriba; nunca pasan de los lados del sprite."),
+        h("p", { class: "note" }, "Usan la misma textura que la cara de la que salen, así no desentonan. Nunca pasan de los lados del sprite."),
         h("div", { class: "bk-zones" },
           this.#check("Atrás izq.", "hair.edges.backLeft"), this.#check("Atrás der.", "hair.edges.backRight"),
           this.#check("Delante arriba", "hair.edges.frontTop"), this.#check("Esquina", "hair.edges.corner"),
@@ -351,7 +348,7 @@
         h("button", { onclick: () => this.#download() }, "Descargar vista previa"),
         h("button", { onclick: () => this.#downloadVariants() }, "Descargar tira de variantes"));
 
-      this.panelScroll = h("div", { class: "scroll" }, shape.el, variants.el, relief.el, edges.el, hair.el, light.el, pixel.el, output.el);
+      this.panelScroll = h("div", { class: "scroll" }, shape.el, variants.el, maskSection.el, hair.el, light.el, pixel.el, output.el);
       this.panel = h("div", { class: "bk-panel" },
         h("div", { class: "bk-panel-head" }, h("span", null, "Ajustes"),
           h("button", { title: "Volver todo a los valores por defecto", onclick: () => {
@@ -649,7 +646,7 @@
         ctx.strokeStyle = "rgba(255,255,255,.35)";
         ctx.lineWidth = 1;
         ctx.strokeRect(ox - 0.5, oy - 0.5, S * zoom + 1, S * zoom + 1);
-        // The full block's outline: what sticks out of it is relief, lip or hair.
+        // The full block's outline: what sticks out of it is a ragged edge or a hair.
         const q = S * zoom / 4;
         ctx.beginPath();
         ctx.moveTo(ox + S * zoom / 2, oy);

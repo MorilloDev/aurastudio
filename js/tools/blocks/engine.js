@@ -28,9 +28,6 @@
   const DIRS = Shapes.DIRS;
   const W_RIGHT = 0, W_LEFT = 3, W_UP = 4;
   const VISIBLE_DIRS = [W_UP, W_LEFT, W_RIGHT];
-  // Grid values: 0 empty, 1..6 owner surface (world dir + 1), 255 coloured by whichever side is seen. LIP_FLAG marks
-  // overhangs, which keep their owner's texture on every side (grass hanging over a dirt side stays grass).
-  const LIP_FLAG = 64;
   const DIR_FACE = { [W_UP]: FACE.TOP, [W_LEFT]: FACE.LEFT, [W_RIGHT]: FACE.RIGHT };
 
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -70,29 +67,6 @@
         const i = this.texel(u, v);
         return [img.rgba[i], img.rgba[i + 1], img.rgba[i + 2], img.rgba[i + 3]];
       },
-      /** Height (0..1) of the texels a voxel column covers. mode "min" keeps thin dark lines (mortar, cracks) that an
-       *  average would wash out at a coarse resolution; "avg" and "max" are there for soft or bright-lined pictures. */
-      height(u0, v0, u1, v1, source, invert, mode = "min") {
-        let sum = 0;
-        let n = 0;
-        let mn = Infinity, mx = -Infinity;
-        const steps = Math.max(1, Math.round(Math.max(w, h) * Math.max(u1 - u0, v1 - v0)));
-        for (let a = 0; a < steps; a++) {
-          for (let b = 0; b < steps; b++) {
-            const i = this.texel(u0 + (u1 - u0) * (a + 0.5) / steps, v0 + (v1 - v0) * (b + 0.5) / steps);
-            const al = img.rgba[i + 3] / 255;
-            let hgt = source === "alpha" ? al
-              : al < 0.02 ? 0 : (0.2126 * img.rgba[i] + 0.7152 * img.rgba[i + 1] + 0.0722 * img.rgba[i + 2]) / 255;
-            if (invert) hgt = 1 - hgt;
-            sum += hgt;
-            n++;
-            if (hgt < mn) mn = hgt;
-            if (hgt > mx) mx = hgt;
-          }
-        }
-        if (!n) return 0;
-        return mode === "max" ? mx : mode === "avg" ? sum / n : mn;
-      },
     };
   }
 
@@ -125,31 +99,32 @@
     spread: 0.35,               // random turn of each strand
     droop: 0,                   // strands bend down toward the tip
     width: 1,                   // pixels at the root (tapers to 1)
-    tipShade: -0.25,            // tip darker (< 0) or lighter (> 0)
+    tipShade: 0,                // tip darker (< 0) or lighter (> 0); 0 keeps the texture's own colours
     seed: 3,
+  };
+
+  // Procedural edge masks: the faces of the piece carry on past some of their edges in a ragged outline (fibres on a
+  // log, grass over a dirt block, roots under a slab), painted with the same texture so there is no seam.
+  const MASK_DEFAULTS = {
+    enabled: true,
+    zones: { backLeft: true, backRight: true, frontLeft: false, frontRight: false, bottomLeft: true, bottomRight: true },
+    length: 3,                  // longest tongue, in voxels
+    density: 0.55,              // share of the edge that sticks out
+    variation: 0.7,             // 0 = every tongue full length, 1 = from one voxel to full length
+    style: "spikes",            // "spikes": one-voxel fibres; "waves": a smooth ragged edge; "blocks": square teeth
+    width: 1,                   // voxels per tongue (spikes / blocks) or per wave
+    seed: 7,
   };
 
   const DEFAULTS = {
     size: 64,                   // sprite width and height, px; a full block always fills it
-    res: 32,                    // voxels per block edge
+    res: 32,                    // voxels per block edge: 32 = one voxel per 2 px of a 64 px sprite, 64 = one per pixel
     blockHeight: BLOCK_HEIGHT,
-    relief: "out",              // "out": bright texels rise off the piece; "in": dark texels are carved in; "none"
-    source: "luma",             // height from "luma" (brightness) or "alpha"
-    invert: false,
-    autoContrast: true,         // stretch each face's darkest..brightest texel to 0..1 before thresholding
-    sampling: "min",            // how a voxel column reads the texels under it: "min", "avg" or "max"
-    threshold: 0,
-    steps: 2,                   // height levels: few levels read as clean pixel-art steps
-    depth: 1,                   // relief depth in voxels
-    faces: { top: true, left: true, right: true },     // which textures get relief
-    edges: { topLeft: true, topRight: true, bottomLeft: true, bottomRight: true, sides: false },
-    edgeFalloff: 2,             // voxels over which relief fades out toward an edge that must stay flat
-    autoFit: true,              // shorten bumps and hairs that would leave the sprite
+    mask: MASK_DEFAULTS,
+    autoFit: true,              // shorten tongues and hairs that would leave the sprite
     texMode: "auto",            // "follow": textures turn with the piece; "world": top texture always on top; "auto"
     uvMode: "world",            // "world": a slab shows half the side texture; "fit": the texture is squeezed onto it
     chips: 0,                   // 0..1 chance that a voxel on an edge of the piece is chipped away
-    lip: 0,                     // longest overhang hanging from a top edge, in voxels (0 = none)
-    lipChance: 0.6,
     seed: 1,
     shading: true,              // bake the face light like the Blender materials
     shade: { top: 1, left: 0.75, right: 0.55 },
@@ -167,9 +142,9 @@
 
   function merge(opts = {}) {
     const o = { ...DEFAULTS, ...opts };
-    o.faces = { ...DEFAULTS.faces, ...(opts.faces || {}) };
-    o.edges = { ...DEFAULTS.edges, ...(opts.edges || {}) };
     o.shade = { ...DEFAULTS.shade, ...(opts.shade || {}) };
+    o.mask = { ...MASK_DEFAULTS, ...(opts.mask || {}) };
+    o.mask.zones = { ...MASK_DEFAULTS.zones, ...(opts.mask?.zones || {}) };
     o.hair = { ...HAIR_DEFAULTS, ...(opts.hair || {}) };
     o.hair.edges = { ...HAIR_DEFAULTS.edges, ...(opts.hair?.edges || {}) };
     return o;
@@ -177,19 +152,48 @@
 
   const CUBE = { boxes: [{ min: [0, 0, 0], max: [1, 1, 1] }], state: "default", facing: "front" };
 
+  // Texture coordinates past a face's edge wrap around: atlas textures tile, so a tongue or a hair that carries on
+  // past the edge keeps the pattern going instead of smearing the edge texel.
+  const wrap01 = (x) => (x >= 0 && x <= 1 ? Math.min(x, 1 - 1e-6) : x - Math.floor(x));
+
+  // ── Edge mask profiles ───────────────────────────────────────────────────────────────────────────────────────────
+
+  function hash(a, b, c, d) {
+    let h = Math.imul(a | 0, 374761393) ^ Math.imul(b | 0, 668265263) ^ Math.imul(c | 0, 2147483647) ^ Math.imul(d | 0, 1103515245);
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+
+  /** Length (voxels) of the tongue at position t along one edge line. zone and line keep different edges unrelated. */
+  function profile(m, zone, line, t) {
+    const L = Math.max(0, Math.round(m.length));
+    if (!L) return 0;
+    const w = Math.max(1, Math.round(m.width));
+    if (m.style === "waves") {
+      // Smooth value noise along the edge, cut at the density so the gaps are part of the wave.
+      const x = t / (w * 3), x0 = Math.floor(x), f = x - x0, s = f * f * (3 - 2 * f);
+      const n = hash(zone, line, x0, m.seed) * (1 - s) + hash(zone, line, x0 + 1, m.seed) * s;
+      const v = clamp01((n - (1 - m.density)) / Math.max(0.05, m.density));
+      return Math.round(L * Math.pow(v, 0.8));
+    }
+    const group = Math.floor(t / (m.style === "blocks" ? w * 2 : w));
+    if (hash(zone, line, group, m.seed) >= m.density) return 0;
+    const k = 1 - m.variation * hash(zone, line, group, m.seed + 911);
+    return Math.max(1, Math.round(L * k));
+  }
+
   // ── Voxels ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
   /**
-   * The piece as a voxel grid. Cell voxels are i, j, k in 0..res-1 (x, y, z, z up); relief that rises out of the piece
-   * and lips can spill past the cell by a few voxels on every side. Each solid voxel stores 0 (coloured by whatever
-   * face of it is seen) or 1 + the world direction of the surface whose texture colours it.
+   * The piece as a voxel grid. Cell voxels are i, j, k in 0..res-1 (x, y, z, z up); the edge masks spill past the cell
+   * by up to their length on every side. Grid values: 0 empty, 255 the piece itself (coloured by whichever of its
+   * faces is seen), 1..254 a mask voxel, whose record in V.ext says which texture it carries on.
    */
   function buildVoxels(o, tex, piece) {
     const R = o.res;
-    const D = o.relief === "none" ? 0 : Math.max(1, Math.round(o.depth));
-    const out = o.relief === "out";
-    const pad = (out ? D : 0) + (o.lip > 0 ? 1 : 0);
-    const iLo = -pad, iHi = R + pad, jLo = -pad, jHi = R + pad, kLo = 0, kHi = R + pad;
+    const m = o.mask;
+    const pad = m.enabled ? Math.max(1, Math.round(m.length)) + 1 : 1;
+    const iLo = -pad, iHi = R + pad, jLo = -pad, jHi = R + pad, kLo = -pad, kHi = R + pad;
     const nx = iHi - iLo, ny = jHi - jLo, nz = kHi - kLo;
     const grid = new Uint8Array(nx * ny * nz);
     const idx = (i, j, k) => ((k - kLo) * ny + (j - jLo)) * nx + (i - iLo);
@@ -200,7 +204,7 @@
     const tf = Shapes.transform(piece.state, piece.facing, follow);
     const worldBoxes = Shapes.boxesToWorld(piece.boxes, tf);
 
-    // The piece itself, before any relief.
+    // The piece itself.
     const base = new Uint8Array(R * R * R);
     const bIdx = (i, j, k) => (k * R + j) * R + i;
     const inCell = (i, j, k) => i >= 0 && i < R && j >= 0 && j < R && k >= 0 && k < R;
@@ -211,6 +215,9 @@
       }
     }
     const isBase = (i, j, k) => inCell(i, j, k) && base[bIdx(i, j, k)] === 1;
+    for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
+      if (base[bIdx(i, j, k)]) grid[idx(i, j, k)] = 255;
+    }
 
     // Texture frame bounds, for squeezing the textures onto the piece ("fit").
     let fitLo = [0, 0, 0], fitHi = [1, 1, 1];
@@ -223,87 +230,13 @@
         }
       }
     }
-    /** World unit point + world direction of the surface → [texture name, u, v]. */
+    /** World unit point + world direction of the surface → [texture name, u, v], wrapped past the face's edges. */
     const uvAt = (up, wd) => {
       let lp = tf.texLocal(up);
       if (o.uvMode === "fit") lp = lp.map((v, a) => (v - fitLo[a]) / Math.max(1e-6, fitHi[a] - fitLo[a]));
       const [name, u, v] = localUV(lp, tf.texDir(wd));
-      return [name, clamp01(u), clamp01(v)];
+      return [name, wrap01(u), wrap01(v)];
     };
-
-    // Relief levels per texture, 0..D, on an R × R grid of each texture.
-    const levels = {};
-    const lvlSteps = Math.max(1, o.steps);
-    for (const name of ["top", "left", "right"]) {
-      const L = new Uint8Array(R * R);
-      levels[name] = L;
-      if (!o.faces[name] || D === 0) { L.fill(out ? 0 : D); continue; }
-      // Raw heights first, so auto contrast can stretch this texture's own range: a texture drawn in a narrow band of
-      // values (a mid-grey stone) still gets its full relief.
-      const raw = new Float32Array(R * R);
-      let lo = Infinity, hi = -Infinity;
-      for (let a = 0; a < R; a++) for (let b = 0; b < R; b++) {
-        const v = tex[name].height(a / R, b / R, (a + 1) / R, (b + 1) / R, o.source, o.invert, o.sampling);
-        raw[b * R + a] = v;
-        lo = Math.min(lo, v); hi = Math.max(hi, v);
-      }
-      const span = hi - lo;
-      for (let n = 0; n < R * R; n++) {
-        let hgt = raw[n];
-        if (o.autoContrast && span > 1e-3) hgt = (hgt - lo) / span;
-        hgt = clamp01((hgt - o.threshold) / Math.max(1e-4, 1 - o.threshold));
-        hgt = hgt > 0 ? Math.ceil(hgt * lvlSteps - 1e-6) / lvlSteps : 0;
-        L[n] = Math.round(hgt * D);
-      }
-    }
-
-    // Edges that must stay flat fade the relief out: the four corner zones of the sprite are measured from the cell's
-    // borders, and the cell's outer vertical edges always stay flat unless "sides" is on (past them a bump would leave
-    // the sprite sideways).
-    const fall = Math.max(0, o.edgeFalloff);
-    const edgeMask = (d) => (fall <= 0 ? (d <= 0 ? 0 : 1) : clamp01(d / fall));
-    const zoneMask = (wd, i, j, k) => {
-      let m = 1;
-      if (wd === W_UP) {
-        if (!o.edges.topLeft) m = Math.min(m, edgeMask(i));
-        if (!o.edges.topRight) m = Math.min(m, edgeMask(R - 1 - j));
-      } else if (wd === W_LEFT) {
-        if (!o.edges.sides) m = Math.min(m, edgeMask(i));
-        if (!o.edges.bottomLeft) m = Math.min(m, edgeMask(k));
-      } else {
-        if (!o.edges.sides) m = Math.min(m, edgeMask(R - 1 - j));
-        if (!o.edges.bottomRight) m = Math.min(m, edgeMask(k));
-      }
-      return m;
-    };
-    const centre = (i, j, k) => [(i + 0.5) / R, (j + 0.5) / R, (k + 0.5) / R];
-    /** Relief level of the surface voxel (i, j, k) seen from world direction wd. */
-    const levelAt = (wd, i, j, k) => {
-      const d = DIRS[wd];
-      const c = centre(i, j, k);
-      const up = [c[0] + d[0] * 0.5 / R, c[1] + d[1] * 0.5 / R, c[2] + d[2] * 0.5 / R];
-      const [name, u, v] = uvAt(up, wd);
-      const a = Math.min(R - 1, Math.floor(u * R)), b = Math.min(R - 1, Math.floor(v * R));
-      const lv = levels[name][b * R + a];
-      const m = zoneMask(wd, i, j, k);
-      // In: the mask keeps the edge uncarved. Out: it keeps the edge from rising.
-      return out ? Math.round(lv * m) : Math.round(D - (D - lv) * m);
-    };
-
-    // Owners: a voxel within reach of a visible surface takes that surface's texture (top wins ties), so a rim shows
-    // the top's pixels like a hand-drawn tile, and a pit carved into a face keeps that face's colours on its walls.
-    const reach = Math.max(1, D);
-    for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
-      if (!base[bIdx(i, j, k)]) continue;
-      let owner = 0, best = reach;
-      for (const wd of VISIBLE_DIRS) {
-        const d = DIRS[wd];
-        let t = 0;
-        while (t < best && isBase(i + d[0] * (t + 1), j + d[1] * (t + 1), k + d[2] * (t + 1))) t++;
-        if (t < best) { best = t; owner = wd + 1; }
-      }
-      grid[idx(i, j, k)] = owner || 255;
-    }
 
     const spriteFits = (i, j, k) => {
       if (!o.autoFit) return true;
@@ -315,93 +248,60 @@
       return true;
     };
 
-    // Relief, from every visible surface of the piece.
-    if (D > 0) {
-      const carve = [];
-      for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
-        if (!base[bIdx(i, j, k)]) continue;
-        for (const wd of VISIBLE_DIRS) {
-          const d = DIRS[wd];
-          if (isBase(i + d[0], j + d[1], k + d[2])) continue;
-          const lv = levelAt(wd, i, j, k);
-          if (out) {
-            for (let s = 1; s <= lv; s++) {
-              const a = i + d[0] * s, b = j + d[1] * s, c = k + d[2] * s;
-              if (!inside(a, b, c) || isBase(a, b, c) || !spriteFits(a, b, c)) break;
-              if (!grid[idx(a, b, c)]) grid[idx(a, b, c)] = wd + 1;
-            }
-          } else {
-            // Never carve through: thin pieces (panels, fence rails) keep at least one voxel.
-            let thick = 0;
-            while (thick <= D && isBase(i - d[0] * thick, j - d[1] * thick, k - d[2] * thick)) thick++;
-            const n = Math.min(D - lv, thick - 1);
-            for (let s = 0; s < n; s++) carve.push(idx(i - d[0] * s, j - d[1] * s, k - d[2] * s));
-          }
-        }
-      }
-      for (const c of carve) grid[c] = 0;
-
-      // Where two raised faces meet at an edge of the piece (top and a side, or the two sides at the front corner),
-      // the voxel between their columns stays empty and reads as a dark groove along the edge. Fill it, so a raised
-      // block keeps a clean edge like a hand-drawn one; top wins, so the rim shows the top's pixels.
-      if (out) {
-        const relief = (i, j, k) => (inside(i, j, k) && !isBase(i, j, k) ? grid[idx(i, j, k)] : 0);
-        const fill = [];
-        for (let k = kLo; k < kHi; k++) for (let j = jLo; j < jHi; j++) for (let i = iLo; i < iHi; i++) {
-          if (grid[idx(i, j, k)] || isBase(i, j, k)) continue;
-          let owner = 0;
-          for (const a of VISIBLE_DIRS) for (const b of VISIBLE_DIRS) {
-            if (a === b || owner) continue;
-            const da = DIRS[a], db = DIRS[b];
-            if (relief(i - da[0], j - da[1], k - da[2]) === b + 1 && relief(i - db[0], j - db[1], k - db[2]) === a + 1) {
-              owner = a === W_UP || b === W_UP ? W_UP + 1 : Math.min(a, b) + 1;
-            }
-          }
-          if (owner && spriteFits(i, j, k)) fill.push([idx(i, j, k), owner]);
-        }
-        for (const [c, owner] of fill) grid[c] = owner;
-      }
-    }
-
-    const solid = (i, j, k) => (inside(i, j, k) ? grid[idx(i, j, k)] : 0);
     const random = rng(o.seed);
+    const solidNow = (i, j, k) => (inside(i, j, k) ? grid[idx(i, j, k)] : 0);
 
     // Chipped edges: piece voxels with two open sides (the bottom does not count) are knocked off now and then.
     if (o.chips > 0) {
       const chip = [];
       for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
-        if (!base[bIdx(i, j, k)] || !solid(i, j, k)) continue;
+        if (!base[bIdx(i, j, k)]) continue;
         let open = 0;
         for (let wd = 0; wd < 5; wd++) {
           const d = DIRS[wd];
-          if (!solid(i + d[0], j + d[1], k + d[2])) open++;
+          if (!isBase(i + d[0], j + d[1], k + d[2])) open++;
         }
         if (open >= 2 && random() < o.chips) chip.push(idx(i, j, k));
       }
       for (const c of chip) grid[c] = 0;
     }
 
-    // Lip: a top surface hanging over the side faces below its front edges (grass, snow, moss). Owned by the top, so it
-    // shows the top texture's edge pixels.
-    if (o.lip > 0) {
-      for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
-        if (!base[bIdx(i, j, k)] || isBase(i, j, k + 1)) continue;
-        for (const [di, dj] of [[0, -1], [1, 0]]) {
-          if (isBase(i + di, j + dj, k) || random() >= o.lipChance) continue;
-          const len = 1 + Math.floor(random() * o.lip);
+    // Edge masks. Each zone: the two open sides that make the edge, which texture carries on (world direction of its
+    // face), how the tongue grows, and the axis the edge runs along (for the profile). Back and bottom tongues are the
+    // face itself carrying on in its own plane; front tongues fold over the edge and hang down the side face.
+    const ZONES = [
+      { key: "backLeft", open: [4, 1], owner: W_UP, step: [-1, 0, 0], along: 1 },
+      { key: "backRight", open: [4, 2], owner: W_UP, step: [0, 1, 0], along: 0 },
+      { key: "frontLeft", open: [4, 3], owner: W_UP, fold: [0, -1, 0], along: 0 },
+      { key: "frontRight", open: [4, 0], owner: W_UP, fold: [1, 0, 0], along: 1 },
+      { key: "bottomLeft", open: [3, 5], owner: W_LEFT, step: [0, 0, -1], along: 0 },
+      { key: "bottomRight", open: [0, 5], owner: W_RIGHT, step: [0, 0, -1], along: 1 },
+    ];
+    if (m.enabled && m.length > 0) {
+      ZONES.forEach((z, zi) => {
+        if (!m.zones[z.key]) return;
+        for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
+          if (!isBase(i, j, k) || !solidNow(i, j, k)) continue;
+          if (z.open.some((wd) => isBase(i + DIRS[wd][0], j + DIRS[wd][1], k + DIRS[wd][2]))) continue;
+          const cell = [i, j, k];
+          const line = z.along === 0 ? j * 4096 + k : i * 4096 + k;
+          const len = profile(m, zi + 1, line, cell[z.along]);
           for (let s = 0; s < len; s++) {
-            const a = i + di, b = j + dj, c = k - s;
-            if (!inside(a, b, c) || isBase(a, b, c)) break;
-            if (!grid[idx(a, b, c)]) grid[idx(a, b, c)] = W_UP + 1 + LIP_FLAG;
+            // Back and bottom tongues are the face carrying on in its own plane; front ones fold over the top's edge
+            // and hang just outside the side face, one voxel lower per step.
+            const a = z.fold ? i + z.fold[0] : i + z.step[0] * (s + 1);
+            const b = z.fold ? j + z.fold[1] : j + z.step[1] * (s + 1);
+            const c = z.fold ? k - s : k + z.step[2] * (s + 1);
+            if (!inside(a, b, c) || isBase(a, b, c) || !spriteFits(a, b, c)) break;
+            if (!grid[idx(a, b, c)]) grid[idx(a, b, c)] = zi + 1;
           }
         }
-      }
+      });
     }
 
     return {
-      R, D, grid, nx, ny, nz, iLo, jLo, kLo, iHi, jHi, kHi, vx, vz, tf, uvAt, isBase,
-      solid,
-      levels,
+      R, grid, nx, ny, nz, iLo, jLo, kLo, iHi, jHi, kHi, vx, vz, tf, uvAt, isBase, zones: ZONES,
+      solid: solidNow,
     };
   }
 
@@ -410,16 +310,6 @@
     const c = [p[0], p[1], p[2] - H / 2];
     const s = Math.SQRT2 / S;
     return [dot(c, RIGHT) / s + S / 2, -dot(c, UP) / s + S / 2];
-  }
-
-  /** True when the open cell (i, j, k) next to a raised voxel lies over the piece's surface facing od: walking back
-   *  against od from it reaches the piece within the relief's reach. */
-  function overOwnFace(V, i, j, k, od) {
-    const d = Shapes.DIRS[od];
-    for (let t = 0; t <= V.D + 1; t++) {
-      if (V.isBase(i - d[0] * t, j - d[1] * t, k - d[2] * t)) return true;
-    }
-    return false;
   }
 
   // ── Ray casting ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -524,7 +414,7 @@
     // Depth range: the grid's corners along the view direction (the same for every piece, so depth maps line up).
     let dMin = Infinity, dMax = -Infinity;
     for (const x of [-0.5 + V.iLo * V.vx, -0.5 + V.iHi * V.vx]) for (const y of [-0.5 + V.jLo * V.vx, -0.5 + V.jHi * V.vx]) {
-      for (const z of [0, V.kHi * V.vz]) {
+      for (const z of [V.kLo * V.vz, V.kHi * V.vz]) {
         const d = dot([x, y, z], BACK);
         dMin = Math.min(dMin, d); dMax = Math.max(dMax, d);
       }
@@ -565,24 +455,22 @@
         nrm[hit.axis] = -hit.sign;
         const hitDir = hit.axis * 2 + (nrm[hit.axis] > 0 ? 0 : 1);
         const visible = DIR_FACE[hitDir] ?? FACE.TOP;
-        // The surface whose texture colours this voxel. A side of the piece's own outer surface always shows its own
-        // texture: borrowing the owner there drew the top texture down the first row of the sides and the left
-        // texture down the front corner, a stepped band hand-drawn tiles never have. Owners only colour what relief
-        // made: walls of carved pits (their open side lies inside the piece) and voxels added outside it.
-        // A raised column's wall keeps its face's texture only while it stands over that face (a bump in the middle
-        // of the top); at the edge of the piece it shows the side it is seen from, so raised edges get no band either.
-        const hd = Shapes.DIRS[hitDir];
-        const raw = hit.owner === 255 ? 0 : hit.owner;
-        const own = raw & ~LIP_FLAG;
-        let ownerDir = hitDir;
-        if (own && (raw & LIP_FLAG)) ownerDir = own - 1;
-        else if (own && V.isBase(hit.i + hd[0], hit.j + hd[1], hit.k + hd[2])) ownerDir = own - 1;
-        else if (own && !V.isBase(hit.i, hit.j, hit.k) && overOwnFace(V, hit.i + hd[0], hit.j + hd[1], hit.k + hd[2], own - 1)) ownerDir = own - 1;
-        // A step's wall shows the lower pixel's colour (the neighbour on the open side of the wall): with the taller
-        // pixel's colour, one-pixel grooves vanished from this angle. Faces that point the owner's way sample in place.
-        const ownerAxis = ownerDir >> 1;
-        const q = hit.axis === ownerAxis ? p : [p[0] + nrm[0] * V.vx * 0.5, p[1] + nrm[1] * V.vx * 0.5, p[2] + nrm[2] * V.vz * 0.5];
-        const [name, u, v] = V.uvAt([q[0] + 0.5, q[1] + 0.5, q[2] / H], ownerDir);
+        // The piece's own faces always show their own texture, right up to the edge. A mask voxel shows the texture of
+        // the face it carries on, at the point that face would have there (wrapped), so the tongue has no seam.
+        const zone = hit.owner !== 255 ? V.zones[hit.owner - 1] : null;
+        const ownerDir = zone ? zone.owner : hitDir;
+        let unit = [p[0] + 0.5, p[1] + 0.5, p[2] / H];
+        if (zone?.fold) {
+          // A front tongue hangs from the top's edge: unfold it back onto the top's plane, the drop becoming distance
+          // past the edge, so the top's pattern runs over the edge and down without a break.
+          let kt = hit.k;
+          while (V.solid(hit.i, hit.j, kt + 1) === hit.owner) kt++;
+          const topZ = (kt + 1) * V.vz, drop = topZ - p[2];
+          unit = zone.fold[1] < 0
+            ? [p[0] + 0.5, (hit.j + 1) * V.vx - drop, topZ / H]
+            : [hit.i * V.vx + drop, p[1] + 0.5, topZ / H];
+        }
+        const [name, u, v] = V.uvAt(unit, ownerDir);
         const texel = tex[name].color(u, v);
         if (texel[3] < 8) continue;
 
@@ -672,5 +560,5 @@
     return out;
   }
 
-  Aura.blockEngine = { DEFAULTS, HAIR_DEFAULTS, BLOCK_HEIGHT, FACE, CUBE, faceTexture, render, project, upscale, merge };
+  Aura.blockEngine = { DEFAULTS, HAIR_DEFAULTS, MASK_DEFAULTS, BLOCK_HEIGHT, FACE, CUBE, faceTexture, render, project, upscale, merge };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));

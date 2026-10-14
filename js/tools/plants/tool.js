@@ -25,7 +25,7 @@
 
   class PlantsTool {
     id = "plants";
-    title = "Plantas";
+    title = "Foliage";
     project = null;
     sheets = [];
     view = "color";

@@ -1,9 +1,9 @@
 "use strict";
 
 // Hairs (fringe) for the Bloques tool: one-pixel strands growing from the edges of a piece — bark fibres on a log,
-// grass blades on a dirt block, roots under a slab. They are drawn straight into the sprite at its own pixel size
-// (the relief voxels are too coarse for a one-pixel strand), against the depth of what is already there, so a strand
-// behind the piece stays hidden and one in front covers it.
+// grass blades on a dirt block, roots under a slab — painted with the texture of the face they grow from. They are
+// drawn straight into the sprite at its own pixel size (voxels are too coarse for a one-pixel strand), against the
+// depth of what is already there, so a strand behind the piece stays hidden and one in front covers it.
 (function (Aura) {
   // World direction indices, as in shapes.js: 0 +X, 1 -X, 2 +Y, 3 -Y, 4 +Z (up), 5 -Z.
   const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
@@ -90,11 +90,13 @@
         if (!len) continue;
       }
 
-      // Colour from the edge it grows out of (on the top texture for top edges, the side texture for the others).
-      const tp = [cell[0] / R, cell[1] / R, cell[2] / R];
-      const [name, u, v] = V.uvAt(tp, g.texDir);
-      const base = tex[name].color(u, v);
-      if (base[3] < 8) continue;
+      // Colour: the texture of the face it grows out of, read where that face would carry on under each point of the
+      // strand (wrapped), the same way the edge masks are painted, so a strand never stands out from its face.
+      const colorAt = (q) => {
+        const [name, u, v] = V.uvAt([q[0] + 0.5, q[1] + 0.5, q[2] / H], g.texDir);
+        return tex[name].color(u, v);
+      };
+      if (colorAt(root)[3] < 8) continue;
       const face = g.face === "TOP" ? FACE.TOP : g.face === "LEFT" ? FACE.LEFT
         : (g.key === "corner" && random() < 0.5 ? FACE.RIGHT : FACE[g.face]);
 
@@ -105,6 +107,8 @@
         const [fx, fy] = project(p, S, H);
         const d = dot(p, BACK);
         const k = 1 + hp.tipShade * t;
+        const base = colorAt(p);
+        if (base[3] < 8) continue;
         const texel = [base[0] * k, base[1] * k, base[2] * k, 255];
         // Darker at the root, where the strand meets the piece.
         const ao = o.ao ? quantAO(1 - o.aoStrength * 0.4 * (1 - t)) : 1;
