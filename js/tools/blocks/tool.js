@@ -38,6 +38,7 @@
   // Option keys each panel section owns, for its own reset button.
   const SECTION_KEYS = {
     mask: ["mask", "autoFit", "chips", "seed"],
+    cover: ["cover"],
     hair: ["hair"],
     light: ["shading", "shade", "ao", "aoDistance", "aoStrength", "aoSteps", "aoSamples"],
     pixel: ["edgeLight", "outline", "cleanup", "grayFromTexture"],
@@ -287,6 +288,21 @@
         this.#slider("Desgaste aristas", "chips", 0, 1, 0.01),
         this.#slider("Semilla desgaste", "seed", 1, 9999, 1));
 
+      const cover = section({ id: "bk-cover", title: "Cobertura", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.cover)) },
+        this.#check("La textura de arriba baja por los lados", "cover.enabled", "Nieve sobre tierra, césped sobre un acantilado…"),
+        h("p", { class: "note" }, "La textura de arriba se dobla sobre el borde y baja por los lados hasta una línea irregular, sin corte con la cara de arriba. ",
+          "En escaleras y losas baja desde cada borde de arriba."),
+        h("div", { class: "bk-zones" }, this.#check("Lado izq.", "cover.left"), this.#check("Lado der.", "cover.right")),
+        this.#slider("Baja", "cover.depth", 0, 40, 1, "Cubitos desde el borde de arriba (con resolución 64, 2 cubitos ≈ 1 px de alto)"),
+        this.#slider("Irregular", "cover.ragged", 0, 30, 1, "Cuánto más baja en las partes irregulares"),
+        this.#choice("Forma", "cover.style", [["waves", "Ondas"], ["spikes", "Goteo"], ["blocks", "Dientes"]]),
+        this.#slider("Ancho", "cover.width", 1, 8, 1),
+        this.#slider("Densidad", "cover.density", 0, 1, 0.01),
+        this.#slider("Variación", "cover.variation", 0, 1, 0.01),
+        this.#slider("Grosor", "cover.thickness", 0, 3, 1, "0 = pintada; 1–3 = capa que sobresale (nieve gruesa)"),
+        h("div", { class: "row" }, this.#slider("Semilla", "cover.seed", 1, 9999, 1),
+          h("button", { onclick: () => { this.o.cover.seed = 1 + Math.floor(Math.random() * 9999); this.#save(); this.#rebuildPanel(); this.#schedule(); } }, "Otra")));
+
       const hair = section({ id: "bk-hair", title: "Pelitos", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.hair)) },
         this.#check("Pelitos en los bordes", "hair.enabled", "Hebras de 1 px: fibras de corteza, hierba, raíces"),
         h("p", { class: "note" }, "Usan la misma textura que la cara de la que salen, así no desentonan. Nunca pasan de los lados del sprite."),
@@ -348,7 +364,7 @@
         h("button", { onclick: () => this.#download() }, "Descargar vista previa"),
         h("button", { onclick: () => this.#downloadVariants() }, "Descargar tira de variantes"));
 
-      this.panelScroll = h("div", { class: "scroll" }, shape.el, variants.el, maskSection.el, hair.el, light.el, pixel.el, output.el);
+      this.panelScroll = h("div", { class: "scroll" }, shape.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, output.el);
       this.panel = h("div", { class: "bk-panel" },
         h("div", { class: "bk-panel-head" }, h("span", null, "Ajustes"),
           h("button", { title: "Volver todo a los valores por defecto", onclick: () => {

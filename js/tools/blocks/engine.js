@@ -116,11 +116,27 @@
     seed: 7,
   };
 
+  // Cover: the top's texture running over the top edge and down the side faces to a ragged line (snow on dirt, grass
+  // over a cliff), painted as if the top carried on bent over the edge, so it joins the top with no seam.
+  const COVER_DEFAULTS = {
+    enabled: false,
+    left: true, right: true,    // which side faces it runs down
+    depth: 5,                   // voxels down from the top edge, before the ragged part
+    ragged: 5,                  // extra voxels the ragged line reaches below the depth
+    style: "waves",             // "waves", "spikes" or "blocks", as the edge masks
+    width: 2,
+    density: 0.75,
+    variation: 0.6,
+    thickness: 0,               // voxels it stands out of the side (0 = painted on, 1–2 = a layer with volume)
+    seed: 11,
+  };
+
   const DEFAULTS = {
     size: 64,                   // sprite width and height, px; a full block always fills it
     res: 32,                    // voxels per block edge: 32 = one voxel per 2 px of a 64 px sprite, 64 = one per pixel
     blockHeight: BLOCK_HEIGHT,
     mask: MASK_DEFAULTS,
+    cover: COVER_DEFAULTS,
     autoFit: true,              // shorten tongues and hairs that would leave the sprite
     texMode: "auto",            // "follow": textures turn with the piece; "world": top texture always on top; "auto"
     uvMode: "world",            // "world": a slab shows half the side texture; "fit": the texture is squeezed onto it
@@ -145,6 +161,7 @@
     o.shade = { ...DEFAULTS.shade, ...(opts.shade || {}) };
     o.mask = { ...MASK_DEFAULTS, ...(opts.mask || {}) };
     o.mask.zones = { ...MASK_DEFAULTS.zones, ...(opts.mask?.zones || {}) };
+    o.cover = { ...COVER_DEFAULTS, ...(opts.cover || {}) };
     o.hair = { ...HAIR_DEFAULTS, ...(opts.hair || {}) };
     o.hair.edges = { ...HAIR_DEFAULTS.edges, ...(opts.hair?.edges || {}) };
     return o;
@@ -299,8 +316,39 @@
       });
     }
 
+    // Cover. coverTop(i, j, k, wd): for a voxel on a side face (wd = left or right), the k of the top edge it hangs
+    // under when it lies in the covered band, else -1. A side whose column is capped by more of the piece (a face
+    // under an overhang) has no top edge there, so nothing runs down it.
+    const cv = o.cover;
+    const coverRagged = { ...cv, length: cv.ragged };
+    const coverTop = (i, j, k, wd) => {
+      if (!cv.enabled || (wd === W_LEFT ? !cv.left : wd === W_RIGHT ? !cv.right : true)) return -1;
+      const d = DIRS[wd];
+      let kk = k;
+      while (isBase(i, j, kk + 1) && !isBase(i + d[0], j + d[1], kk + 1)) kk++;
+      if (isBase(i, j, kk + 1)) return -1;
+      const t = wd === W_LEFT ? i : j, line = wd === W_LEFT ? j : i;
+      const reach = Math.round(cv.depth) + profile(coverRagged, wd === W_LEFT ? 21 : 22, line, t);
+      return kk - k < reach ? kk : -1;
+    };
+    if (cv.enabled && cv.thickness > 0) {
+      // A layer with volume: voxels in front of the covered band, marked as front tongues so they unfold the same way.
+      for (const [wd, zone] of [[W_LEFT, 3], [W_RIGHT, 4]]) {
+        const d = DIRS[wd];
+        for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
+          if (!isBase(i, j, k) || !solidNow(i, j, k) || isBase(i + d[0], j + d[1], k)) continue;
+          if (coverTop(i, j, k, wd) < 0) continue;
+          for (let s = 1; s <= Math.round(cv.thickness); s++) {
+            const a = i + d[0] * s, b = j + d[1] * s;
+            if (!inside(a, b, k) || !spriteFits(a, b, k)) break;
+            if (!grid[idx(a, b, k)]) grid[idx(a, b, k)] = zone;
+          }
+        }
+      }
+    }
+
     return {
-      R, grid, nx, ny, nz, iLo, jLo, kLo, iHi, jHi, kHi, vx, vz, tf, uvAt, isBase, zones: ZONES,
+      R, grid, nx, ny, nz, iLo, jLo, kLo, iHi, jHi, kHi, vx, vz, tf, uvAt, isBase, zones: ZONES, coverTop,
       solid: solidNow,
     };
   }
@@ -470,7 +518,19 @@
             ? [p[0] + 0.5, (hit.j + 1) * V.vx - drop, topZ / H]
             : [hit.i * V.vx + drop, p[1] + 0.5, topZ / H];
         }
-        const [name, u, v] = V.uvAt(unit, ownerDir);
+        let texDir = ownerDir;
+        if (!zone && (hitDir === W_LEFT || hitDir === W_RIGHT)) {
+          // Covered band of a side face: the top's texture bent over the edge, the same unfolding as a front tongue.
+          const kt = V.coverTop(hit.i, hit.j, hit.k, hitDir);
+          if (kt >= 0) {
+            const topZ = (kt + 1) * V.vz, drop = topZ - p[2];
+            texDir = W_UP;
+            unit = hitDir === W_LEFT
+              ? [p[0] + 0.5, hit.j * V.vx - drop, topZ / H]
+              : [(hit.i + 1) * V.vx + drop, p[1] + 0.5, topZ / H];
+          }
+        }
+        const [name, u, v] = V.uvAt(unit, texDir);
         const texel = tex[name].color(u, v);
         if (texel[3] < 8) continue;
 
@@ -560,5 +620,5 @@
     return out;
   }
 
-  Aura.blockEngine = { DEFAULTS, HAIR_DEFAULTS, MASK_DEFAULTS, BLOCK_HEIGHT, FACE, CUBE, faceTexture, render, project, upscale, merge };
+  Aura.blockEngine = { DEFAULTS, HAIR_DEFAULTS, MASK_DEFAULTS, COVER_DEFAULTS, BLOCK_HEIGHT, FACE, CUBE, faceTexture, render, project, upscale, merge };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));
