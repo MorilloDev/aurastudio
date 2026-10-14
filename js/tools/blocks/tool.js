@@ -1,8 +1,9 @@
 "use strict";
 
-// Bloques: builds a block sprite from face textures of an atlas (or a loose texture), with relief, edge control, the
-// face light of the Blender materials, ambient occlusion, depth and a grayscale pass, rendered with the game's camera.
-// Everything heavy is in engine.js; this file is the panel, the cell picker, the preview and the saving.
+// Bloques: builds tile sprites (cube, slab, stair, fence…) from face textures of an atlas or a loose texture, with
+// relief, edge control, hairs, the face light of the Blender materials, ambient occlusion, depth and a grayscale pass,
+// rendered with the game's camera — and every variant the tile's "art" map needs (states × front / back) in one go.
+// Everything heavy is in engine.js / shapes.js / hair.js; this file is the panel, the picker, the previews and saving.
 (function (Aura) {
   const { h } = Aura.dom;
   const { section, slider, select, checkbox, segmented, numberPair } = Aura.controls;
@@ -11,11 +12,35 @@
   const { prefs } = Aura.storage;
   const { listSheets, companionPath, refreshCompanions } = Aura.normalsSheets;
   const E = Aura.blockEngine;
+  const Sh = Aura.blockShapes;
 
   const SLOTS = [["top", "Arriba", "#5fd3b0"], ["left", "Izquierda", "#7fb2ff"], ["right", "Derecha", "#e27bd8"]];
   const VIEWS = [["color", "Color"], ["normal", "Normales"], ["depth", "Profundidad"], ["ao", "AO"], ["gray", "Grises"]];
   const MAPS = [["color", ""], ["normal", "_n"], ["depth", "_depth"], ["ao", "_ao"], ["gray", "_gray"]];
   const PREFS_KEY = "blocks:settings";
+
+  const PIECE_DEFAULTS = {
+    shape: "cube",
+    params: { ...Sh.PARAM_DEFAULTS },
+    states: { default: true, inverted: true, vertical: true, horizontal: true },
+    back: true,
+    combos: false,
+    frontSide: "left",          // which camera face the game's "front" art looks at
+  };
+  const mergePiece = (p = {}) => ({
+    ...PIECE_DEFAULTS, ...p,
+    params: { ...PIECE_DEFAULTS.params, ...(p.params || {}) },
+    states: { ...PIECE_DEFAULTS.states, ...(p.states || {}) },
+  });
+
+  // Option keys each panel section owns, for its own reset button.
+  const SECTION_KEYS = {
+    relief: ["relief", "source", "sampling", "res", "depth", "steps", "threshold", "autoContrast", "invert", "faces"],
+    edges: ["edges", "edgeFalloff", "autoFit", "chips", "lip", "lipChance", "seed"],
+    hair: ["hair"],
+    light: ["shading", "shade", "ao", "aoDistance", "aoStrength", "aoSteps", "aoSamples"],
+    pixel: ["edgeLight", "outline", "cleanup", "grayFromTexture"],
+  };
 
   function blocksTool() {
     return new BlocksTool();
@@ -35,6 +60,10 @@
     activeSlot = "all";
     view = "color";
     result = null;
+    variantList = [];
+    variantResults = new Map();   // variant id -> render result
+    previewId = null;
+    previewFacing = "auto";
     #pending = 0;
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -44,6 +73,7 @@
       this.studio = studio;
       const saved = prefs.get(PREFS_KEY, null);
       this.o = E.merge(saved?.o ?? {});
+      this.piece = mergePiece(saved?.piece);
       this.cellSize = saved?.cellSize ?? 64;
       this.exportScale = saved?.exportScale ?? 4;
       host.appendChild(this.#buildLayout());
@@ -64,7 +94,7 @@
     }
 
     #save() {
-      prefs.set(PREFS_KEY, { o: this.o, cellSize: this.cellSize, exportScale: this.exportScale });
+      prefs.set(PREFS_KEY, { o: this.o, piece: this.piece, cellSize: this.cellSize, exportScale: this.exportScale });
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -99,21 +129,29 @@
           this.slotInfo,
           h("div", { class: "pair2" }, this.rotSel.el, this.flipChk.el)));
 
-      // Centre: the preview.
-      this.viewSeg = segmented({ label: "Vista", value: this.view, options: VIEWS, onChange: (v) => { this.view = v; this.#drawPreview(); } });
+      // Centre: the preview, its maps and the variants.
+      this.viewSeg = segmented({ label: "Vista", value: this.view, options: VIEWS, onChange: (v) => { this.view = v; this.#drawPreview(); this.#drawStrip(); } });
+      this.facingSeg = segmented({
+        label: "Mirar", value: this.previewFacing,
+        options: [["auto", "Auto", "La orientación de la variante elegida"], ...Object.entries(Sh.FACING_LABEL)],
+        onChange: (v) => { this.previewFacing = v; this.#render(false); },
+      });
       this.guideChk = checkbox({ label: "Guías", value: true, onChange: () => this.#drawPreview() });
       this.previewCanvas = h("canvas", { class: "bk-preview" });
+      this.previewLabel = h("div", { class: "bk-preview-label" });
       this.strip = h("div", { class: "bk-strip" });
+      this.varStrip = h("div", { class: "bk-strip bk-varstrip" });
       const stage = h("div", { class: "bk-stage" },
-        h("div", { class: "bk-toolbar" }, this.viewSeg.el, h("span", { class: "grow" }), this.guideChk.el),
-        h("div", { class: "bk-view" }, this.previewCanvas),
-        this.strip);
+        h("div", { class: "bk-toolbar" }, this.viewSeg.el, this.facingSeg.el, h("span", { class: "grow" }), this.guideChk.el),
+        h("div", { class: "bk-view" }, this.previewCanvas, this.previewLabel),
+        this.strip,
+        this.varStrip);
 
       this.root = h("div", { class: "bk" }, left, stage, this.#buildPanel());
       return this.root;
     }
 
-    // Controls bound to an option path ("shade.left"): every change re-renders and is remembered.
+    // Controls bound to an option path ("shade.left", "hair.edges.corner"): every change re-renders and is remembered.
     #get(path) { return path.split(".").reduce((o, k) => o[k], this.o); }
     #set(path, v) {
       const keys = path.split(".");
@@ -135,12 +173,101 @@
         segmented({ label, value: this.#get(path), options, onChange: (v) => this.#set(path, v) }).el);
     }
 
+    // Piece controls: same idea, bound to this.piece.
+    #setPiece(fn, rebuild = false) {
+      fn(this.piece);
+      this.#save();
+      if (rebuild) this.#rebuildPanel();
+      this.#schedule();
+    }
+    #pieceSlider(label, key, min, max, title = "") {
+      return slider({ label, min, max, step: 1, value: this.piece.params[key], defaultValue: Sh.PARAM_DEFAULTS[key], unit: "/16", title,
+        onInput: (v) => this.#setPiece((p) => { p.params[key] = v; }) }).el;
+    }
+    #pieceCheck(label, get, put, title = "") {
+      return checkbox({ label, value: get(), title, onChange: (v) => this.#setPiece(() => put(v)) }).el;
+    }
+
+    /** The small ↺ in a section header: puts only that section back to its defaults. */
+    #sectionReset(run) {
+      return h("span", { class: "bk-reset", role: "button", tabindex: 0, title: "Restablecer esta sección",
+        onclick: (e) => { e.stopPropagation(); run(); },
+        onkeydown: (e) => { if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); run(); } } }, "↺");
+    }
+    #resetKeys(keys) {
+      const d = E.merge({});
+      for (const k of keys) this.o[k] = structuredClone(d[k]);
+      this.#save();
+      this.#rebuildPanel();
+      this.#schedule();
+    }
+
     #buildPanel() {
-      const relief = section({ id: "bk-relief", title: "Relieve" },
+      const def = Sh.SHAPES[this.piece.shape] ?? Sh.SHAPES.cube;
+
+      // Shape: which piece and its sizes.
+      const shapeSel = select({ label: "Forma", value: this.piece.shape,
+        options: Object.entries(Sh.SHAPES).map(([k, s]) => [k, s.label]),
+        onChange: (v) => { this.#resetPreview(); this.#setPiece((p) => { p.shape = v; }, true); } });
+      const params = [];
+      if (this.piece.shape === "layer") params.push(this.#pieceSlider("Altura", "layer", 1, 15, "Altura de la capa en dieciseisavos (4 = un cuarto)"));
+      if (this.piece.shape === "small") {
+        params.push(this.#pieceSlider("Ancho", "small", 2, 16), this.#pieceSlider("Alto", "smallHeight", 1, 16));
+      }
+      if (this.piece.shape === "pillar") params.push(this.#pieceSlider("Grosor", "pillar", 2, 16));
+      if (this.piece.shape === "panel") params.push(this.#pieceSlider("Grosor", "panel", 1, 8));
+      if (this.piece.shape === "custom") {
+        const area = h("textarea", { rows: 6, spellcheck: false }, this.piece.params.custom);
+        params.push(
+          h("p", { class: "note" }, "Cajas como en el ", h("b", null, "\"collision\""), " del tile: min/max en 0..1 (o en dieciseisavos), y hacia arriba, mirando al frente."),
+          area,
+          h("button", { onclick: () => {
+            try {
+              Sh.parseCustom(area.value);
+              this.#setPiece((p) => { p.params.custom = area.value; });
+            } catch (err) {
+              this.studio.toast(err.message, { kind: "warn" });
+            }
+          } }, "Aplicar cajas"));
+      }
+      const shape = section({ id: "bk-shape", title: "Forma",
+        extra: this.#sectionReset(() => {
+          this.piece = mergePiece();
+          this.o.texMode = E.DEFAULTS.texMode;
+          this.o.uvMode = E.DEFAULTS.uvMode;
+          this.#resetPreview();
+          this.#save(); this.#rebuildPanel(); this.#schedule();
+        }) },
+        shapeSel.el, ...params,
+        this.#choice("Texturas", "texMode", [["auto", "Auto"], ["follow", "Giran"], ["world", "Fijas"]]),
+        this.#choice("Ajuste", "uvMode", [["world", "Mundo"], ["fit", "Estirar"]]),
+        h("p", { class: "note" }, h("b", null, "Auto:"), " la textura gira con la pieza solo en «horizontal» (troncos tumbados). ",
+          h("b", null, "Mundo:"), " el lado de una losa muestra media textura, como Minecraft; ", h("b", null, "Estirar"), " la aplasta entera."));
+
+      // Variants: which sprites the art map gets.
+      const variantControls = [];
+      if (def.connects) {
+        variantControls.push(
+          h("p", { class: "note" }, "Poste y brazo por separado, para que el juego los combine según los vecinos."),
+          this.#pieceCheck("Brazo también hacia atrás", () => this.piece.back, (v) => { this.piece.back = v; }),
+          this.#pieceCheck("Las 16 uniones ya montadas", () => this.piece.combos, (v) => { this.piece.combos = v; }));
+      } else {
+        variantControls.push(h("div", { class: "bk-zones" }, def.states.map((st) =>
+          this.#pieceCheck(Sh.STATE_LABEL[st], () => this.piece.states[st] ?? st === "default", (v) => { this.piece.states[st] = v; },
+            { default: "", inverted: "Losa arriba / escalera boca abajo", vertical: "Losa de lado", horizontal: "Tumbado (tronco)" }[st]))));
+        variantControls.push(this.#pieceCheck("Generar también «back»", () => this.piece.back, (v) => { this.piece.back = v; },
+          "El juego dibuja las otras dos orientaciones espejando front y back"));
+      }
+      variantControls.push(select({ label: "Front mira a", value: this.piece.frontSide,
+        options: [["left", "Cara izquierda (−Y)"], ["right", "Cara derecha (+X)"]],
+        onChange: (v) => this.#setPiece((p) => { p.frontSide = v; }) }).el);
+      const variants = section({ id: "bk-variants", title: "Variantes" }, ...variantControls);
+
+      const relief = section({ id: "bk-relief", title: "Relieve", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.relief)) },
         this.#choice("Relieve", "relief", [["none", "Plano"], ["in", "Tallado"], ["out", "Saliente"]]),
         this.#choice("Altura de", "source", [["luma", "Brillo"], ["alpha", "Alfa"]]),
         this.#choice("Lectura", "sampling", [["min", "Mínimo"], ["avg", "Media"], ["max", "Máximo"]]),
-        this.#slider("Resolución", "res", 4, 64, 1, "Cubitos por lado del bloque. Más = relieve más fino."),
+        this.#slider("Resolución", "res", 4, 64, 1, "Cubitos por lado del bloque. Más = relieve más fino. Usa múltiplos de 16 para que las formas encajen exactas."),
         this.#slider("Profundidad", "depth", 1, 6, 1, "En cubitos"),
         this.#slider("Niveles", "steps", 1, 6, 1),
         this.#slider("Umbral", "threshold", 0, 0.95, 0.01),
@@ -148,8 +275,8 @@
         this.#check("Invertir", "invert"),
         h("div", { class: "bk-row3" }, this.#check("Arriba", "faces.top"), this.#check("Izq.", "faces.left"), this.#check("Der.", "faces.right")));
 
-      const edges = section({ id: "bk-edges", title: "Bordes" },
-        h("p", { class: "note" }, "Dónde puede salir el relieve fuera del bloque. Los lados verticales del sprite se quedan planos para no salirse."),
+      const edges = section({ id: "bk-edges", title: "Bordes", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.edges)) },
+        h("p", { class: "note" }, "Dónde puede salir el relieve fuera de la pieza. Los lados verticales del sprite se quedan planos para no salirse."),
         h("div", { class: "bk-zones" },
           this.#check("Arriba izq.", "edges.topLeft"), this.#check("Arriba der.", "edges.topRight"),
           this.#check("Abajo izq.", "edges.bottomLeft"), this.#check("Abajo der.", "edges.bottomRight")),
@@ -162,7 +289,25 @@
         h("div", { class: "row" }, this.#slider("Semilla", "seed", 1, 9999, 1),
           h("button", { onclick: () => { this.o.seed = 1 + Math.floor(Math.random() * 9999); this.#save(); this.#rebuildPanel(); this.#schedule(); } }, "Otra")));
 
-      const light = section({ id: "bk-light", title: "Luz" },
+      const hair = section({ id: "bk-hair", title: "Pelitos", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.hair)) },
+        this.#check("Pelitos en los bordes", "hair.enabled", "Hebras de 1 px: fibras de corteza, hierba, raíces"),
+        h("p", { class: "note" }, "Los bordes de atrás son las esquinas marcadas de arriba; nunca pasan de los lados del sprite."),
+        h("div", { class: "bk-zones" },
+          this.#check("Atrás izq.", "hair.edges.backLeft"), this.#check("Atrás der.", "hair.edges.backRight"),
+          this.#check("Delante arriba", "hair.edges.frontTop"), this.#check("Esquina", "hair.edges.corner"),
+          this.#check("Abajo izq.", "hair.edges.bottomLeft"), this.#check("Abajo der.", "hair.edges.bottomRight")),
+        this.#slider("Densidad", "hair.density", 0.05, 1.5, 0.01, "Hebras por pixel de borde"),
+        this.#slider("Largo", "hair.length", 1, 16, 0.5, "En pixeles del sprite"),
+        this.#slider("Variación", "hair.lengthVar", 0, 1, 0.01),
+        this.#slider("Hacia fuera", "hair.lean", 0, 1, 0.01, "0 = rectas (arriba o colgando), 1 = salen de la cara"),
+        this.#slider("Desorden", "hair.spread", 0, 1, 0.01),
+        this.#slider("Caída", "hair.droop", 0, 2, 0.01, "Se doblan hacia abajo en la punta"),
+        this.#slider("Grosor raíz", "hair.width", 1, 3, 1),
+        this.#slider("Punta", "hair.tipShade", -0.8, 0.8, 0.01, "Negativo = punta más oscura, positivo = más clara"),
+        h("div", { class: "row" }, this.#slider("Semilla", "hair.seed", 1, 9999, 1),
+          h("button", { onclick: () => { this.o.hair.seed = 1 + Math.floor(Math.random() * 9999); this.#save(); this.#rebuildPanel(); this.#schedule(); } }, "Otra")));
+
+      const light = section({ id: "bk-light", title: "Luz", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.light)) },
         this.#check("Luz por caras (como los materiales)", "shading"),
         this.#slider("Arriba", "shade.top", 0, 1.5, 0.01),
         this.#slider("Izquierda", "shade.left", 0, 1.5, 0.01),
@@ -173,7 +318,7 @@
         this.#slider("Escalones AO", "aoSteps", 0, 8, 1, "0 = suave; pocos escalones se leen mejor en pixel art"),
         this.#slider("Muestras AO", "aoSamples", 4, 64, 1));
 
-      const pixel = section({ id: "bk-pixel", title: "Pixel art" },
+      const pixel = section({ id: "bk-pixel", title: "Pixel art", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.pixel)) },
         this.#slider("Luz en aristas", "edgeLight", 0, 0.6, 0.01),
         this.#slider("Contorno", "outline", 0, 0.8, 0.01),
         this.#check("Quitar pixeles sueltos", "cleanup"),
@@ -183,32 +328,46 @@
         options: [["32", "32 px"], ["48", "48 px"], ["64", "64 px"], ["96", "96 px"], ["128", "128 px"]],
         onChange: (v) => this.#set("size", Number(v)) });
       this.targetSel = select({ label: "Hoja destino", value: "", options: [["", "— abre la carpeta —"]] });
-      this.targetCell = numberPair({ label: "Celda X / Y", values: [0, 0], min: 0, max: 4096 });
+      this.targetCell = numberPair({ label: "Celda X / Y", values: [0, 0], min: 0, max: 4096, titles: ["Columna", "Fila"] });
       this.saveN = checkbox({ label: "Guardar también el _n", value: true });
       this.scaleSel = select({ label: "Escala descarga", value: String(this.exportScale),
         options: [["1", "×1"], ["2", "×2"], ["4", "×4"], ["8", "×8"]],
         onChange: (v) => { this.exportScale = Number(v); this.#save(); } });
       this.mapChecks = MAPS.map(([k]) => checkbox({ label: { color: "Color", normal: "Normales", depth: "Profundidad", ao: "AO", gray: "Grises" }[k], value: k === "color" || k === "normal" }));
+      this.snippetEl = h("textarea", { class: "bk-snippet", rows: 5, readonly: true, spellcheck: false,
+        placeholder: "Aquí sale el \"art\" para el JSON del tile al guardar las variantes." });
       const output = section({ id: "bk-out", title: "Salida" },
         this.sizeSel.el,
         this.targetSel.el, this.targetCell.el, this.saveN.el,
-        h("button", { class: "primary", onclick: () => this.#saveToAtlas() }, "Guardar en el atlas"),
+        h("button", { class: "primary", onclick: () => this.#saveVariantsToAtlas(),
+          title: "Una celda por variante, seguidas desde la celda X / Y" }, "Guardar variantes en el atlas"),
+        h("button", { onclick: () => this.#saveToAtlas(), title: "Solo la vista previa, en la celda X / Y" }, "Guardar solo la vista previa"),
+        this.snippetEl,
+        h("button", { onclick: () => this.#copySnippet() }, "Copiar \"art\""),
         h("div", { class: "bk-sep" }),
         h("div", { class: "bk-maps" }, this.mapChecks.map((c) => c.el)),
         this.scaleSel.el,
-        h("button", { onclick: () => this.#download() }, "Descargar PNG"));
+        h("button", { onclick: () => this.#download() }, "Descargar vista previa"),
+        h("button", { onclick: () => this.#downloadVariants() }, "Descargar tira de variantes"));
 
-      this.panelScroll = h("div", { class: "scroll" }, relief.el, edges.el, light.el, pixel.el, output.el);
+      this.panelScroll = h("div", { class: "scroll" }, shape.el, variants.el, relief.el, edges.el, hair.el, light.el, pixel.el, output.el);
       this.panel = h("div", { class: "bk-panel" },
         h("div", { class: "bk-panel-head" }, h("span", null, "Ajustes"),
-          h("button", { title: "Volver a los valores por defecto", onclick: () => { this.o = E.merge({}); this.#save(); this.#rebuildPanel(); this.#schedule(); } }, "Restablecer")),
+          h("button", { title: "Volver todo a los valores por defecto", onclick: () => {
+            this.o = E.merge({});
+            this.piece = mergePiece();
+            this.#resetPreview();
+            this.#save(); this.#rebuildPanel(); this.#schedule();
+          } }, "Restablecer todo")),
         this.panelScroll);
       return this.panel;
     }
 
     #rebuildPanel() {
+      const top = this.panelScroll?.scrollTop ?? 0;
       const fresh = this.#buildPanel();
       this.root.replaceChild(fresh, this.root.children[2]);
+      this.panelScroll.scrollTop = top;
       this.#fillTargets();
     }
 
@@ -359,7 +518,7 @@
 
     #schedule() {
       const ticket = ++this.#pending;
-      setTimeout(() => { if (ticket === this.#pending) this.#render(); }, 30);
+      setTimeout(() => { if (ticket === this.#pending) this.#render(true); }, 30);
     }
 
     #textures() {
@@ -373,19 +532,85 @@
       return tex;
     }
 
-    #render() {
+    /** The variants of the current shape, with the game's front pointed at the chosen camera face. */
+    #variants() {
+      try {
+        const list = Sh.variants(this.piece);
+        if (this.piece.frontSide === "right") {
+          const turn = { front: "right", back: "left", right: "back", left: "front" };
+          for (const v of list) v.facing = turn[v.facing];
+        }
+        return list;
+      } catch (err) {
+        this.studio.setStatus(err.message, "warn");
+        return [];
+      }
+    }
+
+    /** Back to the first variant, seen the way it will be saved. */
+    #resetPreview() {
+      this.previewId = null;
+      this.previewFacing = "auto";
+      this.facingSeg?.set("auto");
+    }
+
+    #previewPiece() {
+      const v = this.variantList.find((x) => x.id === this.previewId) ?? this.variantList[0];
+      if (!v) return null;
+      this.previewId = v.id;
+      return { ...v, facing: this.previewFacing === "auto" ? v.facing : this.previewFacing };
+    }
+
+    /** Renders the preview now; with all = true also refreshes every variant's thumbnail, a few per frame. */
+    #render(all) {
       const tex = this.#textures();
-      if (!tex) { this.result = null; this.#drawPreview(); return; }
+      this.variantList = this.#variants();
+      const piece = tex && this.#previewPiece();
+      if (!piece) { this.result = null; this.#drawPreview(); this.#drawStrip(); this.#drawVariantStrip(); return; }
       const t0 = performance.now();
       try {
-        this.result = E.render(this.o, tex);
+        this.result = E.render(this.o, tex, piece);
       } catch (err) {
-        this.studio.toast("No pude generar el bloque.", { kind: "bad", detail: err.message });
+        this.studio.toast("No pude generar la pieza.", { kind: "bad", detail: err.message });
         return;
       }
       this.studio.slot?.("bk-time", Math.round(performance.now() - t0) + " ms", "Tiempo de generación");
+      this.previewLabel.textContent = `${piece.label} · ${Sh.FACING_LABEL[piece.facing]}`;
       this.#drawPreview();
       this.#drawStrip();
+      if (all) this.#renderVariants(tex);
+      else this.#drawVariantStrip();
+    }
+
+    #renderVariants(tex) {
+      const ticket = this.#pending;
+      this.variantResults = new Map();
+      this.#drawVariantStrip();
+      const list = this.variantList;
+      let n = 0;
+      // One variant per tick, so dragging a slider never waits for the whole set.
+      const next = () => {
+        if (ticket !== this.#pending || n >= list.length) return;
+        const v = list[n++];
+        try {
+          this.variantResults.set(v.id, E.render(this.o, tex, v));
+        } catch {
+          return;
+        }
+        this.#drawVariantThumb(v);
+        setTimeout(next, 0);
+      };
+      setTimeout(next, 0);
+    }
+
+    /** Every variant, rendering whatever the background pass has not reached yet. */
+    #allVariantResults() {
+      const tex = this.#textures();
+      if (!tex) return [];
+      return this.variantList.map((v) => {
+        if (!this.variantResults.has(v.id)) this.variantResults.set(v.id, E.render(this.o, tex, v));
+        return { variant: v, result: this.variantResults.get(v.id) };
+      });
     }
 
     #imageCanvas(rgba, size) {
@@ -423,7 +648,7 @@
         ctx.strokeStyle = "rgba(255,255,255,.35)";
         ctx.lineWidth = 1;
         ctx.strokeRect(ox - 0.5, oy - 0.5, S * zoom + 1, S * zoom + 1);
-        // The plain block's outline: what sticks out of it is relief or lip.
+        // The full block's outline: what sticks out of it is relief, lip or hair.
         const q = S * zoom / 4;
         ctx.beginPath();
         ctx.moveTo(ox + S * zoom / 2, oy);
@@ -436,7 +661,7 @@
     }
 
     #drawStrip() {
-      if (!this.result) return;
+      if (!this.result) { this.strip.replaceChildren(); return; }
       const S = this.result.size;
       this.strip.replaceChildren(...VIEWS.map(([k, t]) => {
         const c = h("canvas", { width: S, height: S, title: t, class: k === this.view ? "on" : "",
@@ -444,6 +669,28 @@
         c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(this.result[k]), S, S), 0, 0);
         return h("div", { class: "bk-thumb" }, c, h("span", null, t));
       }));
+    }
+
+    #drawVariantStrip() {
+      this.variantThumbs = new Map();
+      if (!this.result) { this.varStrip.replaceChildren(); return; }
+      const S = this.result.size;
+      this.varStrip.replaceChildren(h("div", { class: "bk-strip-title" }, `Variantes (${this.variantList.length})`),
+        ...this.variantList.map((v) => {
+          const c = h("canvas", { width: S, height: S, title: v.label, class: v.id === this.previewId ? "on" : "",
+            onclick: () => { this.previewId = v.id; this.previewFacing = "auto"; this.facingSeg.set("auto"); this.#render(false); } });
+          this.variantThumbs.set(v.id, c);
+          return h("div", { class: "bk-thumb" }, c, h("span", null, v.label));
+        }));
+      for (const v of this.variantList) if (this.variantResults.has(v.id)) this.#drawVariantThumb(v);
+    }
+
+    #drawVariantThumb(v) {
+      const c = this.variantThumbs?.get(v.id);
+      const r = this.variantResults.get(v.id);
+      if (!c || !r) return;
+      if (c.width !== r.size) { c.width = c.height = r.size; }
+      c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(r[this.view]), r.size, r.size), 0, 0);
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -459,7 +706,7 @@
 
     #baseName() {
       const top = this.slots.top.key ? this.images.get(this.slots.top.key) : null;
-      return (top?.name ?? "bloque") + `_${this.slots.top.cx}_${this.slots.top.cy}`;
+      return (top?.name ?? "bloque") + `_${this.piece.shape}_${this.slots.top.cx}_${this.slots.top.cy}`;
     }
 
     async #download() {
@@ -470,33 +717,96 @@
         if (!this.mapChecks[i].get()) continue;
         const [key, suffix] = MAPS[i];
         const rgba = k > 1 ? E.upscale(this.result[key], S, k) : this.result[key];
-        downloadBlob(await encodePng(S * k, S * k, new Uint8ClampedArray(rgba)), `${this.#baseName()}${suffix}${k > 1 ? "@" + k + "x" : ""}.png`);
+        downloadBlob(await encodePng(S * k, S * k, new Uint8ClampedArray(rgba)), `${this.#baseName()}_${this.previewId}${suffix}${k > 1 ? "@" + k + "x" : ""}.png`);
         n++;
       }
       this.studio.setStatus(n ? `Descargados ${n} PNG.` : "Marca qué mapas descargar.", n ? "ok" : "warn");
     }
 
-    /** Pastes the sprite into a cell of the target sheet (and the normals into its _n), keeping a backup to restore. */
-    async #saveToAtlas() {
-      if (!this.result) return;
+    /** One PNG per checked map, the variants side by side in save order. */
+    async #downloadVariants() {
+      const all = this.#allVariantResults();
+      if (!all.length) return;
+      const S = all[0].result.size, k = this.exportScale, W = S * k * all.length, H = S * k;
+      let n = 0;
+      for (let m = 0; m < MAPS.length; m++) {
+        if (!this.mapChecks[m].get()) continue;
+        const [key, suffix] = MAPS[m];
+        const out = new Uint8ClampedArray(W * H * 4);
+        all.forEach(({ result }, i) => {
+          const src = k > 1 ? E.upscale(result[key], S, k) : result[key];
+          for (let y = 0; y < H; y++) out.set(src.subarray(y * S * k * 4, (y + 1) * S * k * 4), (y * W + i * S * k) * 4);
+        });
+        downloadBlob(await encodePng(W, H, out), `${this.#baseName()}_variantes${suffix}${k > 1 ? "@" + k + "x" : ""}.png`);
+        n++;
+      }
+      this.studio.setStatus(n ? `Descargadas ${n} tiras con ${all.length} variantes: ${all.map((a) => a.variant.id).join(", ")}.` : "Marca qué mapas descargar.", n ? "ok" : "warn");
+    }
+
+    #targetSheet() {
       const sheet = this.sheets.find((s) => s.key === this.targetSel.get());
       if (!this.project || !sheet) {
         this.studio.toast("Abre la carpeta del proyecto y elige la hoja destino.", { kind: "warn" });
-        return;
+        return null;
       }
+      return sheet;
+    }
+
+    async #saveToAtlas() {
+      if (!this.result) return;
+      const sheet = this.#targetSheet();
+      if (!sheet) return;
       try {
-        await this.studio.busy(this.#writeCell(sheet));
+        await this.studio.busy(this.#writeCells(sheet, [{ cell: this.targetCell.get(), result: this.result }]));
       } catch (err) {
         this.studio.toast("No pude guardar.", { kind: "bad", detail: err.message });
       }
     }
 
-    async #writeCell(sheet) {
-      const S = this.result.size;
-      const [cx, cy] = this.targetCell.get();
-      const sheetImg = await decodePng(await sheet.entry.handle.getFile());
-      if ((cx + 1) * S > sheetImg.w || (cy + 1) * S > sheetImg.h) {
-        throw new Error(`La celda [${cx}, ${cy}] de ${S} px no cabe en la hoja (${sheetImg.w}×${sheetImg.h}).`);
+    /** Every variant in its own cell, row by row from the chosen cell, then the tile's "art" map for them. */
+    async #saveVariantsToAtlas() {
+      if (!this.result) return;
+      const sheet = this.#targetSheet();
+      if (!sheet) return;
+      try {
+        await this.studio.busy((async () => {
+          const all = this.#allVariantResults();
+          const S = all[0].result.size;
+          const sheetImg = await decodePng(await sheet.entry.handle.getFile());
+          const cols = Math.floor(sheetImg.w / S);
+          const [cx, cy] = this.targetCell.get();
+          const items = all.map(({ variant, result }, i) => {
+            const flat = cy * cols + cx + i;
+            return { variant, result, cell: [flat % cols, Math.floor(flat / cols)] };
+          });
+          await this.#writeCells(sheet, items, sheetImg);
+          this.snippetEl.value = Sh.artSnippet(this.piece.shape, items);
+          this.#copySnippet(true);
+        })());
+      } catch (err) {
+        this.studio.toast("No pude guardar.", { kind: "bad", detail: err.message });
+      }
+    }
+
+    async #copySnippet(quiet = false) {
+      if (!this.snippetEl.value) { if (!quiet) this.studio.toast("Guarda las variantes primero.", { kind: "warn" }); return; }
+      try {
+        await navigator.clipboard.writeText(this.snippetEl.value);
+        if (!quiet) this.studio.toast("\"art\" copiado.", { kind: "ok" });
+      } catch {
+        // Clipboard needs a focused, permitted page; the text stays selectable in the box.
+        this.snippetEl.select();
+      }
+    }
+
+    /** Pastes results into cells of the sheet (and the normals into its _n), keeping a backup to restore. */
+    async #writeCells(sheet, items, sheetImg = null) {
+      const S = items[0].result.size;
+      sheetImg ??= await decodePng(await sheet.entry.handle.getFile());
+      for (const { cell: [cx, cy] } of items) {
+        if ((cx + 1) * S > sheetImg.w || (cy + 1) * S > sheetImg.h) {
+          throw new Error(`La celda [${cx}, ${cy}] de ${S} px no cabe en la hoja (${sheetImg.w}×${sheetImg.h}). Agranda la hoja o elige otra celda.`);
+        }
       }
       const dir = sheet.entry.dir, folder = dirName(sheet.path);
       const backups = [];
@@ -507,13 +817,13 @@
         const handle = await writeInDir(dir, name, await encodePng(w, hgt, rgba));
         this.project.addFile(path, handle, dir);
       };
-      const paste = (target, tw, src) => {
+      const paste = (target, tw, src, cx, cy) => {
         for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
           const si = (y * S + x) * 4, di = ((cy * S + y) * tw + cx * S + x) * 4;
           for (let c = 0; c < 4; c++) target[di + c] = src[si + c];
         }
       };
-      paste(sheetImg.rgba, sheetImg.w, this.result.color);
+      for (const { cell: [cx, cy], result } of items) paste(sheetImg.rgba, sheetImg.w, result.color, cx, cy);
       await write(sheet.name, sheetImg.w, sheetImg.h, sheetImg.rgba);
       const written = [sheet.name];
       if (this.saveN.get()) {
@@ -523,7 +833,7 @@
         if (!nImg || nImg.w !== sheetImg.w || nImg.h !== sheetImg.h) {
           nImg = { w: sheetImg.w, h: sheetImg.h, rgba: new Uint8ClampedArray(sheetImg.w * sheetImg.h * 4) };
         }
-        paste(nImg.rgba, nImg.w, this.result.normal);
+        for (const { cell: [cx, cy], result } of items) paste(nImg.rgba, nImg.w, result.normal, cx, cy);
         const nName = stripExt(sheet.name) + "_n.png";
         await write(nName, nImg.w, nImg.h, nImg.rgba);
         written.push(nName);
@@ -531,9 +841,10 @@
       refreshCompanions(this.project, sheet);
       this.images.delete(sheet.key);
       if (this.pickerKey === sheet.key) await this.#selectSource(sheet.key, sheet);
-      this.studio.setStatus(`Guardado en [${cx}, ${cy}]: ${written.join(", ")}.`, "ok");
+      const where = items.length === 1 ? `[${items[0].cell.join(", ")}]` : `${items.length} celdas desde [${items[0].cell.join(", ")}]`;
+      this.studio.setStatus(`Guardado en ${where}: ${written.join(", ")}.`, "ok");
       this.studio.toast("Guardado " + written.join(", "), {
-        kind: "ok", detail: `Celda [${cx}, ${cy}] de ${sheet.id}`,
+        kind: "ok", detail: `${where} de ${sheet.id}`,
         action: { label: "Restaurar anterior", run: () => this.#restore(dir, backups) },
       });
     }

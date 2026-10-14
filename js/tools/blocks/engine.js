@@ -1,9 +1,12 @@
 "use strict";
 
-// Block generator engine: builds a block out of voxels from the textures of its faces and renders it with the game's
-// camera into a sprite, with its normal map, depth, ambient occlusion and a grayscale pass. No DOM, no canvas: plain
-// arrays in, plain arrays out, so the same code runs in the page, in a worker or under Node for tests.
+// Block generator engine: builds a piece (cube, slab, stair, fence…) out of voxels from the textures of its faces and
+// renders it with the game's camera into a sprite, with its normal map, depth, ambient occlusion and a grayscale pass.
+// No DOM, no canvas: plain arrays in, plain arrays out, so the same code runs in the page, in a worker or under Node.
+// Needs shapes.js (Aura.blockShapes); hair.js (Aura.blockHair) is optional and draws the fringe strands.
 (function (Aura) {
+  const Shapes = Aura.blockShapes;
+
   // ── Camera ───────────────────────────────────────────────────────────────────────────────────────────────────────
   // Blender camera rotation (60°, 0°, 45°), orthographic. These are its right / up / forward axes in world space; the
   // normal map stores a normal as (n·right, n·up, n·back), which is what NormalMapLoader decodes (top = #80EEBF…).
@@ -15,17 +18,22 @@
   // √(2/3): the block height that makes a 1 × 1 block fill a square sprite (32 px diamond over 32 px sides at 64).
   const BLOCK_HEIGHT = 0.8164966;
 
-  // Faces the camera can see, by the outward normal of the voxel side that was hit. The block's -X, +Y and bottom sides
-  // never face this camera.
+  // The faces the camera can see. A voxel side pointing -X, +Y or down never faces this camera.
   const FACE = { TOP: 1, LEFT: 2, RIGHT: 3 };
 
   // #80EEBF, #2553CE, #DA53CE — see NormalMapLoader.FaceTop / FaceLeft / FaceRight in the game.
   const FACE_NORMAL_RGB = { 1: [128, 238, 191], 2: [37, 83, 206], 3: [218, 83, 206] };
 
+  // World direction indices (Shapes.DIRS): 0 +X, 1 -X, 2 +Y, 3 -Y, 4 +Z (up), 5 -Z.
+  const DIRS = Shapes.DIRS;
+  const W_RIGHT = 0, W_LEFT = 3, W_UP = 4;
+  const VISIBLE_DIRS = [W_UP, W_LEFT, W_RIGHT];
+  const DIR_FACE = { [W_UP]: FACE.TOP, [W_LEFT]: FACE.LEFT, [W_RIGHT]: FACE.RIGHT };
+
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 
-  /** Small deterministic random generator (mulberry32), so a seed always gives the same chips and lips. */
+  /** Small deterministic random generator (mulberry32), so a seed always gives the same chips, lips and hairs. */
   function rng(seed) {
     let a = (seed >>> 0) || 1;
     return () => {
@@ -40,8 +48,8 @@
 
   /**
    * One face's picture: a rectangle of an RGBA image (an atlas cell or a whole loose texture), plus how it is laid on
-   * the face. sample(u, v) takes face coordinates 0..1 (u to the right as seen from outside, v up) and returns the
-   * texel's index into rgba, after the face's rotation (0/90/180/270) and mirror.
+   * the face. Face coordinates are 0..1 (u to the right as seen from outside, v up), after the face's rotation
+   * (0/90/180/270) and mirror.
    */
   function faceTexture(img, rect, rotate = 0, flip = false) {
     const { x, y, w, h } = rect;
@@ -85,26 +93,59 @@
     };
   }
 
+  /**
+   * Which texture and where on it, for a point of the piece seen through one of its faces. lp: point in the texture
+   * frame (unit cube), ld: that face's direction in the same frame. Caps (up / down) take the top texture, the front
+   * and back take the left one, the two sides the right one; on the sides v always runs up the piece, so a slab's side
+   * shows the lower half of the side texture, like Minecraft.
+   */
+  function localUV(lp, ld) {
+    switch (ld) {
+      case 2: return ["top", lp[0], lp[2]];
+      case 3: return ["top", lp[0], 1 - lp[2]];
+      case 5: return ["left", lp[0], lp[1]];
+      case 4: return ["left", 1 - lp[0], lp[1]];
+      case 0: return ["right", lp[2], lp[1]];
+      default: return ["right", 1 - lp[2], lp[1]];
+    }
+  }
+
   // ── Defaults ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
+  const HAIR_DEFAULTS = {
+    enabled: false,
+    edges: { backLeft: true, backRight: true, frontTop: true, corner: false, bottomLeft: true, bottomRight: true },
+    density: 0.35,              // strands per sprite pixel of edge
+    length: 4,                  // sprite pixels
+    lengthVar: 0.6,             // 0 = all the same, 1 = from nothing to full length
+    lean: 0.35,                 // 0 = straight up (or down at the bottom), 1 = straight out of the face
+    spread: 0.35,               // random turn of each strand
+    droop: 0,                   // strands bend down toward the tip
+    width: 1,                   // pixels at the root (tapers to 1)
+    tipShade: -0.25,            // tip darker (< 0) or lighter (> 0)
+    seed: 3,
+  };
+
   const DEFAULTS = {
-    size: 64,                   // sprite width and height, px; the block always fills it
-    res: 32,                    // relief voxels per block edge
+    size: 64,                   // sprite width and height, px; a full block always fills it
+    res: 32,                    // voxels per block edge
     blockHeight: BLOCK_HEIGHT,
-    relief: "out",              // "out": bright texels rise off the block; "in": dark texels are carved in; "none"
+    relief: "out",              // "out": bright texels rise off the piece; "in": dark texels are carved in; "none"
     source: "luma",             // height from "luma" (brightness) or "alpha"
     invert: false,
-    autoContrast: true,
-    sampling: "min",            // how a voxel column reads the texels under it: "min", "avg" or "max"         // stretch each face's darkest..brightest texel to 0..1 before thresholding
+    autoContrast: true,         // stretch each face's darkest..brightest texel to 0..1 before thresholding
+    sampling: "min",            // how a voxel column reads the texels under it: "min", "avg" or "max"
     threshold: 0,
     steps: 2,                   // height levels: few levels read as clean pixel-art steps
     depth: 1,                   // relief depth in voxels
-    faces: { top: true, left: true, right: true },     // which faces get relief
+    faces: { top: true, left: true, right: true },     // which textures get relief
     edges: { topLeft: true, topRight: true, bottomLeft: true, bottomRight: true, sides: false },
     edgeFalloff: 2,             // voxels over which relief fades out toward an edge that must stay flat
-    autoFit: true,              // lower bumps that would leave the sprite
-    chips: 0,                   // 0..1 chance that a voxel on a block edge is chipped away
-    lip: 0,                     // longest overhang hanging from the top edge, in voxels (0 = none)
+    autoFit: true,              // shorten bumps and hairs that would leave the sprite
+    texMode: "auto",            // "follow": textures turn with the piece; "world": top texture always on top; "auto"
+    uvMode: "world",            // "world": a slab shows half the side texture; "fit": the texture is squeezed onto it
+    chips: 0,                   // 0..1 chance that a voxel on an edge of the piece is chipped away
+    lip: 0,                     // longest overhang hanging from a top edge, in voxels (0 = none)
     lipChance: 0.6,
     seed: 1,
     shading: true,              // bake the face light like the Blender materials
@@ -115,185 +156,232 @@
     aoSamples: 16,
     aoSteps: 4,                 // AO quantized to this many levels (0 = smooth): pixel art reads cleaner in steps
     grayFromTexture: false,     // grayscale pass keeps the texture's own brightness
-    edgeLight: 0.12,            // brighten the top face's rim
+    edgeLight: 0.12,            // brighten the top faces' rim
     outline: 0,                 // darken the silhouette's inner edge pixels by this much
     cleanup: true,              // replace lone pixels surrounded by one colour
+    hair: HAIR_DEFAULTS,
   };
 
-  function merge(opts) {
+  function merge(opts = {}) {
     const o = { ...DEFAULTS, ...opts };
     o.faces = { ...DEFAULTS.faces, ...(opts.faces || {}) };
     o.edges = { ...DEFAULTS.edges, ...(opts.edges || {}) };
     o.shade = { ...DEFAULTS.shade, ...(opts.shade || {}) };
+    o.hair = { ...HAIR_DEFAULTS, ...(opts.hair || {}) };
+    o.hair.edges = { ...HAIR_DEFAULTS.edges, ...(opts.hair?.edges || {}) };
     return o;
   }
+
+  const CUBE = { boxes: [{ min: [0, 0, 0], max: [1, 1, 1] }], state: "default", facing: "front" };
 
   // ── Voxels ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
   /**
-   * The block as a voxel grid. Core voxels are i, j, k in 0..res-1 (x, y, z); relief that rises out of the block
-   * (and lips) lives outside the core on the visible sides only: k ≥ res (top), j < 0 (left face, -Y), i ≥ res (right
-   * face, +X). Each solid voxel stores the face whose texture colours it.
+   * The piece as a voxel grid. Cell voxels are i, j, k in 0..res-1 (x, y, z, z up); relief that rises out of the piece
+   * and lips can spill past the cell by a few voxels on every side. Each solid voxel stores 0 (coloured by whatever
+   * face of it is seen) or 1 + the world direction of the surface whose texture colours it.
    */
-  function buildVoxels(o, tex) {
+  function buildVoxels(o, tex, piece) {
     const R = o.res;
     const D = o.relief === "none" ? 0 : Math.max(1, Math.round(o.depth));
     const out = o.relief === "out";
     const pad = (out ? D : 0) + (o.lip > 0 ? 1 : 0);
-    const iLo = 0, iHi = R + pad;           // +X side grows (right face)
-    const jLo = -pad, jHi = R;              // -Y side grows (left face)
-    const kLo = 0, kHi = R + (out ? D : 0); // top grows
+    const iLo = -pad, iHi = R + pad, jLo = -pad, jHi = R + pad, kLo = 0, kHi = R + pad;
     const nx = iHi - iLo, ny = jHi - jLo, nz = kHi - kLo;
     const grid = new Uint8Array(nx * ny * nz);
     const idx = (i, j, k) => ((k - kLo) * ny + (j - jLo)) * nx + (i - iLo);
     const inside = (i, j, k) => i >= iLo && i < iHi && j >= jLo && j < jHi && k >= kLo && k < kHi;
+    const vx = 1 / R, vz = o.blockHeight / R;
 
-    // Relief levels per face column, 0..D, with the flat-edge masks and the fit inside the sprite applied.
-    const levels = {};
-    const faceDefs = {
-      top: { tex: tex.top, uv: (a, b) => [(a + 0.5) / R, (b + 0.5) / R] },      // a = i, b = j
-      left: { tex: tex.left, uv: (a, b) => [(a + 0.5) / R, (b + 0.5) / R] },    // a = i, b = k
-      right: { tex: tex.right, uv: (a, b) => [(a + 0.5) / R, (b + 0.5) / R] },  // a = j, b = k
+    const follow = o.texMode === "follow" || (o.texMode === "auto" && piece.state === "horizontal");
+    const tf = Shapes.transform(piece.state, piece.facing, follow);
+    const worldBoxes = Shapes.boxesToWorld(piece.boxes, tf);
+
+    // The piece itself, before any relief.
+    const base = new Uint8Array(R * R * R);
+    const bIdx = (i, j, k) => (k * R + j) * R + i;
+    const inCell = (i, j, k) => i >= 0 && i < R && j >= 0 && j < R && k >= 0 && k < R;
+    for (const b of worldBoxes) {
+      const lo = b.min.map((v) => Math.round(v * R)), hi = b.max.map((v) => Math.round(v * R));
+      for (let k = lo[2]; k < hi[2]; k++) for (let j = lo[1]; j < hi[1]; j++) for (let i = lo[0]; i < hi[0]; i++) {
+        if (inCell(i, j, k)) base[bIdx(i, j, k)] = 1;
+      }
+    }
+    const isBase = (i, j, k) => inCell(i, j, k) && base[bIdx(i, j, k)] === 1;
+
+    // Texture frame bounds, for squeezing the textures onto the piece ("fit").
+    let fitLo = [0, 0, 0], fitHi = [1, 1, 1];
+    if (o.uvMode === "fit") {
+      fitLo = [1, 1, 1]; fitHi = [0, 0, 0];
+      for (const b of worldBoxes) {
+        for (const p of [b.min, b.max]) {
+          const l = tf.texLocal(p);
+          for (let a = 0; a < 3; a++) { fitLo[a] = Math.min(fitLo[a], l[a]); fitHi[a] = Math.max(fitHi[a], l[a]); }
+        }
+      }
+    }
+    /** World unit point + world direction of the surface → [texture name, u, v]. */
+    const uvAt = (up, wd) => {
+      let lp = tf.texLocal(up);
+      if (o.uvMode === "fit") lp = lp.map((v, a) => (v - fitLo[a]) / Math.max(1e-6, fitHi[a] - fitLo[a]));
+      const [name, u, v] = localUV(lp, tf.texDir(wd));
+      return [name, clamp01(u), clamp01(v)];
     };
+
+    // Relief levels per texture, 0..D, on an R × R grid of each texture.
+    const levels = {};
     const lvlSteps = Math.max(1, o.steps);
-    const fall = Math.max(0, o.edgeFalloff);
-    const edgeMask = (d) => (fall <= 0 ? (d <= 0 ? 0 : 1) : clamp01(d / fall));
     for (const name of ["top", "left", "right"]) {
       const L = new Uint8Array(R * R);
-      const f = faceDefs[name];
-      // Raw heights first, so auto contrast can stretch this face's own range: a texture drawn in a narrow band of
+      levels[name] = L;
+      if (!o.faces[name] || D === 0) { L.fill(out ? 0 : D); continue; }
+      // Raw heights first, so auto contrast can stretch this texture's own range: a texture drawn in a narrow band of
       // values (a mid-grey stone) still gets its full relief.
       const raw = new Float32Array(R * R);
       let lo = Infinity, hi = -Infinity;
       for (let a = 0; a < R; a++) for (let b = 0; b < R; b++) {
-        const v = f.tex.height(a / R, b / R, (a + 1) / R, (b + 1) / R, o.source, o.invert, o.sampling);
+        const v = tex[name].height(a / R, b / R, (a + 1) / R, (b + 1) / R, o.source, o.invert, o.sampling);
         raw[b * R + a] = v;
         lo = Math.min(lo, v); hi = Math.max(hi, v);
       }
       const span = hi - lo;
-      for (let a = 0; a < R; a++) {
-        for (let b = 0; b < R; b++) {
-          if (!o.faces[name] || D === 0) { L[b * R + a] = out ? 0 : D; continue; }
-          let hgt = raw[b * R + a];
-          if (o.autoContrast && span > 1e-3) hgt = (hgt - lo) / span;
-          hgt = clamp01((hgt - o.threshold) / Math.max(1e-4, 1 - o.threshold));
-          hgt = hgt > 0 ? Math.ceil(hgt * lvlSteps - 1e-6) / lvlSteps : 0;
-          // Edges that must stay flat fade the relief out. The block's outer vertical edges always do: past them a
-          // bump would leave the sprite sideways.
-          let m = 1;
-          if (name === "top") {
-            if (!o.edges.topLeft) m = Math.min(m, edgeMask(a));           // -X edge: upper-left side of the diamond
-            if (!o.edges.topRight) m = Math.min(m, edgeMask(R - 1 - b));  // +Y edge: upper-right side
-          } else if (name === "left") {
-            if (!o.edges.sides) m = Math.min(m, edgeMask(a));             // x = -0.5: left silhouette
-            if (!o.edges.bottomLeft) m = Math.min(m, edgeMask(b));
-          } else {
-            if (!o.edges.sides) m = Math.min(m, edgeMask(R - 1 - a));     // y = +0.5: right silhouette
-            if (!o.edges.bottomRight) m = Math.min(m, edgeMask(b));
-          }
-          // In: the mask keeps the edge uncarved. Out: it keeps the edge from rising.
-          const lv = Math.round(hgt * D);
-          L[b * R + a] = out ? Math.round(lv * m) : Math.round(D - (D - lv) * m);
-        }
-      }
-      levels[name] = L;
-    }
-
-    const vx = 1 / R, vz = o.blockHeight / R;
-    if (out && o.autoFit) fitInSprite(o, levels, R, vx, vz);
-
-    // Core: every voxel, minus what IN carves. The owner is the visible face the voxel is closest to (top wins ties, so a
-    // block's rim shows the top's pixels like a hand-drawn tile).
-    for (let k = 0; k < R; k++) {
-      for (let j = 0; j < R; j++) {
-        for (let i = 0; i < R; i++) {
-          const dTop = R - 1 - k, dLeft = j, dRight = R - 1 - i;
-          if (!out && D > 0) {
-            if (dTop < D - levels.top[j * R + i]) continue;
-            if (dLeft < D - levels.left[k * R + i]) continue;
-            if (dRight < D - levels.right[k * R + j]) continue;
-          }
-          let owner = FACE.TOP, best = dTop;
-          if (dLeft < best) { owner = FACE.LEFT; best = dLeft; }
-          if (dRight < best) { owner = FACE.RIGHT; best = dRight; }
-          grid[idx(i, j, k)] = owner;
-        }
-      }
-    }
-    // Out: columns rising off each visible face.
-    if (out) {
-      for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
-        for (let s = 1; s <= levels.top[j * R + i]; s++) grid[idx(i, j, R - 1 + s)] = FACE.TOP;
-      }
-      for (let k = 0; k < R; k++) for (let i = 0; i < R; i++) {
-        for (let s = 1; s <= levels.left[k * R + i]; s++) grid[idx(i, -s, k)] = FACE.LEFT;
-      }
-      for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) {
-        for (let s = 1; s <= levels.right[k * R + j]; s++) grid[idx(R - 1 + s, j, k)] = FACE.RIGHT;
+      for (let n = 0; n < R * R; n++) {
+        let hgt = raw[n];
+        if (o.autoContrast && span > 1e-3) hgt = (hgt - lo) / span;
+        hgt = clamp01((hgt - o.threshold) / Math.max(1e-4, 1 - o.threshold));
+        hgt = hgt > 0 ? Math.ceil(hgt * lvlSteps - 1e-6) / lvlSteps : 0;
+        L[n] = Math.round(hgt * D);
       }
     }
 
-    const random = rng(o.seed);
-    // Chipped edges: voxels that sit on two of the block's sides at once are knocked off now and then, two deep at the
-    // corners, like worn stone.
-    if (o.chips > 0) {
+    // Edges that must stay flat fade the relief out: the four corner zones of the sprite are measured from the cell's
+    // borders, and the cell's outer vertical edges always stay flat unless "sides" is on (past them a bump would leave
+    // the sprite sideways).
+    const fall = Math.max(0, o.edgeFalloff);
+    const edgeMask = (d) => (fall <= 0 ? (d <= 0 ? 0 : 1) : clamp01(d / fall));
+    const zoneMask = (wd, i, j, k) => {
+      let m = 1;
+      if (wd === W_UP) {
+        if (!o.edges.topLeft) m = Math.min(m, edgeMask(i));
+        if (!o.edges.topRight) m = Math.min(m, edgeMask(R - 1 - j));
+      } else if (wd === W_LEFT) {
+        if (!o.edges.sides) m = Math.min(m, edgeMask(i));
+        if (!o.edges.bottomLeft) m = Math.min(m, edgeMask(k));
+      } else {
+        if (!o.edges.sides) m = Math.min(m, edgeMask(R - 1 - j));
+        if (!o.edges.bottomRight) m = Math.min(m, edgeMask(k));
+      }
+      return m;
+    };
+    const centre = (i, j, k) => [(i + 0.5) / R, (j + 0.5) / R, (k + 0.5) / R];
+    /** Relief level of the surface voxel (i, j, k) seen from world direction wd. */
+    const levelAt = (wd, i, j, k) => {
+      const d = DIRS[wd];
+      const c = centre(i, j, k);
+      const up = [c[0] + d[0] * 0.5 / R, c[1] + d[1] * 0.5 / R, c[2] + d[2] * 0.5 / R];
+      const [name, u, v] = uvAt(up, wd);
+      const a = Math.min(R - 1, Math.floor(u * R)), b = Math.min(R - 1, Math.floor(v * R));
+      const lv = levels[name][b * R + a];
+      const m = zoneMask(wd, i, j, k);
+      // In: the mask keeps the edge uncarved. Out: it keeps the edge from rising.
+      return out ? Math.round(lv * m) : Math.round(D - (D - lv) * m);
+    };
+
+    // Owners: a voxel within reach of a visible surface takes that surface's texture (top wins ties), so a rim shows
+    // the top's pixels like a hand-drawn tile, and a pit carved into a face keeps that face's colours on its walls.
+    const reach = Math.max(1, D);
+    for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
+      if (!base[bIdx(i, j, k)]) continue;
+      let owner = 0, best = reach;
+      for (const wd of VISIBLE_DIRS) {
+        const d = DIRS[wd];
+        let t = 0;
+        while (t < best && isBase(i + d[0] * (t + 1), j + d[1] * (t + 1), k + d[2] * (t + 1))) t++;
+        if (t < best) { best = t; owner = wd + 1; }
+      }
+      grid[idx(i, j, k)] = owner || 255;
+    }
+
+    const spriteFits = (i, j, k) => {
+      if (!o.autoFit) return true;
+      const S = o.size, H = o.blockHeight;
+      for (const dx of [0, 1]) for (const dy of [0, 1]) for (const dz of [0, 1]) {
+        const [px, py] = project([-0.5 + (i + dx) * vx, -0.5 + (j + dy) * vx, (k + dz) * vz], S, H);
+        if (px < -1e-6 || px > S + 1e-6 || py < -1e-6 || py > S + 1e-6) return false;
+      }
+      return true;
+    };
+
+    // Relief, from every visible surface of the piece.
+    if (D > 0) {
+      const carve = [];
       for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
-        const onEdge = (i === 0 || i === R - 1) + (j === 0 || j === R - 1) + (k === R - 1);
-        if (onEdge >= 2 && random() < o.chips) grid[idx(i, j, k)] = 0;
+        if (!base[bIdx(i, j, k)]) continue;
+        for (const wd of VISIBLE_DIRS) {
+          const d = DIRS[wd];
+          if (isBase(i + d[0], j + d[1], k + d[2])) continue;
+          const lv = levelAt(wd, i, j, k);
+          if (out) {
+            for (let s = 1; s <= lv; s++) {
+              const a = i + d[0] * s, b = j + d[1] * s, c = k + d[2] * s;
+              if (!inside(a, b, c) || isBase(a, b, c) || !spriteFits(a, b, c)) break;
+              if (!grid[idx(a, b, c)]) grid[idx(a, b, c)] = wd + 1;
+            }
+          } else {
+            // Never carve through: thin pieces (panels, fence rails) keep at least one voxel.
+            let thick = 0;
+            while (thick <= D && isBase(i - d[0] * thick, j - d[1] * thick, k - d[2] * thick)) thick++;
+            const n = Math.min(D - lv, thick - 1);
+            for (let s = 0; s < n; s++) carve.push(idx(i - d[0] * s, j - d[1] * s, k - d[2] * s));
+          }
+        }
       }
+      for (const c of carve) grid[c] = 0;
     }
-    // Lip: the top's surface hanging over the side faces from the top edge (grass, snow, moss). Owned by the top, so it
+
+    const solid = (i, j, k) => (inside(i, j, k) ? grid[idx(i, j, k)] : 0);
+    const random = rng(o.seed);
+
+    // Chipped edges: piece voxels with two open sides (the bottom does not count) are knocked off now and then.
+    if (o.chips > 0) {
+      const chip = [];
+      for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
+        if (!base[bIdx(i, j, k)] || !solid(i, j, k)) continue;
+        let open = 0;
+        for (let wd = 0; wd < 5; wd++) {
+          const d = DIRS[wd];
+          if (!solid(i + d[0], j + d[1], k + d[2])) open++;
+        }
+        if (open >= 2 && random() < o.chips) chip.push(idx(i, j, k));
+      }
+      for (const c of chip) grid[c] = 0;
+    }
+
+    // Lip: a top surface hanging over the side faces below its front edges (grass, snow, moss). Owned by the top, so it
     // shows the top texture's edge pixels.
     if (o.lip > 0) {
-      for (let i = 0; i < R; i++) {
-        if (random() >= o.lipChance) continue;
-        const len = 1 + Math.floor(random() * o.lip);
-        for (let s = 0; s < len; s++) grid[idx(i, -1, R - 1 - s)] ||= FACE.TOP;
-      }
-      for (let j = 0; j < R; j++) {
-        if (random() >= o.lipChance) continue;
-        const len = 1 + Math.floor(random() * o.lip);
-        for (let s = 0; s < len; s++) grid[idx(R, j, R - 1 - s)] ||= FACE.TOP;
+      for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
+        if (!base[bIdx(i, j, k)] || isBase(i, j, k + 1)) continue;
+        for (const [di, dj] of [[0, -1], [1, 0]]) {
+          if (isBase(i + di, j + dj, k) || random() >= o.lipChance) continue;
+          const len = 1 + Math.floor(random() * o.lip);
+          for (let s = 0; s < len; s++) {
+            const a = i + di, b = j + dj, c = k - s;
+            if (!inside(a, b, c) || isBase(a, b, c)) break;
+            if (!grid[idx(a, b, c)]) grid[idx(a, b, c)] = W_UP + 1;
+          }
+        }
       }
     }
 
     return {
-      R, D, grid, nx, ny, nz, iLo, jLo, kLo, iHi, jHi, kHi, vx, vz,
-      solid(i, j, k) { return inside(i, j, k) ? grid[idx(i, j, k)] : 0; },
+      R, D, grid, nx, ny, nz, iLo, jLo, kLo, iHi, jHi, kHi, vx, vz, tf, uvAt, isBase,
+      solid,
       levels,
     };
   }
 
-  /** Lowers bumps whose outer end would land outside the sprite (above its top edge or past its sides). */
-  function fitInSprite(o, levels, R, vx, vz) {
-    const S = o.size;
-    const H = o.blockHeight;
-    const insideSprite = (p) => {
-      const [px, py] = project(p, S, H);
-      return px >= 0 && px <= S && py >= 0 && py <= S;
-    };
-    const lower = (L, key, corners) => {
-      while (L[key] > 0 && !corners(L[key]).every(insideSprite)) L[key]--;
-    };
-    for (let b = 0; b < R; b++) for (let a = 0; a < R; a++) {
-      const x0 = -0.5 + a * vx, x1 = x0 + vx, y0 = -0.5 + b * vx, y1 = y0 + vx;
-      lower(levels.top, b * R + a, (l) => {
-        const z = H + l * vz;
-        return [[x0, y0, z], [x1, y0, z], [x0, y1, z], [x1, y1, z]];
-      });
-      const z0 = b * vz, z1 = z0 + vz;
-      lower(levels.left, b * R + a, (l) => {
-        const y = -0.5 - l * vx;
-        return [[x0, y, z0], [x1, y, z0], [x0, y, z1], [x1, y, z1]];
-      });
-      lower(levels.right, b * R + a, (l) => {
-        const x = 0.5 + l * vx;
-        return [[x, y0, z0], [x, y1, z0], [x, y0, z1], [x, y1, z1]];
-      });
-    }
-  }
-
-  /** World point -> sprite pixel coordinates (x right, y down), the block centred in an S × S sprite. */
+  /** World point -> sprite pixel coordinates (x right, y down), a full block centred in an S × S sprite. */
   function project(p, S, H) {
     const c = [p[0], p[1], p[2] - H / 2];
     const s = Math.SQRT2 / S;
@@ -379,14 +467,14 @@
   // ── Render ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Renders the block. tex: { top, left, right } from faceTexture(). Returns S × S RGBA arrays:
-   * color, normal (_n encoding), depth (white = near), ao (white = open), gray (light and AO without the texture's
-   * colour), plus mask (1 where the block is).
+   * Renders one piece. tex: { top, left, right } from faceTexture(); piece: { boxes, state, facing } (a cube when
+   * left out). Returns S × S RGBA arrays: color, normal (_n encoding), depth (white = near), ao (white = open), gray
+   * (light and AO without the texture's colour), plus mask (1 where the piece is).
    */
-  function render(opts, tex) {
+  function render(opts, tex, piece = CUBE) {
     const o = merge(opts);
     const S = o.size, H = o.blockHeight;
-    const V = buildVoxels(o, tex);
+    const V = buildVoxels(o, tex, piece);
     const s = Math.SQRT2 / S;
     const centre = [0, 0, H / 2];
     const far = 4;
@@ -395,10 +483,11 @@
     const depth = new Uint8ClampedArray(n * 4), aoMap = new Uint8ClampedArray(n * 4), gray = new Uint8ClampedArray(n * 4);
     const mask = new Uint8Array(n);
     const faceN = new Int8Array(n);      // which visible face each pixel shows, for the pixel-art passes
+    const zbuf = new Float32Array(n).fill(-Infinity);  // dot(p, BACK): larger is nearer, for the hair pass
     const hemi = hemisphere(Math.max(1, o.aoSamples));
     const aoDist = o.aoDistance;
 
-    // Depth range: the extended grid's corners along the view direction.
+    // Depth range: the grid's corners along the view direction (the same for every piece, so depth maps line up).
     let dMin = Infinity, dMax = -Infinity;
     for (const x of [-0.5 + V.iLo * V.vx, -0.5 + V.iHi * V.vx]) for (const y of [-0.5 + V.jLo * V.vx, -0.5 + V.jHi * V.vx]) {
       for (const z of [0, V.kHi * V.vz]) {
@@ -406,13 +495,25 @@
         dMin = Math.min(dMin, d); dMax = Math.max(dMax, d);
       }
     }
+    const depthByte = (d) => Math.round(255 * clamp01((d - dMin) / Math.max(1e-6, dMax - dMin)));
+    const shadeOf = (face) => (o.shading ? (face === FACE.TOP ? o.shade.top : face === FACE.LEFT ? o.shade.left : o.shade.right) : 1);
+    const quantAO = (ao) => (o.aoSteps > 1 && o.aoStrength > 0
+      ? 1 - Math.round((1 - ao) * (o.aoSteps - 1) / o.aoStrength) * o.aoStrength / (o.aoSteps - 1) : ao);
 
-    const faceTex = { [FACE.TOP]: tex.top, [FACE.LEFT]: tex.left, [FACE.RIGHT]: tex.right };
-    // Face coordinates (u right, v up as seen from outside) of a point, for the face that owns it.
-    const faceUV = {
-      [FACE.TOP]: (p) => [p[0] + 0.5, p[1] + 0.5],
-      [FACE.LEFT]: (p) => [p[0] + 0.5, p[2] / H],
-      [FACE.RIGHT]: (p) => [p[1] + 0.5, p[2] / H],
+    const put = (k, texel, face, ao, d) => {
+      const shade = shadeOf(face);
+      color[k] = texel[0] * shade * ao;
+      color[k + 1] = texel[1] * shade * ao;
+      color[k + 2] = texel[2] * shade * ao;
+      color[k + 3] = 255;
+      // Voxel faces only ever point along the three visible axes: write the exact colours the Aura Iso Normals
+      // extension uses for them, so these maps match the hand-made ones bit for bit.
+      const enc = FACE_NORMAL_RGB[face];
+      normal[k] = enc[0]; normal[k + 1] = enc[1]; normal[k + 2] = enc[2]; normal[k + 3] = 255;
+      depth[k] = depth[k + 1] = depth[k + 2] = depthByte(d); depth[k + 3] = 255;
+      aoMap[k] = aoMap[k + 1] = aoMap[k + 2] = Math.round(255 * ao); aoMap[k + 3] = 255;
+      const base = o.grayFromTexture ? (0.2126 * texel[0] + 0.7152 * texel[1] + 0.0722 * texel[2]) / 255 : 1;
+      gray[k] = gray[k + 1] = gray[k + 2] = Math.round(255 * base * shade * ao); gray[k + 3] = 255;
     };
 
     for (let py = 0; py < S; py++) {
@@ -428,13 +529,16 @@
         const p = [origin[0] + FWD[0] * hit.t, origin[1] + FWD[1] * hit.t, origin[2] + FWD[2] * hit.t];
         const nrm = [0, 0, 0];
         nrm[hit.axis] = -hit.sign;
-        const visible = nrm[2] > 0.5 ? FACE.TOP : nrm[1] < -0.5 ? FACE.LEFT : FACE.RIGHT;
+        const hitDir = hit.axis * 2 + (nrm[hit.axis] > 0 ? 0 : 1);
+        const visible = DIR_FACE[hitDir] ?? FACE.TOP;
+        // The surface whose texture colours this voxel: its owner, or the side that was hit.
+        const ownerDir = hit.owner > 0 && hit.owner < 255 ? hit.owner - 1 : hitDir;
         // A step's wall shows the lower pixel's colour (the neighbour on the open side of the wall): with the taller
         // pixel's colour, one-pixel grooves vanished from this angle. Faces that point the owner's way sample in place.
-        const ownerAxis = hit.owner === FACE.TOP ? 2 : hit.owner === FACE.LEFT ? 1 : 0;
+        const ownerAxis = ownerDir >> 1;
         const q = hit.axis === ownerAxis ? p : [p[0] + nrm[0] * V.vx * 0.5, p[1] + nrm[1] * V.vx * 0.5, p[2] + nrm[2] * V.vz * 0.5];
-        const [u, v] = faceUV[hit.owner](q);
-        const texel = faceTex[hit.owner].color(clamp01(u), clamp01(v));
+        const [name, u, v] = V.uvAt([q[0] + 0.5, q[1] + 0.5, q[2] / H], ownerDir);
+        const texel = tex[name].color(u, v);
         if (texel[3] < 8) continue;
 
         let ao = 1;
@@ -444,32 +548,22 @@
           for (const d of hemi) {
             if (march(V, start, orient(d, nrm), aoDist)) blocked++;
           }
-          ao = 1 - o.aoStrength * (blocked / hemi.length);
-          if (o.aoSteps > 1) ao = 1 - Math.round((1 - ao) * (o.aoSteps - 1) / o.aoStrength) * o.aoStrength / (o.aoSteps - 1);
+          ao = quantAO(1 - o.aoStrength * (blocked / hemi.length));
         }
-        const shade = o.shading ? (visible === FACE.TOP ? o.shade.top : visible === FACE.LEFT ? o.shade.left : o.shade.right) : 1;
-        const k = (py * S + px) * 4;
-        color[k] = texel[0] * shade * ao;
-        color[k + 1] = texel[1] * shade * ao;
-        color[k + 2] = texel[2] * shade * ao;
-        color[k + 3] = 255;
-        // Voxel faces only ever point along the three visible axes: write the exact colours the Aura Iso Normals
-        // extension uses for them, so these maps match the hand-made ones bit for bit.
-        const enc = FACE_NORMAL_RGB[visible];
-        normal[k] = enc[0]; normal[k + 1] = enc[1]; normal[k + 2] = enc[2]; normal[k + 3] = 255;
-        const dv = Math.round(255 * clamp01((dot(p, BACK) - dMin) / Math.max(1e-6, dMax - dMin)));
-        depth[k] = depth[k + 1] = depth[k + 2] = dv; depth[k + 3] = 255;
-        const av = Math.round(255 * ao);
-        aoMap[k] = aoMap[k + 1] = aoMap[k + 2] = av; aoMap[k + 3] = 255;
-        const base = o.grayFromTexture ? (0.2126 * texel[0] + 0.7152 * texel[1] + 0.0722 * texel[2]) / 255 : 1;
-        const gv = Math.round(255 * base * shade * ao);
-        gray[k] = gray[k + 1] = gray[k + 2] = gv; gray[k + 3] = 255;
-        mask[py * S + px] = 1;
-        faceN[py * S + px] = visible;
+        const i = py * S + px;
+        put(i * 4, texel, visible, ao, dot(p, BACK));
+        mask[i] = 1;
+        faceN[i] = visible;
+        zbuf[i] = dot(p, BACK);
       }
     }
 
     pixelArtPasses(o, S, color, mask, faceN);
+
+    // Hairs go on after the pixel-art passes: lone-pixel cleanup would eat one-pixel strands.
+    if (o.hair.enabled && Aura.blockHair) {
+      Aura.blockHair.draw({ o, V, tex, S, H, zbuf, mask, faceN, put, project, BACK, FACE, quantAO, rng });
+    }
     return { size: S, color, normal, depth, ao: aoMap, gray, mask, voxels: V, options: o };
   }
 
@@ -533,5 +627,5 @@
     return out;
   }
 
-  Aura.blockEngine = { DEFAULTS, BLOCK_HEIGHT, FACE, faceTexture, render, project, upscale, merge };
+  Aura.blockEngine = { DEFAULTS, HAIR_DEFAULTS, BLOCK_HEIGHT, FACE, CUBE, faceTexture, render, project, upscale, merge };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));
