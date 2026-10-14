@@ -434,7 +434,9 @@
       const img = await decodePng(file);
       const key = "loose:" + file.name;
       this.images.set(key, { key, name: stripExt(file.name), ...img, sheet: null });
-      for (const [k] of SLOTS) Object.assign(this.slots[k], { key, cx: 0, cy: 0 });
+      // Only the face chosen in "Cara a asignar" takes it (all three with "Todas"), so each face can have its own file.
+      const targets = this.activeSlot === "all" ? SLOTS.map(([k]) => k) : [this.activeSlot];
+      for (const k of targets) Object.assign(this.slots[k], { key, cx: 0, cy: 0 });
       // A square loose texture is usually one face (the whole image); anything else is probably a small atlas,
       // so keep the current cell size if it tiles the image and otherwise guess the largest common grid.
       const tiles = (cs) => cs > 0 && img.w % cs === 0 && img.h % cs === 0 && cs < Math.max(img.w, img.h);
@@ -459,11 +461,12 @@
 
     #pickCell(e) {
       const img = this.images.get(this.pickerKey);
-      if (!img || !this.cellSize) return;
+      if (!img) return;
       const r = this.pickerCanvas.getBoundingClientRect();
       const scale = this.pickerCanvas.width / r.width / this.pickerScale;
       const x = (e.clientX - r.left) * scale, y = (e.clientY - r.top) * scale;
-      const cx = Math.floor(x / this.cellSize), cy = Math.floor(y / this.cellSize);
+      // Cell size 0: the whole image is one face, so a click anywhere assigns it.
+      const cx = this.cellSize ? Math.floor(x / this.cellSize) : 0, cy = this.cellSize ? Math.floor(y / this.cellSize) : 0;
       const targets = this.activeSlot === "all" ? SLOTS.map(([k]) => k) : [this.activeSlot];
       for (const k of targets) Object.assign(this.slots[k], { key: img.key, cx, cy });
       this.#renderList();
