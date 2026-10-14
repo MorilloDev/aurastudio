@@ -4,6 +4,7 @@
 (function (Aura) {
   const studio = new Aura.studio.Studio(document.getElementById("app"));
   studio.addTool(Aura.normalsTool.normalsTool());
+  studio.addTool(Aura.blocksTool.blocksTool());
   studio.addTool(Aura.legacy.legacyTool({ id: "structures", title: "Estructuras", source: "structures" }));
   studio.addTool(Aura.legacy.legacyTool({ id: "atlas", title: "Atlas", source: "atlas" }));
   studio.addTool(Aura.legacy.legacyTool({ id: "particles", title: "Partículas", source: "particles" }));
