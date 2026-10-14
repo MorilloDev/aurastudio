@@ -28,6 +28,9 @@
   const DIRS = Shapes.DIRS;
   const W_RIGHT = 0, W_LEFT = 3, W_UP = 4;
   const VISIBLE_DIRS = [W_UP, W_LEFT, W_RIGHT];
+  // Grid values: 0 empty, 1..6 owner surface (world dir + 1), 255 coloured by whichever side is seen. LIP_FLAG marks
+  // overhangs, which keep their owner's texture on every side (grass hanging over a dirt side stays grass).
+  const LIP_FLAG = 64;
   const DIR_FACE = { [W_UP]: FACE.TOP, [W_LEFT]: FACE.LEFT, [W_RIGHT]: FACE.RIGHT };
 
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -337,6 +340,27 @@
         }
       }
       for (const c of carve) grid[c] = 0;
+
+      // Where two raised faces meet at an edge of the piece (top and a side, or the two sides at the front corner),
+      // the voxel between their columns stays empty and reads as a dark groove along the edge. Fill it, so a raised
+      // block keeps a clean edge like a hand-drawn one; top wins, so the rim shows the top's pixels.
+      if (out) {
+        const relief = (i, j, k) => (inside(i, j, k) && !isBase(i, j, k) ? grid[idx(i, j, k)] : 0);
+        const fill = [];
+        for (let k = kLo; k < kHi; k++) for (let j = jLo; j < jHi; j++) for (let i = iLo; i < iHi; i++) {
+          if (grid[idx(i, j, k)] || isBase(i, j, k)) continue;
+          let owner = 0;
+          for (const a of VISIBLE_DIRS) for (const b of VISIBLE_DIRS) {
+            if (a === b || owner) continue;
+            const da = DIRS[a], db = DIRS[b];
+            if (relief(i - da[0], j - da[1], k - da[2]) === b + 1 && relief(i - db[0], j - db[1], k - db[2]) === a + 1) {
+              owner = a === W_UP || b === W_UP ? W_UP + 1 : Math.min(a, b) + 1;
+            }
+          }
+          if (owner && spriteFits(i, j, k)) fill.push([idx(i, j, k), owner]);
+        }
+        for (const [c, owner] of fill) grid[c] = owner;
+      }
     }
 
     const solid = (i, j, k) => (inside(i, j, k) ? grid[idx(i, j, k)] : 0);
@@ -368,7 +392,7 @@
           for (let s = 0; s < len; s++) {
             const a = i + di, b = j + dj, c = k - s;
             if (!inside(a, b, c) || isBase(a, b, c)) break;
-            if (!grid[idx(a, b, c)]) grid[idx(a, b, c)] = W_UP + 1;
+            if (!grid[idx(a, b, c)]) grid[idx(a, b, c)] = W_UP + 1 + LIP_FLAG;
           }
         }
       }
@@ -386,6 +410,16 @@
     const c = [p[0], p[1], p[2] - H / 2];
     const s = Math.SQRT2 / S;
     return [dot(c, RIGHT) / s + S / 2, -dot(c, UP) / s + S / 2];
+  }
+
+  /** True when the open cell (i, j, k) next to a raised voxel lies over the piece's surface facing od: walking back
+   *  against od from it reaches the piece within the relief's reach. */
+  function overOwnFace(V, i, j, k, od) {
+    const d = Shapes.DIRS[od];
+    for (let t = 0; t <= V.D + 1; t++) {
+      if (V.isBase(i - d[0] * t, j - d[1] * t, k - d[2] * t)) return true;
+    }
+    return false;
   }
 
   // ── Ray casting ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -531,8 +565,19 @@
         nrm[hit.axis] = -hit.sign;
         const hitDir = hit.axis * 2 + (nrm[hit.axis] > 0 ? 0 : 1);
         const visible = DIR_FACE[hitDir] ?? FACE.TOP;
-        // The surface whose texture colours this voxel: its owner, or the side that was hit.
-        const ownerDir = hit.owner > 0 && hit.owner < 255 ? hit.owner - 1 : hitDir;
+        // The surface whose texture colours this voxel. A side of the piece's own outer surface always shows its own
+        // texture: borrowing the owner there drew the top texture down the first row of the sides and the left
+        // texture down the front corner, a stepped band hand-drawn tiles never have. Owners only colour what relief
+        // made: walls of carved pits (their open side lies inside the piece) and voxels added outside it.
+        // A raised column's wall keeps its face's texture only while it stands over that face (a bump in the middle
+        // of the top); at the edge of the piece it shows the side it is seen from, so raised edges get no band either.
+        const hd = Shapes.DIRS[hitDir];
+        const raw = hit.owner === 255 ? 0 : hit.owner;
+        const own = raw & ~LIP_FLAG;
+        let ownerDir = hitDir;
+        if (own && (raw & LIP_FLAG)) ownerDir = own - 1;
+        else if (own && V.isBase(hit.i + hd[0], hit.j + hd[1], hit.k + hd[2])) ownerDir = own - 1;
+        else if (own && !V.isBase(hit.i, hit.j, hit.k) && overOwnFace(V, hit.i + hd[0], hit.j + hd[1], hit.k + hd[2], own - 1)) ownerDir = own - 1;
         // A step's wall shows the lower pixel's colour (the neighbour on the open side of the wall): with the taller
         // pixel's colour, one-pixel grooves vanished from this angle. Faces that point the owner's way sample in place.
         const ownerAxis = ownerDir >> 1;
