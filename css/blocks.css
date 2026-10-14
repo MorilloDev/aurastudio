@@ -52,3 +52,5 @@
 .section-head .extra .bk-reset:hover { background: var(--panel-3); color: var(--text); }
 .bk-panel textarea { width: 100%; margin-bottom: 6px; }
 .bk-snippet { min-height: 70px; }
+.bk-panel input[type=color] { width: 100%; height: 26px; padding: 0 2px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.pl-types { flex: 1 1 auto; }

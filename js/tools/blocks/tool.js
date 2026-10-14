@@ -8,9 +8,10 @@
   const { h } = Aura.dom;
   const { section, slider, select, checkbox, segmented, numberPair } = Aura.controls;
   const { decodePng, encodePng } = Aura.png;
-  const { downloadBlob, joinPath, dirName, stripExt, writeInDir } = Aura.fs;
+  const { downloadBlob, stripExt } = Aura.fs;
   const { prefs } = Aura.storage;
-  const { listSheets, companionPath, refreshCompanions } = Aura.normalsSheets;
+  const { listSheets } = Aura.normalsSheets;
+  const Cells = Aura.sheetCells;
   const E = Aura.blockEngine;
   const Sh = Aura.blockShapes;
 
@@ -727,17 +728,12 @@
     async #downloadVariants() {
       const all = this.#allVariantResults();
       if (!all.length) return;
-      const S = all[0].result.size, k = this.exportScale, W = S * k * all.length, H = S * k;
+      const k = this.exportScale;
       let n = 0;
       for (let m = 0; m < MAPS.length; m++) {
         if (!this.mapChecks[m].get()) continue;
         const [key, suffix] = MAPS[m];
-        const out = new Uint8ClampedArray(W * H * 4);
-        all.forEach(({ result }, i) => {
-          const src = k > 1 ? E.upscale(result[key], S, k) : result[key];
-          for (let y = 0; y < H; y++) out.set(src.subarray(y * S * k * 4, (y + 1) * S * k * 4), (y * W + i * S * k) * 4);
-        });
-        downloadBlob(await encodePng(W, H, out), `${this.#baseName()}_variantes${suffix}${k > 1 ? "@" + k + "x" : ""}.png`);
+        downloadBlob(await Cells.strip(all.map((a) => a.result), key, k), `${this.#baseName()}_variantes${suffix}${k > 1 ? "@" + k + "x" : ""}.png`);
         n++;
       }
       this.studio.setStatus(n ? `Descargadas ${n} tiras con ${all.length} variantes: ${all.map((a) => a.variant.id).join(", ")}.` : "Marca qué mapas descargar.", n ? "ok" : "warn");
@@ -773,12 +769,8 @@
           const all = this.#allVariantResults();
           const S = all[0].result.size;
           const sheetImg = await decodePng(await sheet.entry.handle.getFile());
-          const cols = Math.floor(sheetImg.w / S);
-          const [cx, cy] = this.targetCell.get();
-          const items = all.map(({ variant, result }, i) => {
-            const flat = cy * cols + cx + i;
-            return { variant, result, cell: [flat % cols, Math.floor(flat / cols)] };
-          });
+          const cells = Cells.layoutCells(this.targetCell.get(), all.length, Math.floor(sheetImg.w / S));
+          const items = all.map(({ variant, result }, i) => ({ variant, result, cell: cells[i] }));
           await this.#writeCells(sheet, items, sheetImg);
           this.snippetEl.value = Sh.artSnippet(this.piece.shape, items);
           this.#copySnippet(true);
@@ -801,69 +793,11 @@
 
     /** Pastes results into cells of the sheet (and the normals into its _n), keeping a backup to restore. */
     async #writeCells(sheet, items, sheetImg = null) {
-      const S = items[0].result.size;
-      sheetImg ??= await decodePng(await sheet.entry.handle.getFile());
-      for (const { cell: [cx, cy] } of items) {
-        if ((cx + 1) * S > sheetImg.w || (cy + 1) * S > sheetImg.h) {
-          throw new Error(`La celda [${cx}, ${cy}] de ${S} px no cabe en la hoja (${sheetImg.w}×${sheetImg.h}). Agranda la hoja o elige otra celda.`);
-        }
-      }
-      const dir = sheet.entry.dir, folder = dirName(sheet.path);
-      const backups = [];
-      const write = async (name, w, hgt, rgba) => {
-        const path = joinPath(folder, name);
-        const existing = this.project.get(path);
-        backups.push({ name, path, previous: existing ? await existing.handle.getFile() : null });
-        const handle = await writeInDir(dir, name, await encodePng(w, hgt, rgba));
-        this.project.addFile(path, handle, dir);
-      };
-      const paste = (target, tw, src, cx, cy) => {
-        for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-          const si = (y * S + x) * 4, di = ((cy * S + y) * tw + cx * S + x) * 4;
-          for (let c = 0; c < 4; c++) target[di + c] = src[si + c];
-        }
-      };
-      for (const { cell: [cx, cy], result } of items) paste(sheetImg.rgba, sheetImg.w, result.color, cx, cy);
-      await write(sheet.name, sheetImg.w, sheetImg.h, sheetImg.rgba);
-      const written = [sheet.name];
-      if (this.saveN.get()) {
-        const nPath = companionPath(sheet.path, "_n");
-        const nEntry = this.project.get(nPath);
-        let nImg = nEntry ? await decodePng(await nEntry.handle.getFile()) : null;
-        if (!nImg || nImg.w !== sheetImg.w || nImg.h !== sheetImg.h) {
-          nImg = { w: sheetImg.w, h: sheetImg.h, rgba: new Uint8ClampedArray(sheetImg.w * sheetImg.h * 4) };
-        }
-        for (const { cell: [cx, cy], result } of items) paste(nImg.rgba, nImg.w, result.normal, cx, cy);
-        const nName = stripExt(sheet.name) + "_n.png";
-        await write(nName, nImg.w, nImg.h, nImg.rgba);
-        written.push(nName);
-      }
-      refreshCompanions(this.project, sheet);
+      const ctx = { project: this.project, studio: this.studio };
+      const done = await Cells.writeCells(ctx, sheet, items, { saveN: this.saveN.get(), sheetImg });
       this.images.delete(sheet.key);
       if (this.pickerKey === sheet.key) await this.#selectSource(sheet.key, sheet);
-      const where = items.length === 1 ? `[${items[0].cell.join(", ")}]` : `${items.length} celdas desde [${items[0].cell.join(", ")}]`;
-      this.studio.setStatus(`Guardado en ${where}: ${written.join(", ")}.`, "ok");
-      this.studio.toast("Guardado " + written.join(", "), {
-        kind: "ok", detail: `${where} de ${sheet.id}`,
-        action: { label: "Restaurar anterior", run: () => this.#restore(dir, backups) },
-      });
-    }
-
-    async #restore(dir, backups) {
-      try {
-        for (const b of backups) {
-          if (b.previous) {
-            const handle = await writeInDir(dir, b.name, b.previous);
-            this.project.addFile(b.path, handle, dir);
-          } else {
-            await dir.removeEntry(b.name).catch(() => {});
-            this.project.files.delete(b.path.toLowerCase());
-          }
-        }
-        this.studio.toast("Archivos restaurados.", { kind: "ok" });
-      } catch (err) {
-        this.studio.toast("No pude restaurar.", { kind: "bad", detail: err.message });
-      }
+      Cells.announce(ctx, sheet, items, done);
     }
   }
 
