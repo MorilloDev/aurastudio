@@ -221,17 +221,30 @@
     const tf = Shapes.transform(piece.state, piece.facing, follow);
     const worldBoxes = Shapes.boxesToWorld(piece.boxes, tf);
 
-    // The piece itself.
+    // The piece itself. partOf remembers which part (1-based) a voxel belongs to, for the slopes.
     const base = new Uint8Array(R * R * R);
+    const partOf = new Uint8Array(R * R * R);
     const bIdx = (i, j, k) => (k * R + j) * R + i;
     const inCell = (i, j, k) => i >= 0 && i < R && j >= 0 && j < R && k >= 0 && k < R;
-    for (const b of worldBoxes) {
-      const lo = b.min.map((v) => Math.round(v * R)), hi = b.max.map((v) => Math.round(v * R));
+    const parts = piece.boxes.map((b, pi) => slopePart(b, tf, o.blockHeight));
+    piece.boxes.forEach((b, pi) => {
+      const lo = worldBoxes[pi].min.map((v) => Math.round(v * R)), hi = worldBoxes[pi].max.map((v) => Math.round(v * R));
+      const sloped = !!b.cuts?.length;
       for (let k = lo[2]; k < hi[2]; k++) for (let j = lo[1]; j < hi[1]; j++) for (let i = lo[0]; i < hi[0]; i++) {
-        if (inCell(i, j, k)) base[bIdx(i, j, k)] = 1;
+        if (!inCell(i, j, k)) continue;
+        // A sloped part fills every voxel any part of it touches (27 sample points), so its true surface never lies
+        // in front of the voxels: render() then finds the exact plane inside the first voxel the ray reaches.
+        if (sloped && !touchesPart(b, tf, i, j, k, R)) continue;
+        // A voxel any plain box fills is solid all through, so a plain part wins it over a sloped one.
+        const n = bIdx(i, j, k);
+        if (!base[n] || !sloped) partOf[n] = pi + 1;
+        base[n] = 1;
       }
-    }
+    });
     const isBase = (i, j, k) => inCell(i, j, k) && base[bIdx(i, j, k)] === 1;
+    // Voxels of a sloped part are only the steps under a smooth surface: top edge masks, cover, chips and top hairs
+    // skip them, or every step would sprout a tongue. Bottom edges of a ramp are real edges and keep theirs.
+    const isSloped = (i, j, k) => inCell(i, j, k) && !!parts[partOf[bIdx(i, j, k)] - 1];
     for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
       if (base[bIdx(i, j, k)]) grid[idx(i, j, k)] = 255;
     }
@@ -272,7 +285,7 @@
     if (o.chips > 0) {
       const chip = [];
       for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
-        if (!base[bIdx(i, j, k)]) continue;
+        if (!base[bIdx(i, j, k)] || isSloped(i, j, k)) continue;
         let open = 0;
         for (let wd = 0; wd < 5; wd++) {
           const d = DIRS[wd];
@@ -299,6 +312,7 @@
         if (!m.zones[z.key]) return;
         for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
           if (!isBase(i, j, k) || !solidNow(i, j, k)) continue;
+          if (z.open.includes(W_UP) && isSloped(i, j, k)) continue;
           if (z.open.some((wd) => isBase(i + DIRS[wd][0], j + DIRS[wd][1], k + DIRS[wd][2]))) continue;
           const cell = [i, j, k];
           const line = z.along === 0 ? j * 4096 + k : i * 4096 + k;
@@ -326,7 +340,7 @@
       const d = DIRS[wd];
       let kk = k;
       while (isBase(i, j, kk + 1) && !isBase(i + d[0], j + d[1], kk + 1)) kk++;
-      if (isBase(i, j, kk + 1)) return -1;
+      if (isBase(i, j, kk + 1) || isSloped(i, j, kk)) return -1;
       const t = wd === W_LEFT ? i : j, line = wd === W_LEFT ? j : i;
       const reach = Math.round(cv.depth) + profile(coverRagged, wd === W_LEFT ? 21 : 22, line, t);
       return kk - k < reach ? kk : -1;
@@ -349,8 +363,106 @@
 
     return {
       R, grid, nx, ny, nz, iLo, jLo, kLo, iHi, jHi, kHi, vx, vz, tf, uvAt, isBase, zones: ZONES, coverTop,
+      part: (i, j, k) => (inCell(i, j, k) ? parts[partOf[bIdx(i, j, k)] - 1] ?? null : null),
+      slopeParts: parts.filter(Boolean), isSloped,
       solid: solidNow,
     };
+  }
+
+  // ── Slopes ───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  /** True when local point lp (0..1) lies inside part b: its box and every cut (n·p ≤ d). */
+  function inPart(b, lp, eps = 1e-6) {
+    for (let a = 0; a < 3; a++) if (lp[a] < b.min[a] - eps || lp[a] > b.max[a] + eps) return false;
+    for (const c of b.cuts ?? []) if (c.n[0] * lp[0] + c.n[1] * lp[1] + c.n[2] * lp[2] > c.d + eps) return false;
+    return true;
+  }
+
+  /** Conservative test for a convex part: the voxel is out only when all eight corners break the same limit. */
+  function touchesPart(b, tf, i, j, k, R) {
+    const corners = [];
+    for (const dx of [0, 1]) for (const dy of [0, 1]) for (const dz of [0, 1]) corners.push(tf.toLocal([(i + dx) / R, (j + dy) / R, (k + dz) / R]));
+    const eps = 1e-6;
+    for (let a = 0; a < 3; a++) {
+      if (corners.every((c) => c[a] < b.min[a] + eps) || corners.every((c) => c[a] > b.max[a] - eps)) return false;
+    }
+    for (const c of b.cuts) {
+      if (corners.every((q) => c.n[0] * q[0] + c.n[1] * q[1] + c.n[2] * q[2] > c.d - eps)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * A sloped part as world-space half-spaces (n·p ≤ d, p in blocks with z up), for exact ray hits; null for a plain
+   * box, which the voxels already draw exactly. Each constraint keeps its local normal, which picks the texture.
+   */
+  function slopePart(b, tf, H) {
+    if (!b.cuts?.length) return null;
+    const c = [0.5, 0.5, 0.5];
+    const o0 = tf.toWorld(c);
+    const axes = [0, 1, 2].map((a) => { const e = c.slice(); e[a] += 1; const w = tf.toWorld(e); return [w[0] - o0[0], w[1] - o0[1], w[2] - o0[2]]; });
+    const cons = [];
+    const add = (n, d, isCut) => {
+      // Local n·p ≤ d → unit space (the transform is a rotation / mirror about the centre) → world (z scaled by H).
+      const nu = [0, 1, 2].map((r) => n[0] * axes[0][r] + n[1] * axes[1][r] + n[2] * axes[2][r]);
+      const du = d - (n[0] + n[1] + n[2]) * 0.5 + (nu[0] + nu[1] + nu[2]) * 0.5;
+      const nw = [nu[0], nu[1], nu[2] / H], dw = du - 0.5 * (nu[0] + nu[1]);
+      const len = Math.hypot(nw[0], nw[1], nw[2]);
+      const ll = Math.hypot(n[0], n[1], n[2]);
+      cons.push({ n: [nw[0] / len, nw[1] / len, nw[2] / len], d: dw / len, local: [n[0] / ll, n[1] / ll, n[2] / ll], isCut });
+    };
+    for (let a = 0; a < 3; a++) {
+      const e = [0, 0, 0]; e[a] = 1;
+      add(e, b.max[a], false);
+      add([-e[0], -e[1], -e[2]], -b.min[a], false);
+    }
+    for (const cc of b.cuts) add(cc.n, cc.d, true);
+    return { box: b, cons };
+  }
+
+  /** Where a ray enters a sloped part: { t, con } or null if it misses. */
+  function enterPart(part, o, dir) {
+    let tin = -Infinity, tout = Infinity, con = null;
+    for (const c of part.cons) {
+      const den = c.n[0] * dir[0] + c.n[1] * dir[1] + c.n[2] * dir[2];
+      const num = c.d - (c.n[0] * o[0] + c.n[1] * o[1] + c.n[2] * o[2]);
+      if (Math.abs(den) < 1e-12) { if (num < 0) return null; continue; }
+      const t = num / den;
+      if (den < 0) { if (t > tin) { tin = t; con = c; } } else if (t < tout) tout = t;
+    }
+    return tin <= tout && con ? { t: tin, con } : null;
+  }
+
+  /** Texture and coordinates on a slope: the part's local frame, the texture stretched over the slope's length. */
+  function slopeUV(part, con, lp) {
+    const n = con.local;
+    const ax = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])];
+    const name = ax[1] >= ax[0] && ax[1] >= ax[2] ? "top" : ax[2] >= ax[0] ? "left" : "right";
+    const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    const crs = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const nrm = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
+    const dt = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let eu, ev;
+    if (ax[1] < 0.5) {
+      // Steep or vertical (diagonal wall): v runs up the piece.
+      ev = nrm(sub([0, 1, 0], [n[0] * n[1], n[1] * n[1], n[2] * n[1]]));
+      eu = nrm(crs(ev, n));
+    } else {
+      // A slope you could walk on: u across it, v up it.
+      const ref = ax[0] < 0.7 ? [1, 0, 0] : [0, 0, 1];
+      eu = nrm(sub(ref, [n[0] * dt(ref, n), n[1] * dt(ref, n), n[2] * dt(ref, n)]));
+      ev = nrm(crs(n, eu));
+      if (ev[1] < 0) ev = [-ev[0], -ev[1], -ev[2]];
+    }
+    const b = part.box;
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) {
+      const q = [x, y, z];
+      if (!inPart(b, q, 1e-4)) continue;
+      u0 = Math.min(u0, dt(q, eu)); u1 = Math.max(u1, dt(q, eu));
+      v0 = Math.min(v0, dt(q, ev)); v1 = Math.max(v1, dt(q, ev));
+    }
+    return [name, (dt(lp, eu) - u0) / Math.max(1e-6, u1 - u0), (dt(lp, ev) - v0) / Math.max(1e-6, v1 - v0)];
   }
 
   /** World point -> sprite pixel coordinates (x right, y down), a full block centred in an S × S sprite. */
@@ -413,6 +525,19 @@
     }
   }
 
+  /** Ray parameter where the ray leaves voxel (i, j, k) of a hit. */
+  function voxelExit(V, hit, o, dir) {
+    const lo = [-0.5 + hit.i * V.vx, -0.5 + hit.j * V.vx, hit.k * V.vz];
+    const size = [V.vx, V.vx, V.vz];
+    let t = Infinity;
+    for (let a = 0; a < 3; a++) {
+      if (Math.abs(dir[a]) < 1e-12) continue;
+      const edge = dir[a] > 0 ? lo[a] + size[a] : lo[a];
+      t = Math.min(t, (edge - o[a]) / dir[a]);
+    }
+    return t;
+  }
+
   // Fixed cosine-weighted hemisphere directions around +Z (Fibonacci spiral), turned to each normal. Fixed rather than
   // random, so the AO never flickers between renders.
   function hemisphere(n) {
@@ -472,15 +597,23 @@
     const quantAO = (ao) => (o.aoSteps > 1 && o.aoStrength > 0
       ? 1 - Math.round((1 - ao) * (o.aoSteps - 1) / o.aoStrength) * o.aoStrength / (o.aoSteps - 1) : ao);
 
-    const put = (k, texel, face, ao, d) => {
-      const shade = shadeOf(face);
+    /** nvec: the true normal of a slope pixel (its light and _n follow it); voxel faces pass none. */
+    const put = (k, texel, face, ao, d, nvec = null) => {
+      let shade = shadeOf(face);
+      if (nvec && o.shading) {
+        // Each face's share of the light by how much the slope faces it (squared, so a slope mostly takes one face's).
+        const wt = Math.max(0, nvec[2]) ** 2, wl = Math.max(0, -nvec[1]) ** 2, wr = Math.max(0, nvec[0]) ** 2;
+        shade = (wt * o.shade.top + wl * o.shade.left + wr * o.shade.right) / (wt + wl + wr || 1);
+      }
       color[k] = texel[0] * shade * ao;
       color[k + 1] = texel[1] * shade * ao;
       color[k + 2] = texel[2] * shade * ao;
       color[k + 3] = 255;
       // Voxel faces only ever point along the three visible axes: write the exact colours the Aura Iso Normals
       // extension uses for them, so these maps match the hand-made ones bit for bit.
-      const enc = FACE_NORMAL_RGB[face];
+      const enc = nvec
+        ? [Math.round((dot(nvec, RIGHT) * 0.5 + 0.5) * 255), Math.round((dot(nvec, UP) * 0.5 + 0.5) * 255), Math.round((dot(nvec, BACK) * 0.5 + 0.5) * 255)]
+        : FACE_NORMAL_RGB[face];
       normal[k] = enc[0]; normal[k + 1] = enc[1]; normal[k + 2] = enc[2]; normal[k + 3] = 255;
       depth[k] = depth[k + 1] = depth[k + 2] = depthByte(d); depth[k + 3] = 255;
       aoMap[k] = aoMap[k + 1] = aoMap[k + 2] = Math.round(255 * ao); aoMap[k + 3] = 255;
@@ -496,13 +629,39 @@
           centre[1] + RIGHT[1] * ox - UP[1] * oy - FWD[1] * far,
           centre[2] + RIGHT[2] * ox - UP[2] * oy - FWD[2] * far,
         ];
-        const hit = march(V, origin, FWD, far * 2);
+        // March, but a voxel of a sloped part only counts where the ray really enters that part inside the voxel; if
+        // it only grazes the voxel's empty corner, carry on behind it.
+        let hit = march(V, origin, FWD, far * 2), slope = null;
+        for (let guard = 0; hit && guard < 8; guard++) {
+          const part = hit.owner === 255 ? V.part(hit.i, hit.j, hit.k) : null;
+          if (!part) break;
+          // Several sloped parts can share a voxel (the two ramps of an inside corner): the nearest entry wins.
+          const exit = voxelExit(V, hit, origin, FWD);
+          let best = null, bestPart = null;
+          for (const sp of V.slopeParts) {
+            const e = enterPart(sp, origin, FWD);
+            if (e && e.t <= exit + 1e-9 && (!best || e.t < best.t)) { best = e; bestPart = sp; }
+          }
+          if (best) {
+            if (best.con.isCut) slope = { part: bestPart, con: best.con, t: Math.max(best.t, hit.t) };
+            break;
+          }
+          const from = [origin[0] + FWD[0] * (exit + 1e-7), origin[1] + FWD[1] * (exit + 1e-7), origin[2] + FWD[2] * (exit + 1e-7)];
+          const next = march(V, from, FWD, far * 2 - exit);
+          hit = next ? { ...next, t: next.t + exit + 1e-7 } : null;
+        }
         if (!hit) continue;
-        const p = [origin[0] + FWD[0] * hit.t, origin[1] + FWD[1] * hit.t, origin[2] + FWD[2] * hit.t];
+        const tHit = slope ? slope.t : hit.t;
+        const p = [origin[0] + FWD[0] * tHit, origin[1] + FWD[1] * tHit, origin[2] + FWD[2] * tHit];
         const nrm = [0, 0, 0];
         nrm[hit.axis] = -hit.sign;
         const hitDir = hit.axis * 2 + (nrm[hit.axis] > 0 ? 0 : 1);
-        const visible = DIR_FACE[hitDir] ?? FACE.TOP;
+        let visible = DIR_FACE[hitDir] ?? FACE.TOP;
+        if (slope) {
+          const n = slope.con.n;
+          const wt = Math.max(0, n[2]), wl = Math.max(0, -n[1]), wr = Math.max(0, n[0]);
+          visible = wt >= wl && wt >= wr ? FACE.TOP : wl >= wr ? FACE.LEFT : FACE.RIGHT;
+        }
         // The piece's own faces always show their own texture, right up to the edge. A mask voxel shows the texture of
         // the face it carries on, at the point that face would have there (wrapped), so the tongue has no seam.
         const zone = hit.owner !== 255 ? V.zones[hit.owner - 1] : null;
@@ -530,21 +689,28 @@
               : [(hit.i + 1) * V.vx + drop, p[1] + 0.5, topZ / H];
           }
         }
-        const [name, u, v] = V.uvAt(unit, texDir);
+        let [name, u, v] = V.uvAt(unit, texDir);
+        if (slope) {
+          [name, u, v] = slopeUV(slope.part, slope.con, V.tf.toLocal(unit));
+          u = u - Math.floor(u); v = v - Math.floor(v);
+        }
         const texel = tex[name].color(u, v);
         if (texel[3] < 8) continue;
+        const surfN = slope ? slope.con.n : nrm;
 
         let ao = 1;
         if (o.ao && o.aoStrength > 0) {
-          const start = [p[0] + nrm[0] * 1e-4, p[1] + nrm[1] * 1e-4, p[2] + nrm[2] * 1e-4];
+          // Off a slope, start past the voxel steps that stand above it, or it would shade itself.
+          const lift = slope ? V.vx * 1.5 : 1e-4;
+          const start = [p[0] + surfN[0] * lift, p[1] + surfN[1] * lift, p[2] + surfN[2] * lift];
           let blocked = 0;
           for (const d of hemi) {
-            if (march(V, start, orient(d, nrm), aoDist)) blocked++;
+            if (march(V, start, orient(d, surfN), aoDist)) blocked++;
           }
           ao = quantAO(1 - o.aoStrength * (blocked / hemi.length));
         }
         const i = py * S + px;
-        put(i * 4, texel, visible, ao, dot(p, BACK));
+        put(i * 4, texel, visible, ao, dot(p, BACK), slope ? slope.con.n : null);
         mask[i] = 1;
         faceN[i] = visible;
         zbuf[i] = dot(p, BACK);

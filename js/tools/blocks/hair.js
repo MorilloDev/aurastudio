@@ -45,8 +45,9 @@
     const strands = [];
     for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
       if (!V.isBase(i, j, k) || !V.solid(i, j, k)) continue;
+      const sloped = V.isSloped?.(i, j, k);
       for (const g of GROUPS) {
-        if (!hp.edges[g.key]) continue;
+        if (!hp.edges[g.key] || (sloped && g.open.includes(4))) continue;
         if (!isOpen(i, j, k, g.open[0]) || !isOpen(i, j, k, g.open[1])) continue;
         // The edge line: the voxel's corner shared by its two open sides, running along g.along.
         const corner = [i, j, k];

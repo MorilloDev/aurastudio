@@ -87,6 +87,11 @@
     return out;
   }
 
+  /** A box sliced by planes: solid where n·p ≤ d for every cut (p in the local frame, 0..1). Ramps and slanted panels
+   *  are built from these; the renderer draws the cut planes as true slopes, not voxel steps. */
+  const cut = (b, ...cuts) => ({ ...b, cuts: cuts.map(([n, d]) => ({ n, d })) });
+  const FULL = box(0, 0, 0, 16, 16, 16);
+
   // Connection sides of fences and walls, as quarter turns of the arm that points front.
   const SIDES = [["f", "frente", 0], ["r", "derecha", 1], ["b", "atrás", 2], ["l", "izquierda", 3]];
 
@@ -113,6 +118,55 @@
     stair: {
       label: "Escalera", states: ["default", "inverted"],
       boxes: () => [box(0, 0, 0, 16, 8, 16), box(0, 8, 8, 16, 16, 16)],
+    },
+    stairOuter: {
+      label: "Escalera esquina ext.", states: ["default", "inverted"],
+      boxes: () => [box(0, 0, 0, 16, 8, 16), box(8, 8, 8, 16, 16, 16)],
+    },
+    stairInner: {
+      label: "Escalera esquina int.", states: ["default", "inverted"],
+      boxes: () => [box(0, 0, 0, 16, 8, 16), box(0, 8, 8, 16, 16, 16), box(8, 8, 0, 16, 16, 8)],
+    },
+    ramp: {
+      label: "Rampa", states: ["default", "inverted"],
+      // Rises from the front edge (bottom) to the back edge (top).
+      boxes: () => [cut(FULL, [[0, 1, -1], 0])],
+    },
+    rampLow: {
+      label: "Rampa larga (abajo)", states: ["default", "inverted"],
+      // First half of a ramp two blocks long: from the floor to half height.
+      boxes: () => [cut(FULL, [[0, 1, -0.5], 0])],
+    },
+    rampHigh: {
+      label: "Rampa larga (arriba)", states: ["default", "inverted"],
+      // Second half: from half height to the top.
+      boxes: () => [cut(FULL, [[0, 1, -0.5], 0.5])],
+    },
+    rampOuter: {
+      label: "Rampa esquina ext.", states: ["default", "inverted"],
+      // Two slopes meeting at an outside corner (hip roof): only the back-right corner reaches the top.
+      boxes: () => [cut(FULL, [[0, 1, -1], 0], [[-1, 1, 0], 0])],
+    },
+    rampInner: {
+      label: "Rampa esquina int.", states: ["default", "inverted"],
+      // Two slopes meeting at an inside corner (valley): the union of both ramps.
+      boxes: () => [cut(FULL, [[0, 1, -1], 0]), cut(FULL, [[-1, 1, 0], 0])],
+    },
+    slopePanel: {
+      label: "Panel inclinado", states: ["default", "inverted"],
+      // A thin panel lying on the ramp's diagonal, from the bottom front edge to the top back edge.
+      boxes: (p) => {
+        const w = Math.SQRT2 * p.panel / 32;
+        return [cut(FULL, [[0, 1, -1], w], [[0, -1, 1], w])];
+      },
+    },
+    diagonalWall: {
+      label: "Pared diagonal", states: ["default"],
+      // A thin full-height wall across the cell, from the front-left corner to the back-right one.
+      boxes: (p) => {
+        const w = Math.SQRT2 * p.panel / 32;
+        return [cut(FULL, [[1, 0, -1], w], [[-1, 0, 1], w])];
+      },
     },
     pillar: {
       label: "Columna", states: ["default", "horizontal"],
@@ -151,7 +205,7 @@
 
   /**
    * Boxes typed by hand. Accepts the tile JSON "collision" list ({ min, max } in cell units 0..1, y up, written facing
-   * front) or the same numbers in sixteenths (any value above 1 means sixteenths).
+   * front) or the same numbers in sixteenths (any value above 1 means sixteenths). A box may carry "cuts" to slope it.
    */
   function parseCustom(text) {
     let list;
@@ -164,7 +218,15 @@
         throw new Error(`La caja ${i + 1} necesita "min" y "max" con 3 números.`);
       }
       const min = b.min.map((v) => Math.max(0, Math.min(1, v * k))), max = b.max.map((v) => Math.max(0, Math.min(1, v * k)));
-      return { min: min.map((v, a) => Math.min(v, max[a])), max: max.map((v, a) => Math.max(v, min[a])) };
+      const out = { min: min.map((v, a) => Math.min(v, max[a])), max: max.map((v, a) => Math.max(v, min[a])) };
+      // Optional slope cuts: [{ "n": [x, y, z], "d": number }], solid where n·p ≤ d (d in the same units as the box).
+      if (Array.isArray(b.cuts) && b.cuts.length) {
+        out.cuts = b.cuts.map((c, ci) => {
+          if (!Array.isArray(c.n) || c.n.length !== 3 || typeof c.d !== "number") throw new Error(`El corte ${ci + 1} de la caja ${i + 1} necesita "n" (3 números) y "d".`);
+          return { n: c.n.map(Number), d: c.d * k };
+        });
+      }
+      return out;
     });
   }
 
