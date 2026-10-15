@@ -463,7 +463,7 @@
       // The water's surface, for plants that live in or on it.
       const mode = G.waterMode(this.type, this.o);
       if (mode !== "LAND") {
-        const zw = z + this.o.waterDepth * H;
+        const zw = z + G.waterLevels(this.type, this.o).surface * H;
         const wp = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]].map(([x, y]) => {
           const [px, py] = Aura.blockEngine.project([x, y, zw], S, H);
           return [ox + px * zoom, oy + py * zoom];

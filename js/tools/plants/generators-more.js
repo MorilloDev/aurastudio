@@ -442,7 +442,7 @@
     }
     // Every third spoke carries a vein: lighter (or darker) from the stem to the rim.
     for (let k = 0; k < sides; k++) mb.tri(hub, rim[k], rim[k + 1], cIn, k % 3 === 0 ? vein : cOut, (k + 1) % 3 === 0 ? vein : cOut);
-    if (p.lilyStems && p.waterModeResolved === "SURFACE") {
+    if (p.lilyStems && p.waterModeResolved === "SURFACE" && p.waterSurface > 1e-3) {
       // Built at the pad's height and lifted with it, so it always ends on the bottom.
       const bottom = V.add(V.sub(pos, [0, 0, p.waterSurface]), V.mul([r.uniform(-1, 1), r.uniform(-1, 1), 0], rad * 0.4));
       mb.tube(bezierPath(pos, V.add(V.lerp(pos, bottom, 0.5), [rad * 0.3, 0, 0]), bottom, 5), Array(6).fill(rad * 0.05), 4, gradient(cIn, V.mul(cIn, 0.6), 6), { capTip: false });
@@ -615,7 +615,7 @@
       ["stemNodes", "Nudos", "int", 0, 0, 6, 1], ["stemNodeDark", "Oscuridad nudos", "num", 0.25, 0, 0.8, 0.01],
       ["brokenChance", "Rotas", "num", 0, 0, 1, 0.01],
     ] },
-    defaults: { count: 3, distribution: "CLUSTERS", areaSize: 0.8, clusterCount: 1, clusterSpread: 0.3, segments: 5, inclination: 4, bend: 0.3, waterDepth: 0.8, emergeHeight: 0.8,
+    defaults: { count: 3, distribution: "CLUSTERS", areaSize: 0.8, clusterCount: 1, clusterSpread: 0.3, segments: 5, inclination: 4, bend: 0.3, waterDepth: 0.8, emergeHeight: 0.8, multipart: true,
       baseColor: L(0.18, 0.38, 0.12), tipColor: L(0.5, 0.72, 0.3) },
   }, genReeds, [
     { key: "CATTAIL", label: "Espadaña (enea)", values: { reedHeads: 2, reedHeadColor: L(0.35, 0.2, 0.1) } },
@@ -642,7 +642,7 @@
       ["stemLeafSize", "Tam. hoja", "num", 0.22, 0.03, 0.5, 0.005], ["stemNodeDark", "Oscuridad nudos", "num", 0.2, 0, 0.8, 0.01],
       ["stemLeafColor", "Color hoja", "color", L(0.3, 0.6, 0.2)],
     ] },
-    defaults: { count: 1, inclination: 2, baseColor: L(0.35, 0.55, 0.18), tipColor: L(0.5, 0.7, 0.25), cells: 2, fillCells: true },
+    defaults: { count: 1, inclination: 2, baseColor: L(0.35, 0.55, 0.18), tipColor: L(0.5, 0.7, 0.25), multipart: true, cells: 2, fillCells: true },
   }, genBamboo, [
     { key: "GREEN", label: "Verde", values: { baseColor: L(0.35, 0.55, 0.18), tipColor: L(0.5, 0.7, 0.25) } },
     { key: "GOLDEN", label: "Dorado", values: { baseColor: L(0.7, 0.55, 0.12), tipColor: L(0.85, 0.75, 0.3) } },
@@ -659,7 +659,7 @@
       ["seaweedColor", "Color base", "color", L(0.1, 0.35, 0.2)], ["seaweedTipColor", "Color punta", "color", L(0.2, 0.6, 0.3)],
       ["seaweedLeafColor", "Color hoja", "color", L(0.15, 0.5, 0.25)], ["seaweedBladderColor", "Color vesículas", "color", L(0.35, 0.45, 0.15)],
     ] },
-    defaults: { count: 4, separation: 0.5, waterDepth: 2, waterFill: true },
+    defaults: { count: 4, separation: 0.5, waterDepth: 2, waterFill: true, multipart: true },
   }, genSeaweed, [
     { key: "KELP", label: "Kelp verde", values: { seaweedColor: L(0.1, 0.35, 0.2), seaweedTipColor: L(0.2, 0.6, 0.3), seaweedLeafColor: L(0.15, 0.5, 0.25), seaweedBladders: 0 } },
     { key: "BROWN", label: "Alga parda", values: { seaweedColor: L(0.22, 0.16, 0.04), seaweedTipColor: L(0.45, 0.35, 0.1), seaweedLeafColor: L(0.35, 0.28, 0.08), seaweedBladders: 4 } },

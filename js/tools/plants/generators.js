@@ -80,7 +80,8 @@
       ["emergeHeight", "Sale del agua", "num", 0.3, 0, 2, 0.01, "Cuánto asoma una planta emergente, en bloques"],
     ],
     "Multiparte": [
-      ["cells", "Celdas de alto", "int", 0, 0, 4, 1, "0 = automático (las que necesite la planta); 2 = un maíz de dos tiles, etc. Cada celda sale como un sprite aparte"],
+      ["multipart", "Multiparte", "bool", false, null, null, null, "Apagado: la planta cabe en un solo tile (se encoge si hace falta). Encendido: puede ocupar varios tiles de alto, cada uno un sprite aparte"],
+      ["cells", "Celdas de alto", "int", 0, 0, 4, 1, "Solo con Multiparte. 0 = automático (las que necesite la planta); 2 = un maíz de dos tiles, etc. Cada celda sale como un sprite aparte"],
       ["fillCells", "Llenar las celdas", "bool", false, null, null, null, "Estira la planta hacia arriba hasta el techo de sus celdas"],
     ],
     "Base": [
@@ -239,7 +240,7 @@
           ["tasselColor", "Color penacho", "color", L(0.8, 0.65, 0.3)],
         ],
       },
-      defaults: { count: 4, separation: 0.45, positionJitter: 0.3, tubeSides: 5, baseColor: L(0.22, 0.48, 0.15), tipColor: L(0.35, 0.62, 0.22), cells: 2, fillCells: true },
+      defaults: { count: 4, separation: 0.45, positionJitter: 0.3, tubeSides: 5, baseColor: L(0.22, 0.48, 0.15), tipColor: L(0.35, 0.62, 0.22), multipart: true, cells: 2, fillCells: true },
       growth: true,
     },
     PUMPKIN: {
@@ -858,8 +859,9 @@
     }
   }
 
-  /** Cells the plant needs: the panel's number, or (0) enough to hold its top, up to four. */
+  /** Cells the plant needs: one without Multiparte; else the panel's number, or (0) enough to hold its top, up to four. */
   function cellsFor(pos, p, H) {
+    if (!p.multipart) return 1;
     if (p.cells > 0) return p.cells;
     let top = 0;
     for (let j = 2; j < pos.length; j += 3) top = Math.max(top, pos[j]);
@@ -871,6 +873,25 @@
     const t = TYPES[type];
     if (t?.water === "HANGING") return "LAND";
     return p.waterMode === "AUTO" ? (t?.water ?? "LAND") : p.waterMode;
+  }
+
+  /**
+   * The water this plant is drawn with, in blocks: { surface, emerge }. With Multiparte the panel's values as they are.
+   * Without it everything must fit one tile, the same cells the game gives each habitat: a submerged plant fills (at
+   * most) its one water cell; an emergent one shares its single cell between the water and what sticks out; a floating
+   * one is the air cell over the water, so it rests on its own floor and its stems (which would be in the cell below)
+   * are left out.
+   */
+  function waterLevels(type, p) {
+    const mode = waterMode(type, p);
+    if (p.multipart) return { surface: p.waterDepth, emerge: p.emergeHeight };
+    if (mode === "UNDERWATER") return { surface: Math.min(p.waterDepth, 1), emerge: p.emergeHeight };
+    if (mode === "EMERGENT") {
+      const k = Math.min(1, 0.96 / Math.max(1e-6, p.waterDepth + p.emergeHeight));
+      return { surface: p.waterDepth * k, emerge: p.emergeHeight * k };
+    }
+    if (mode === "SURFACE") return { surface: 0, emerge: p.emergeHeight };
+    return { surface: p.waterDepth, emerge: p.emergeHeight };
   }
 
   /**
@@ -894,7 +915,7 @@
       if (top <= limit && !p.waterFill) return;
       k = limit / top;
     } else {
-      const want = surface + p.emergeHeight * H;
+      const want = surface + p.emergeResolved * H;
       if (top >= want) return;
       k = want / top;
     }
@@ -915,7 +936,9 @@
     const H = Aura.blockEngine.BLOCK_HEIGHT;
     const ground = p.groundZ * H;
     const mode = waterMode(type, p);
-    p.waterSurface = p.waterDepth * H;
+    const water = waterLevels(type, p);
+    p.waterSurface = water.surface * H;
+    p.emergeResolved = water.emerge;
     p.waterModeResolved = mode;
     pts.forEach((pos, i) => {
       // One generator per plant, seeded by its index: changing the count adds or removes plants without reshuffling
@@ -930,15 +953,18 @@
     });
     colorNoise(mb, p);
     if (ground) for (let j = 2; j < mb.pos.length; j += 3) mb.pos[j] += ground;
-    if (p.fillCells && p.cells > 0) {
-      // Stretched upward only: "two tiles tall" should make a taller corn, not a wider one.
+    const filled = p.multipart ? p.cells : 1;
+    if (p.fillCells && filled > 0 && mode !== "SURFACE") {
+      // Stretched upward only: "two tiles tall" should make a taller corn, not a wider one. Never a floating plant:
+      // it lies on the water, and stretching its thickness only pushes it out of the sprite.
       let top = ground;
       for (let j = 2; j < mb.pos.length; j += 3) top = Math.max(top, mb.pos[j]);
-      const k = (p.cells * H * 0.96 - ground) / Math.max(1e-6, top - ground);
+      const k = (filled * H * 0.96 - ground) / Math.max(1e-6, top - ground);
       if (k > 0) for (let j = 2; j < mb.pos.length; j += 3) mb.pos[j] = ground + (mb.pos[j] - ground) * k;
     }
     const cells = cellsFor(mb.pos, p, H);
-    if (p.fitSprite) fitCells(mb.pos, ground, cells);
+    // Without Multiparte the one-tile limit is a rule, not a preference: it is fitted even with "Ajustar al sprite" off.
+    if (p.fitSprite || !p.multipart) fitCells(mb.pos, ground, cells);
     return { pos: Float32Array.from(mb.pos), col: Float32Array.from(mb.col), triangles: mb.triangleCount, cells };
   }
 
@@ -955,7 +981,7 @@
   }
 
   Aura.plantGen = {
-    COMMON, TYPES, PRESETS, CATEGORIES, defaults, build, register, waterMode,
+    COMMON, TYPES, PRESETS, CATEGORIES, defaults, build, register, waterMode, waterLevels,
     helpers: { L, deg, vary, positions, leanDirection, kink, nodeColors, featherLeaf, petal, flowerCenter, segmentedStem, growthColor },
   };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));
