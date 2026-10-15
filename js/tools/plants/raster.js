@@ -103,9 +103,11 @@
 
   /**
    * mesh: { pos, col } from plantGen.build (linear colours). ground: the z the plant stands on (for ground AO).
+   * occluders: the mesh AO is traced against when it is not the drawn one — the whole plant, when drawing one part of
+   * a multipart plant, so the shade carries on across the cut.
    * Returns S × S RGBA maps: color, normal, depth (white = near), ao (white = open), gray, plus mask.
    */
-  function render(mesh, opts = {}, ground = 0) {
+  function render(mesh, opts = {}, ground = 0, occluders = null) {
     const o = merge(opts);
     const S = o.size, ss = Math.max(1, Math.round(o.supersample)), W = S * ss;
     const H = Aura.blockEngine.BLOCK_HEIGHT;
@@ -161,13 +163,14 @@
     const depth = new Uint8ClampedArray(S * S * 4), aoMap = new Uint8ClampedArray(S * S * 4), gray = new Uint8ClampedArray(S * S * 4);
     const mask = new Uint8Array(S * S);
     let dMin = Infinity, dMax = -Infinity;
-    for (const x of [-0.75, 0.75]) for (const y of [-0.75, 0.75]) for (const z of [ground - 0.2, ground + 1.6]) {
+    // A fixed range per cell (not per plant), so every part of a multipart plant writes depth on the same scale.
+    for (const x of [-0.75, 0.75]) for (const y of [-0.75, 0.75]) for (const z of [-0.2, 1.6]) {
       const d = dot([x, y, z], BACK);
       dMin = Math.min(dMin, d); dMax = Math.max(dMax, d);
     }
 
     const cell = 1 / 48;
-    const occ = o.ao && o.aoStrength > 0 ? occupancy(mesh, cell, o.aoDistance + cell) : null;
+    const occ = o.ao && o.aoStrength > 0 ? occupancy(occluders ?? mesh, cell, o.aoDistance + cell) : null;
     const hemi = hemisphere(Math.max(1, o.aoSamples));
     const blockedAt = (x, y, z) => (o.aoGround && z < ground) || occ.solid(x, y, z);
 
@@ -242,5 +245,67 @@
     return { size: S, color, normal, depth, ao: aoMap, gray, mask };
   }
 
-  Aura.plantRaster = { DEFAULTS, merge, render };
+  // ── Multipart ────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Cuts a plant into cells stacked one block height apart: part k keeps what lies between z = k·H and (k+1)·H
+   * (the bottom part also keeps anything under the ground, the top part anything above), clipped exactly at the cut
+   * so the parts meet without a gap, and moved down into the first cell so each renders with the same camera.
+   * Returns [{ pos, col, offset }] bottom first; offset is the z each part was moved down by.
+   */
+  function split(mesh, cells) {
+    const H = Aura.blockEngine.BLOCK_HEIGHT;
+    const parts = [];
+    for (let k = 0; k < cells; k++) {
+      const lo = k === 0 ? -Infinity : k * H, hi = k === cells - 1 ? Infinity : (k + 1) * H;
+      const pos = [], col = [];
+      for (let t = 0; t < mesh.pos.length; t += 9) {
+        let poly = [0, 1, 2].map((v) => ({ p: [mesh.pos[t + v * 3], mesh.pos[t + v * 3 + 1], mesh.pos[t + v * 3 + 2]], c: [mesh.col[t + v * 3], mesh.col[t + v * 3 + 1], mesh.col[t + v * 3 + 2]] }));
+        if (lo > -Infinity) poly = clip(poly, (q) => q[2] - lo);
+        if (hi < Infinity && poly.length) poly = clip(poly, (q) => hi - q[2]);
+        for (let i = 1; i < poly.length - 1; i++) {
+          for (const v of [poly[0], poly[i], poly[i + 1]]) {
+            pos.push(v.p[0], v.p[1], v.p[2] - k * H);
+            col.push(v.c[0], v.c[1], v.c[2]);
+          }
+        }
+      }
+      parts.push({ pos: Float32Array.from(pos), col: Float32Array.from(col), offset: k * H });
+    }
+    return parts;
+  }
+
+  /** Sutherland–Hodgman against one plane: keeps the side where side(p) ≥ 0, colours interpolated at the cut. */
+  function clip(poly, side) {
+    const out = [];
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const da = side(a.p), db = side(b.p);
+      if (da >= 0) out.push(a);
+      if ((da >= 0) !== (db >= 0)) {
+        const t = da / (da - db);
+        out.push({ p: a.p.map((v, j) => v + (b.p[j] - v) * t), c: a.c.map((v, j) => v + (b.c[j] - v) * t) });
+      }
+    }
+    return out;
+  }
+
+  /** A mesh moved down by dz (the occluders seen from one part's cell). */
+  function lowered(mesh, dz) {
+    if (!dz) return mesh;
+    const pos = Float32Array.from(mesh.pos);
+    for (let j = 2; j < pos.length; j += 3) pos[j] -= dz;
+    return { pos, col: mesh.col };
+  }
+
+  /**
+   * Renders every part of a plant: [{ size, color, normal, … }] bottom first. A one-cell plant gives one part.
+   * ground: the z the plant stands on.
+   */
+  function renderParts(mesh, opts, ground, cells) {
+    if (cells <= 1) return [render(mesh, opts, ground)];
+    return split(mesh, cells).map((part) => render(part, opts, ground - part.offset, lowered(mesh, part.offset)));
+  }
+
+  Aura.plantRaster = { DEFAULTS, merge, render, renderParts, split };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));

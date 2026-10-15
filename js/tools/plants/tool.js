@@ -327,10 +327,29 @@
       return out;
     }
 
+    /**
+     * One variant: its parts (one sprite per cell, bottom first) plus each map stacked into one tall picture, the
+     * parts drawn one cell height apart the way the game piles them up (upper parts over lower ones).
+     */
     #renderOne(v) {
       const mesh = G.build(this.type, v.opts);
       const ground = v.opts.groundZ * Aura.blockEngine.BLOCK_HEIGHT;
-      return { ...R.render(mesh, this.r, ground), triangles: mesh.triangles };
+      const parts = R.renderParts(mesh, this.r, ground, mesh.cells);
+      const S = parts[0].size, step = S / 2, w = S, hgt = S + (parts.length - 1) * step;
+      const out = { size: S, w, h: hgt, parts, cells: parts.length, triangles: mesh.triangles };
+      for (const [key] of MAPS) {
+        const img = new Uint8ClampedArray(w * hgt * 4);
+        parts.forEach((part, k) => {
+          const oy = hgt - S - k * step;
+          for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+            const si = (y * S + x) * 4;
+            if (!part[key][si + 3]) continue;
+            img.set(part[key].subarray(si, si + 4), ((oy + y) * w + x) * 4);
+          }
+        });
+        out[key] = img;
+      }
+      return out;
     }
 
     #render(all) {
@@ -345,7 +364,8 @@
         return;
       }
       this.studio.slot?.("pl-time", `${Math.round(performance.now() - t0)} ms · ${this.result.triangles} triángulos`, "Tiempo de generación");
-      this.previewLabel.textContent = `${G.TYPES[this.type].label} · ${v.label}`;
+      const cells = this.result.cells > 1 ? ` · ${this.result.cells} celdas` : "";
+      this.previewLabel.textContent = `${G.TYPES[this.type].label} · ${v.label}${cells}`;
       this.#drawPreview();
       this.#drawStrip();
       if (all) this.#renderVariants();
@@ -380,9 +400,9 @@
       });
     }
 
-    #imageCanvas(rgba, size) {
-      const c = new OffscreenCanvas(size, size);
-      c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(rgba), size, size), 0, 0);
+    #imageCanvas(rgba, w, hgt = w) {
+      const c = new OffscreenCanvas(w, hgt);
+      c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(rgba), w, hgt), 0, 0);
       return c;
     }
 
@@ -395,19 +415,27 @@
       const ctx = c.getContext("2d");
       ctx.clearRect(0, 0, c.width, c.height);
       if (!this.result) return;
-      const S = this.result.size;
-      const zoom = Math.max(1, Math.floor(Math.min(c.width, c.height) * 0.9 / S));
-      const ox = Math.floor((c.width - S * zoom) / 2), oy = Math.floor((c.height - S * zoom) / 2);
-      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const S = this.result.size, W = this.result.w, Ht = this.result.h;
+      const zoom = Math.max(1, Math.floor(Math.min(c.width / W, c.height / Ht) * 0.9));
+      const ox = Math.floor((c.width - W * zoom) / 2), oyTop = Math.floor((c.height - Ht * zoom) / 2);
+      for (let y = 0; y < Ht; y++) for (let x = 0; x < W; x++) {
         ctx.fillStyle = (x >> 2 ^ y >> 2) & 1 ? "#2f3338" : "#383d43";
-        ctx.fillRect(ox + x * zoom, oy + y * zoom, zoom, zoom);
+        ctx.fillRect(ox + x * zoom, oyTop + y * zoom, zoom, zoom);
       }
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(this.#imageCanvas(this.result[this.view], S), ox, oy, S * zoom, S * zoom);
+      ctx.drawImage(this.#imageCanvas(this.result[this.view], W, Ht), ox, oyTop, W * zoom, Ht * zoom);
       if (!this.guideChk.get()) return;
-      ctx.strokeStyle = "rgba(255,255,255,.35)";
       ctx.lineWidth = 1;
-      ctx.strokeRect(ox - 0.5, oy - 0.5, S * zoom + 1, S * zoom + 1);
+      // Each part's sprite, bottom one solid, the ones above dashed: what goes into each atlas cell.
+      for (let k = 0; k < this.result.cells; k++) {
+        const top = oyTop + (Ht - S - k * S / 2) * zoom;
+        ctx.strokeStyle = k ? "rgba(255,210,120,.45)" : "rgba(255,255,255,.35)";
+        ctx.setLineDash(k ? [6, 4] : []);
+        ctx.strokeRect(ox - 0.5, top - 0.5, S * zoom + 1, S * zoom + 1);
+      }
+      ctx.setLineDash([]);
+      // Guides are drawn in the bottom cell's frame.
+      const oy = oyTop + (Ht - S) * zoom;
       // The cell's ground: where the plants are rooted.
       const H = Aura.blockEngine.BLOCK_HEIGHT, z = this.o.groundZ * H;
       const pts = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]].map(([x, y]) => {
@@ -441,11 +469,11 @@
 
     #drawStrip() {
       if (!this.result) { this.strip.replaceChildren(); return; }
-      const S = this.result.size;
+      const { w, h: hgt } = this.result;
       this.strip.replaceChildren(...VIEWS.map(([k, t]) => {
-        const c = h("canvas", { width: S, height: S, title: t, class: k === this.view ? "on" : "",
+        const c = h("canvas", { width: w, height: hgt, title: t, class: k === this.view ? "on" : "", style: { height: Math.round(64 * hgt / w) + "px" },
           onclick: () => { this.view = k; this.viewSeg.set(k); this.#drawPreview(); this.#drawStrip(); this.#drawVariantStrip(); } });
-        c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(this.result[k]), S, S), 0, 0);
+        c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(this.result[k]), w, hgt), 0, 0);
         return h("div", { class: "bk-thumb" }, c, h("span", null, t));
       }));
     }
@@ -468,8 +496,8 @@
     #drawVariantThumb(v) {
       const c = this.variantThumbs?.get(v.id), r = this.variantResults.get(v.id);
       if (!c || !r) return;
-      if (c.width !== r.size) c.width = c.height = r.size;
-      c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(r[this.view]), r.size, r.size), 0, 0);
+      if (c.width !== r.w || c.height !== r.h) { c.width = r.w; c.height = r.h; c.style.height = Math.round(64 * r.h / r.w) + "px"; }
+      c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(r[this.view]), r.w, r.h), 0, 0);
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -494,9 +522,12 @@
       for (let i = 0; i < MAPS.length; i++) {
         if (!this.mapChecks[i].get()) continue;
         const [key, suffix] = MAPS[i];
-        const rgba = k > 1 ? Aura.blockEngine.upscale(this.result[key], S, k) : this.result[key];
-        downloadBlob(await encodePng(S * k, S * k, new Uint8ClampedArray(rgba)), `${this.#baseName()}_${this.previewId}${suffix}${k > 1 ? "@" + k + "x" : ""}.png`);
-        n++;
+        for (const [pi, part] of this.result.parts.entries()) {
+          const rgba = k > 1 ? Aura.blockEngine.upscale(part[key], S, k) : part[key];
+          const tag = this.result.cells > 1 ? `_p${pi + 1}` : "";
+          downloadBlob(await encodePng(S * k, S * k, new Uint8ClampedArray(rgba)), `${this.#baseName()}_${this.previewId}${tag}${suffix}${k > 1 ? "@" + k + "x" : ""}.png`);
+          n++;
+        }
       }
       this.studio.setStatus(n ? `Descargados ${n} PNG.` : "Marca qué mapas descargar.", n ? "ok" : "warn");
     }
@@ -508,7 +539,7 @@
         if (!this.mapChecks[m].get()) continue;
         const [key, suffix] = MAPS[m];
         const k = this.exportScale;
-        downloadBlob(await Cells.strip(all.map((a) => a.result), key, k), `${this.#baseName()}_variantes${suffix}${k > 1 ? "@" + k + "x" : ""}.png`);
+        downloadBlob(await Cells.strip(all.flatMap((a) => a.result.parts), key, k), `${this.#baseName()}_variantes${suffix}${k > 1 ? "@" + k + "x" : ""}.png`);
         n++;
       }
       this.studio.setStatus(n ? `Descargadas ${n} tiras con ${all.length} variantes.` : "Marca qué mapas descargar.", n ? "ok" : "warn");
@@ -527,10 +558,12 @@
           const all = onlyPreview
             ? [{ variant: this.variantList.find((v) => v.id === this.previewId), result: this.result }]
             : this.#allVariantResults();
-          const S = all[0].result.size;
+          // One cell per part: a two-tile corn takes two cells, bottom part first.
+          const flat = all.flatMap((a) => a.result.parts.map((part, pi) => ({ variant: a.variant, part: pi, parts: a.result.cells, result: part })));
+          const S = flat[0].result.size;
           const sheetImg = await decodePng(await sheet.entry.handle.getFile());
-          const cells = Cells.layoutCells(this.targetCell.get(), all.length, Math.floor(sheetImg.w / S));
-          const items = all.map((a, i) => ({ ...a, cell: cells[i] }));
+          const cells = Cells.layoutCells(this.targetCell.get(), flat.length, Math.floor(sheetImg.w / S));
+          const items = flat.map((a, i) => ({ ...a, cell: cells[i] }));
           const ctx = { project: this.project, studio: this.studio };
           Cells.announce(ctx, sheet, items, await Cells.writeCells(ctx, sheet, items, { saveN: this.saveN.get(), sheetImg }));
           this.snippetEl.value = this.#snippet(items);
@@ -543,12 +576,18 @@
 
     /**
      * The saved cells as JSON: "stages" for growth stages (one list of seed variants per stage when there are several),
-     * "variants" for seeds only. A proposal to wire into the decoration / crop JSON, which has no such key yet.
+     * "variants" for seeds only; multipart plants give { "parts": [bottom, …, top] } instead of one cell. A proposal to
+     * wire into the decoration / crop JSON, which has no such key yet.
      */
-    #snippet(items) {
+    #snippet(allItems) {
+      // A multipart variant is listed by its bottom cell plus "parts", every cell bottom to top.
+      const items = allItems.filter((i) => i.part === 0);
       const stages = Math.max(...items.map((i) => i.variant.stage)) + 1;
       const seeds = Math.max(...items.map((i) => i.variant.seed)) + 1;
-      const cell = (i) => JSON.stringify(i.cell).replace(",", ", ");
+      const cell = (i) => {
+        const list = allItems.filter((x) => x.variant === i.variant).map((x) => JSON.stringify(x.cell).replace(",", ", "));
+        return list.length > 1 ? `{ "parts": [${list.join(", ")}] }` : list[0];
+      };
       if (items.length === 1) return `"art": { "default": { "front": ${cell(items[0])} } }`;
       if (stages > 1) {
         const rows = Array.from({ length: stages }, (_, s) => {

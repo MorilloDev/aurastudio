@@ -74,9 +74,14 @@
       ["waterMode", "Agua", [["AUTO", "Automático"], ["LAND", "Tierra (sin agua)"], ["UNDERWATER", "Sumergida"],
         ["SURFACE", "Flotando"], ["EMERGENT", "Sale del agua"]], "AUTO", null, null, null,
         "Automático: cada planta donde vive (algas sumergidas, nenúfares flotando, juncos saliendo del agua)"],
-      ["waterDepth", "Profundidad", "num", 1, 0.1, 1.5, 0.01, "Altura de la superficie del agua sobre el suelo, en bloques"],
+      ["waterDepth", "Profundidad", "num", 1, 0.1, 4, 0.01, "Altura de la superficie del agua sobre el suelo, en bloques (más de 1 = varias celdas)"],
+      ["waterFill", "Llegar a la superficie", "bool", false, null, null, null, "Sumergidas: se estiran desde el fondo hasta justo bajo la superficie"],
       ["waterFit", "Ajustar al agua", "bool", true, null, null, null, "Sumergidas: se encogen bajo la superficie; emergentes: se estiran hasta salir"],
-      ["emergeHeight", "Sale del agua", "num", 0.3, 0, 1, 0.01, "Cuánto asoma una planta emergente, en bloques"],
+      ["emergeHeight", "Sale del agua", "num", 0.3, 0, 2, 0.01, "Cuánto asoma una planta emergente, en bloques"],
+    ],
+    "Multiparte": [
+      ["cells", "Celdas de alto", "int", 0, 0, 4, 1, "0 = automático (las que necesite la planta); 2 = un maíz de dos tiles, etc. Cada celda sale como un sprite aparte"],
+      ["fillCells", "Llenar las celdas", "bool", false, null, null, null, "Estira la planta hacia arriba hasta el techo de sus celdas"],
     ],
     "Base": [
       ["aoBase", "Oscurecer base", "num", 0.25, 0, 1, 0.01, "Oscurece donde la planta toca el suelo"],
@@ -234,7 +239,7 @@
           ["tasselColor", "Color penacho", "color", L(0.8, 0.65, 0.3)],
         ],
       },
-      defaults: { count: 4, separation: 0.45, positionJitter: 0.3, tubeSides: 5, baseColor: L(0.22, 0.48, 0.15), tipColor: L(0.35, 0.62, 0.22) },
+      defaults: { count: 4, separation: 0.45, positionJitter: 0.3, tubeSides: 5, baseColor: L(0.22, 0.48, 0.15), tipColor: L(0.35, 0.62, 0.22), cells: 2, fillCells: true },
       growth: true,
     },
     PUMPKIN: {
@@ -827,13 +832,17 @@
     }
   }
 
-  /** Scales everything about the cell's ground centre, as little as needed, so no vertex leaves the sprite (the top
-   *  edge for tall plants, the sides for wide ones). */
-  function fitSprite(pos, ground) {
+  /**
+   * Scales everything about the cell's ground centre, as little as needed, so no vertex leaves its sprite: each vertex
+   * is checked against the sprite of the cell (part) it falls in, cells stacked one block height apart.
+   */
+  function fitCells(pos, ground, cells) {
     const H = Aura.blockEngine.BLOCK_HEIGHT, project = Aura.blockEngine.project;
     const fits = (k) => {
       for (let j = 0; j < pos.length; j += 3) {
-        const [x, y] = project([pos[j] * k, pos[j + 1] * k, ground + (pos[j + 2] - ground) * k], 1, H);
+        const z = ground + (pos[j + 2] - ground) * k;
+        const part = Math.max(0, Math.min(cells - 1, Math.floor(z / H)));
+        const [x, y] = project([pos[j] * k, pos[j + 1] * k, z - part * H], 1, H);
         if (x < 0.008 || x > 0.992 || y < 0.008 || y > 0.992) return false;
       }
       return true;
@@ -847,6 +856,14 @@
     for (let j = 0; j < pos.length; j += 3) {
       pos[j] *= lo; pos[j + 1] *= lo; pos[j + 2] = ground + (pos[j + 2] - ground) * lo;
     }
+  }
+
+  /** Cells the plant needs: the panel's number, or (0) enough to hold its top, up to four. */
+  function cellsFor(pos, p, H) {
+    if (p.cells > 0) return p.cells;
+    let top = 0;
+    for (let j = 2; j < pos.length; j += 3) top = Math.max(top, pos[j]);
+    return Math.max(1, Math.min(4, Math.ceil((top - 1e-4) / H)));
   }
 
   /** Where this plant lives: the panel's choice, or for "Automático" the type's own habitat. */
@@ -874,7 +891,7 @@
     let k;
     if (mode === "UNDERWATER") {
       const limit = surface - H * 0.05;
-      if (top <= limit) return;
+      if (top <= limit && !p.waterFill) return;
       k = limit / top;
     } else {
       const want = surface + p.emergeHeight * H;
@@ -913,8 +930,16 @@
     });
     colorNoise(mb, p);
     if (ground) for (let j = 2; j < mb.pos.length; j += 3) mb.pos[j] += ground;
-    if (p.fitSprite) fitSprite(mb.pos, ground);
-    return { pos: Float32Array.from(mb.pos), col: Float32Array.from(mb.col), triangles: mb.triangleCount };
+    if (p.fillCells && p.cells > 0) {
+      // Stretched upward only: "two tiles tall" should make a taller corn, not a wider one.
+      let top = ground;
+      for (let j = 2; j < mb.pos.length; j += 3) top = Math.max(top, mb.pos[j]);
+      const k = (p.cells * H * 0.96 - ground) / Math.max(1e-6, top - ground);
+      if (k > 0) for (let j = 2; j < mb.pos.length; j += 3) mb.pos[j] = ground + (mb.pos[j] - ground) * k;
+    }
+    const cells = cellsFor(mb.pos, p, H);
+    if (p.fitSprite) fitCells(mb.pos, ground, cells);
+    return { pos: Float32Array.from(mb.pos), col: Float32Array.from(mb.col), triangles: mb.triangleCount, cells };
   }
 
   // Variety presets: picking one sets the plant's shape and its own colours, which stay editable afterwards. A type
