@@ -13,8 +13,10 @@
   const G = Aura.plantGen;
   const R = Aura.plantRaster;
   const Cells = Aura.sheetCells;
+  const Tint = Aura.tint;
+  const TP = Aura.tintPanel;
 
-  const VIEWS = [["color", "Color"], ["normal", "Normales"], ["depth", "Profundidad"], ["ao", "AO"], ["gray", "Grises"]];
+  const VIEWS = [["color", "Color"], ["tinted", "Bioma"], ["normal", "Normales"], ["depth", "Profundidad"], ["ao", "AO"], ["gray", "Grises"]];
   const MAPS = [["color", ""], ["normal", "_n"], ["depth", "_depth"], ["ao", "_ao"], ["gray", "_gray"]];
   const PREFS_KEY = "plants:settings";
   const VARIANT_DEFAULTS = { stages: 1, seeds: 1 };
@@ -46,6 +48,9 @@
       this.r = R.merge(saved?.render ?? {});
       this.variants = { ...VARIANT_DEFAULTS, ...(saved?.variants ?? {}) };
       this.exportScale = saved?.exportScale ?? 4;
+      this.tint = Tint.merge(saved?.tint);
+      this.biomes = [Tint.DEFAULT_TINT];
+      this.#loadBiomes();
       host.appendChild(this.#buildLayout());
       new ResizeObserver(() => this.#drawPreview()).observe(this.root);
       this.#schedule();
@@ -59,6 +64,12 @@
       this.project = project;
       this.sheets = listSheets(project);
       this.#fillTargets();
+      this.#loadBiomes();
+    }
+
+    async #loadBiomes() {
+      this.biomes = await Tint.listBiomes(this.project);
+      if (this.panelScroll) this.#rebuildPanel();
     }
 
     /** This type's options: its defaults with whatever was changed on top. */
@@ -77,7 +88,7 @@
     }
 
     #save() {
-      prefs.set(PREFS_KEY, { type: this.type, byType: this.byType, render: this.r, variants: this.variants, exportScale: this.exportScale });
+      prefs.set(PREFS_KEY, { type: this.type, byType: this.byType, render: this.r, variants: this.variants, exportScale: this.exportScale, tint: this.tint });
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -294,7 +305,9 @@
         h("button", { onclick: () => this.#download() }, "Descargar vista previa"),
         h("button", { onclick: () => this.#downloadVariants() }, "Descargar tira de variantes"));
 
-      this.panelScroll = h("div", { class: "scroll" }, variants.el, ...sections.map((s) => s.el), light.el, pixel.el, output.el);
+      this.tintUi = TP.tintSection({ id: "pl-tint", state: this.tint, biomes: this.biomes,
+        onChange: () => { this.#save(); this.#schedule(); } });
+      this.panelScroll = h("div", { class: "scroll" }, variants.el, ...sections.map((s) => s.el), this.tintUi.el, light.el, pixel.el, output.el);
       this.panel = h("div", { class: "bk-panel" },
         h("div", { class: "bk-panel-head" }, h("span", null, t.label),
           h("button", { title: "Esta planta y la luz a sus valores por defecto", onclick: () => {
@@ -348,9 +361,15 @@
       const mesh = G.build(this.type, v.opts);
       const ground = v.opts.groundZ * Aura.blockEngine.BLOCK_HEIGHT;
       const parts = R.renderParts(mesh, this.r, ground, mesh.cells);
+      // biome_tinted: what is saved is the grey art; "tinted" is that art under the preview biome, as the game draws it.
+      const previewRgb = TP.previewRgb(this.tint, this.biomes);
+      for (const part of parts) {
+        if (this.tint.enabled) part.color = Tint.toTinted(part.color, TP.resolve(this.tint, this.biomes));
+        part.tinted = this.tint.enabled ? Tint.applyTint(part.color, previewRgb) : part.color;
+      }
       const S = parts[0].size, step = S / 2, w = S, hgt = S + (parts.length - 1) * step;
       const out = { size: S, w, h: hgt, parts, cells: parts.length, triangles: mesh.triangles };
-      for (const [key] of MAPS) {
+      for (const key of [...MAPS.map(([k]) => k), "tinted"]) {
         const img = new Uint8ClampedArray(w * hgt * 4);
         parts.forEach((part, k) => {
           const oy = hgt - S - k * step;
@@ -377,6 +396,7 @@
         return;
       }
       this.studio.slot?.("pl-time", `${Math.round(performance.now() - t0)} ms · ${this.result.triangles} triángulos`, "Tiempo de generación");
+      this.tintUi?.setStats(this.tint.enabled ? Tint.analyze(this.result.color) : null);
       const cells = this.result.cells > 1 ? ` · ${this.result.cells} celdas` : "";
       this.previewLabel.textContent = `${G.TYPES[this.type].label} · ${v.label}${cells}`;
       this.#drawPreview();
@@ -600,9 +620,12 @@
         label: t.label, name: t.label, kind: "plant", size: flat[0].result.size, sheetKey: this.targetSel.get() || null,
         items: flat.map((f) => ({ color: f.result.color, normal: f.result.normal, label: f.variant.label })),
         buildTile: all.length === 1
-          ? (coords) => (coords.length === 1
-            ? { art: { default: { front: coords[0] } } }
-            : { parts: coords.map((c, i) => ({ offsetY: i, art: { default: { front: c } } })) })
+          ? (coords) => ({
+            ...(this.tint.enabled ? { tags: ["biome_tinted"] } : {}),
+            ...(coords.length === 1
+              ? { art: { default: { front: coords[0] } } }
+              : { parts: coords.map((c, i) => ({ offsetY: i, art: { default: { front: c } } })) }),
+          })
           : null,
         snippet: (cells) => this.#snippet(flat.map((f, i) => ({ ...f, cell: cells[i] }))),
         why: "Varias etapas o semillas son varios tiles; por ahora copia sus celdas al JSON que toque.",

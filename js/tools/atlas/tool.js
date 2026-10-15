@@ -16,10 +16,14 @@
   const { addToMgcb } = Aura.mgcb;
   const { COMPANIONS, SheetImage } = Aura.atlasLayers;
   const T = Aura.atlasTiles;
+  const Tint = Aura.tint;
+  const TP = Aura.tintPanel;
 
   const ck = (x, y) => x + "," + y;
   const pk = (key) => key.split(",").map(Number);
   const sortCells = (cells) => cells.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+  const TINT_TAG = "biome_tinted";
+  const isTinted = (tile) => Array.isArray(tile?.tags) && tile.tags.some((t) => String(t).toLowerCase() === TINT_TAG);
 
   // Starting points for "Nuevo tile": the keys a fresh tile of that kind needs, nothing the game already defaults.
   const TILE_KINDS = [
@@ -61,6 +65,12 @@
     placed = null;          // the last placement, until a tile is made for it
     picking = null;         // { label, apply(cell) } while the next click sets an art coordinate
     history = new History({ limit: 200 });
+    tint = Tint.merge(prefs.get("atlas:tint", {}));
+    biomes = [Tint.DEFAULT_TINT];
+    grayPreview = false;    // show the selection converted to grey before applying it
+    #version = 0;           // bumped on every change, for the drawing caches below
+    #tintCache = null;
+    #grayCache = null;
     #hover = null;
     #drag = null;
     #sheetRefs = [];
@@ -115,6 +125,7 @@
 
     async onProject(project) {
       this.project = project;
+      this.biomes = await Tint.listBiomes(project);
       this.sheets = listSheets(project).filter((s) => s.atlas);
       if (this.history.dirty) {
         // Reloading would throw away the edits; the list is refreshed and the open sheet stays as it is.
@@ -234,7 +245,8 @@
 
     #renderViews() {
       clear(this.viewSeg);
-      const views = [["", "Color"], ...COMPANIONS.filter(([s]) => this.img?.has(s)).map(([s, label, title]) => [s, label, title])];
+      const views = [["", "Color"], ["tint", "Bioma", "Los tiles biome_tinted como los pinta el juego, con el bioma de «Ver con»"],
+        ...COMPANIONS.filter(([s]) => this.img?.has(s)).map(([s, label, title]) => [s, label, title])];
       if (!views.some(([v]) => v === this.view)) this.view = "";
       for (const [v, label, title] of views) {
         this.viewSeg.appendChild(h("button", { class: v === this.view ? "on" : "", title: title ?? "La hoja de color",
@@ -293,6 +305,7 @@
       this.tile = null;
       this.placed = null;
       this.grid = this.#gridFor(sheet);
+      this.#version++;
       this.#index();
       this.#renderAll();
       if (fit) requestAnimationFrame(() => this.#fit());
@@ -372,6 +385,7 @@
     }
 
     #changed() {
+      this.#version++;
       this.#index();
       if (this.#hover) this.#hoverStatus(this.#hover);
       this.#renderSheets();
@@ -405,7 +419,8 @@
       g.fillStyle = this.#checker(g);
       g.fillRect(ox, oy, iw, ih);
       g.imageSmoothingEnabled = false;
-      g.drawImage(this.img.canvasOf(this.view), ox, oy, iw, ih);
+      g.drawImage(this.view === "tint" ? this.#tintedCanvas() : this.img.canvasOf(this.view), ox, oy, iw, ih);
+      if (this.grayPreview && this.selection.size) this.#drawGrayPreview(g, ox, oy, z);
 
       const cw = this.grid.w * z, chh = this.grid.h * z;
       const rect = (x, y, w = 1, hh = 1) => [ox + x * cw, oy + y * chh, w * cw, hh * chh];
@@ -477,6 +492,51 @@
         g.strokeRect(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1);
       }
     });
+
+    // The colour sheet with every biome_tinted tile's cells under the preview biome, the rest as painted — the game's
+    // rule (BiomeTint.a is 0 for any other tile). Rebuilt only when the sheet or the biome changed.
+    #tintedCanvas() {
+      const key = this.#version + "|" + this.tint.preview;
+      if (this.#tintCache?.key === key) return this.#tintCache.canvas;
+      const color = this.img.color, out = new Uint8ClampedArray(color.rgba);
+      const rgb = TP.previewRgb(this.tint, this.biomes);
+      const done = new Set();
+      for (const r of this.#sheetRefs) {
+        if (!isTinted(r.tile)) continue;
+        const rr = T.refRect(r), k = rr.x + "," + rr.y;
+        if (done.has(k)) continue;
+        done.add(k);
+        pasteInto(out, color.w, color.h, rr, Tint.applyTint(this.img.read(color, rr.x, rr.y, rr.w, rr.h), rgb));
+      }
+      const canvas = new OffscreenCanvas(color.w, color.h);
+      canvas.getContext("2d").putImageData(new ImageData(out, color.w, color.h), 0, 0);
+      this.#tintCache = { key, canvas };
+      return canvas;
+    }
+
+    // The selected cells as "Pasar a gris" would leave them (under the preview biome in the Bioma view).
+    #drawGrayPreview(g, ox, oy, z) {
+      const key = [this.#version, [...this.selection].join(";"), JSON.stringify(this.tint), this.view].join("|");
+      if (this.#grayCache?.key !== key) {
+        const { w, h } = this.grid, color = this.img.color;
+        const rgb = TP.previewRgb(this.tint, this.biomes), opts = TP.resolve(this.tint, this.biomes);
+        const blocks = this.#selectedCells().map(([x, y]) => {
+          let px = Tint.toTinted(this.img.read(color, x * w, y * h, w, h), opts);
+          if (this.view === "tint") px = Tint.applyTint(px, rgb);
+          const c = new OffscreenCanvas(w, h);
+          c.getContext("2d").putImageData(new ImageData(px, w, h), 0, 0);
+          return { x, y, c };
+        });
+        this.#grayCache = { key, blocks };
+      }
+      const { w, h } = this.grid;
+      for (const b of this.#grayCache.blocks) {
+        g.clearRect(ox + b.x * w * z, oy + b.y * h * z, w * z, h * z);
+        g.fillStyle = this.#checker(g);
+        g.fillRect(ox + b.x * w * z, oy + b.y * h * z, w * z, h * z);
+        g.drawImage(b.c, ox + b.x * w * z, oy + b.y * h * z, w * z, h * z);
+      }
+    }
 
     #drawMoveGhost(g, rect, d) {
       const { w, h } = this.grid, src = this.img.canvasOf(this.view);
@@ -972,6 +1032,7 @@
       this.panel.append(this.#sheetSection().el);
       if (this.placed) this.panel.append(this.#placedSection().el);
       this.panel.append(this.#selectionSection().el);
+      this.panel.append(this.#tintSection().el);
       if (this.tile && this.#docOf(this.tile)) this.panel.append(this.#tileSection(this.tile).el);
       else this.tile = null;
       this.panel.append(this.#reviewSection().el);
@@ -1016,6 +1077,53 @@
         list,
         single ? this.#newTileForm(cells, null) : null,
         h("button", { class: "danger", onclick: () => this.#emptySelection() }, "Vaciar celdas (Supr)"));
+    }
+
+    // "Bioma": the selected cells turned into the grey a biome_tinted tile needs, previewed on the sheet first.
+    #tintSection() {
+      const cells = this.#selectedCells();
+      const ui = TP.tintSection({ id: "at-tint", title: "Bioma · pasar a gris", state: this.tint, biomes: this.biomes, withToggle: false,
+        onChange: () => { prefs.set("atlas:tint", this.tint); this.#updateTintStats(); this.#draw(); } });
+      this.tintUi = ui;
+      const previewChk = h("input", { type: "checkbox", checked: this.grayPreview,
+        onchange: () => { this.grayPreview = previewChk.checked; this.#draw(); } });
+      const markChk = h("input", { type: "checkbox", checked: true });
+      const apply = h("button", { class: "primary", disabled: !cells.length,
+        onclick: () => this.#grayCells(cells, markChk.checked) }, cells.length ? `Pasar a gris ${cells.length} celda(s)` : "Selecciona celdas");
+      ui.el.querySelector(".section-body").append(
+        h("label", { class: "field check" }, previewChk, h("span", null, "Ver el resultado sobre la selección")),
+        h("label", { class: "field check" }, markChk, h("span", null, "Marcar sus tiles como biome_tinted")),
+        apply);
+      this.#updateTintStats();
+      return ui;
+    }
+
+    // Counts for the selection as it would come out (or, with nothing selected, for every biome_tinted cell as it is).
+    #updateTintStats() {
+      if (!this.tintUi || !this.img) return;
+      const { w, h } = this.grid, color = this.img.color, opts = TP.resolve(this.tint, this.biomes);
+      const cells = this.#selectedCells();
+      const sum = { full: 0, partial: 0, kept: 0, total: 0 };
+      for (const [x, y] of cells) {
+        const s = Tint.analyze(Tint.toTinted(this.img.read(color, x * w, y * h, w, h), opts));
+        for (const k in sum) sum[k] += s[k];
+      }
+      this.tintUi.setStats(cells.length ? sum : null);
+    }
+
+    #grayCells(cells, mark) {
+      const { w, h } = this.grid, color = this.img.color, opts = TP.resolve(this.tint, this.biomes);
+      const before = cells.map(([x, y]) => this.img.read(color, x * w, y * h, w, h));
+      const after = before.map((b) => Tint.toTinted(b, opts));
+      this.#run(`Pasar a gris ${cells.length} celda(s)`,
+        () => cells.forEach(([x, y], i) => this.img.write(color, x * w, y * h, w, h, after[i])),
+        () => cells.forEach(([x, y], i) => this.img.write(color, x * w, y * h, w, h, before[i])));
+      if (mark) {
+        const tiles = [...new Set(cells.flatMap((c) => this.#cellRefs.get(ck(...c)) ?? []).map((r) => r.tile))].filter((t) => !isTinted(t));
+        for (const tile of tiles) this.#setField(tile, "tags", [...(Array.isArray(tile.tags) ? tile.tags : []), TINT_TAG]);
+        if (tiles.length) this.studio.setStatus(`En gris; ${tiles.length} tile(s) marcados biome_tinted.`, "ok");
+      }
+      this.grayPreview = false;
     }
 
     // The tile files that can hold a tile drawing from this sheet: those whose sheet it is first.
@@ -1144,9 +1252,15 @@
         this.#replaceTile(tile, next, `${T.tileLabel(tile)}: JSON`);
       };
 
+      const tinted = h("input", { type: "checkbox", checked: isTinted(tile), onchange: () => {
+        const tags = (Array.isArray(tile.tags) ? tile.tags : []).filter((t) => String(t).toLowerCase() !== TINT_TAG);
+        if (tinted.checked) tags.push(TINT_TAG);
+        this.#setField(tile, "tags", tags.length ? tags : undefined);
+      } });
       return section({ id: "at-tile", title: "Tile", extra: T.tileId(tile) },
         h("p", { class: "note" }, "En ", h("b", null, doc.name), "."),
         fields,
+        h("label", { class: "field check", title: "El juego tiñe sus pixeles grises con el color del bioma" }, tinted, h("span", null, "Teñido por bioma (biome_tinted)")),
         h("div", { class: "at-sub" }, "Arte ", h("span", { class: "faint" }, "(x, y en celdas del archivo)")),
         artRows.length ? artRows : h("p", { class: "note" }, "Sin arte."),
         this.#addArtRow(tile, doc),
@@ -1213,6 +1327,24 @@
       return sel.el;
     }
 
+    // biome_tinted tiles whose art the shader would tint halfway somewhere, or not at all.
+    #tintIssues() {
+      const byTile = new Map();
+      for (const r of this.#sheetRefs) {
+        if (!isTinted(r.tile) || !this.#refHasArt(r)) continue;
+        const rr = T.refRect(r), s = Tint.analyze(this.img.read(this.img.color, rr.x, rr.y, rr.w, rr.h));
+        const acc = byTile.get(r.tile) ?? { full: 0, partial: 0, cells: [] };
+        acc.full += s.full; acc.partial += s.partial; acc.cells.push(...this.#cellsOf(r));
+        byTile.set(r.tile, acc);
+      }
+      const out = [];
+      for (const [tile, s] of byTile) {
+        if (!s.full) out.push([`${T.tileLabel(tile)}: biome_tinted sin nada gris (el bioma no lo tiñe)`, s.cells]);
+        else if (s.partial) out.push([`${T.tileLabel(tile)}: ${s.partial} px teñidos a medias`, s.cells]);
+      }
+      return out;
+    }
+
     #reviewSection() {
       const broken = this.#sheetRefs.filter((r) => !this.#refHasArt(r));
       const orphans = [...this.#artCells].filter((k) => !this.#cellRefs.has(k));
@@ -1222,6 +1354,7 @@
       const list = [
         ...broken.map((r) => item(`${T.tileLabel(r.tile)} (${T.refLabel(r)}) → [${r.coord.join(", ")}] vacía`, this.#cellsOf(r), "bad")),
         orphans.length ? item(`${orphans.length} celda(s) con arte que ningún tile usa`, orphans.map(pk), "warn") : null,
+        ...this.#tintIssues().map(([text, cells]) => item(text, cells, "warn")),
         ...dupes.map((id) => item(`Id repetido: ${id} (el juego no carga)`, null, "bad")),
         ...errors.map((d) => item(`${d.name}: ${d.error}`, null, "bad")),
       ].filter(Boolean);
@@ -1340,6 +1473,14 @@
         { group, title: "Añadir / quitar de la selección", keys: ["Shift+Clic", "Ctrl+Clic"] },
         { group, title: "Abrir el tile de la celda", keys: ["Doble clic"] },
       ];
+    }
+  }
+
+  function pasteInto(out, W, H, r, block) {
+    for (let y = 0; y < r.h; y++) {
+      if (r.y + y >= H) break;
+      const n = Math.min(r.w, W - r.x);
+      if (n > 0) out.set(block.subarray(y * r.w * 4, (y * r.w + n) * 4), ((r.y + y) * W + r.x) * 4);
     }
   }
 

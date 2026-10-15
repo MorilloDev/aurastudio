@@ -15,9 +15,11 @@
   const Cells = Aura.sheetCells;
   const E = Aura.blockEngine;
   const Sh = Aura.blockShapes;
+  const Tint = Aura.tint;
+  const TP = Aura.tintPanel;
 
   const SLOTS = [["top", "Arriba", "#5fd3b0"], ["left", "Izquierda", "#7fb2ff"], ["right", "Derecha", "#e27bd8"]];
-  const VIEWS = [["color", "Color"], ["normal", "Normales"], ["depth", "Profundidad"], ["ao", "AO"], ["gray", "Grises"]];
+  const VIEWS = [["color", "Color"], ["tinted", "Bioma"], ["normal", "Normales"], ["depth", "Profundidad"], ["ao", "AO"], ["gray", "Grises"]];
   const MAPS = [["color", ""], ["normal", "_n"], ["depth", "_depth"], ["ao", "_ao"], ["gray", "_gray"]];
   const PREFS_KEY = "blocks:settings";
 
@@ -78,6 +80,9 @@
       this.piece = mergePiece(saved?.piece);
       this.cellSize = saved?.cellSize ?? 64;
       this.exportScale = saved?.exportScale ?? 4;
+      this.tint = Tint.merge(saved?.tint);
+      this.biomes = [Tint.DEFAULT_TINT];
+      this.#loadBiomes();
       host.appendChild(this.#buildLayout());
       new ResizeObserver(() => { this.#drawPicker(); this.#drawPreview(); }).observe(this.root);
       this.#renderList();
@@ -93,10 +98,16 @@
       this.sheets = listSheets(project);
       this.#renderList();
       this.#fillTargets();
+      this.#loadBiomes();
+    }
+
+    async #loadBiomes() {
+      this.biomes = await Tint.listBiomes(this.project);
+      if (this.panelScroll) this.#rebuildPanel();
     }
 
     #save() {
-      prefs.set(PREFS_KEY, { o: this.o, piece: this.piece, cellSize: this.cellSize, exportScale: this.exportScale });
+      prefs.set(PREFS_KEY, { o: this.o, piece: this.piece, cellSize: this.cellSize, exportScale: this.exportScale, tint: this.tint });
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -366,7 +377,9 @@
         h("button", { onclick: () => this.#download() }, "Descargar vista previa"),
         h("button", { onclick: () => this.#downloadVariants() }, "Descargar tira de variantes"));
 
-      this.panelScroll = h("div", { class: "scroll" }, shape.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, output.el);
+      this.tintUi = TP.tintSection({ id: "bk-tint", state: this.tint, biomes: this.biomes,
+        onChange: () => { this.#save(); this.#schedule(); } });
+      this.panelScroll = h("div", { class: "scroll" }, shape.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
       this.panel = h("div", { class: "bk-panel" },
         h("div", { class: "bk-panel-head" }, h("span", null, "Ajustes"),
           h("button", { title: "Volver todo a los valores por defecto", onclick: () => {
@@ -588,12 +601,13 @@
       if (!piece) { this.result = null; this.#drawPreview(); this.#drawStrip(); this.#drawVariantStrip(); return; }
       const t0 = performance.now();
       try {
-        this.result = E.render(this.o, tex, piece);
+        this.result = this.#renderPiece(tex, piece);
       } catch (err) {
         this.studio.toast("No pude generar la pieza.", { kind: "bad", detail: err.message });
         return;
       }
       this.studio.slot?.("bk-time", Math.round(performance.now() - t0) + " ms", "Tiempo de generación");
+      this.tintUi?.setStats(this.tint.enabled ? Tint.analyze(this.result.color) : null);
       this.previewLabel.textContent = `${piece.label} · ${Sh.FACING_LABEL[piece.facing]}`;
       this.#drawPreview();
       this.#drawStrip();
@@ -612,7 +626,7 @@
         if (ticket !== this.#pending || n >= list.length) return;
         const v = list[n++];
         try {
-          this.variantResults.set(v.id, E.render(this.o, tex, v));
+          this.variantResults.set(v.id, this.#renderPiece(tex, v));
         } catch {
           return;
         }
@@ -623,11 +637,19 @@
     }
 
     /** Every variant, rendering whatever the background pass has not reached yet. */
+    // biome_tinted: the saved colour is the grey art; "tinted" shows it under the preview biome, as the game draws it.
+    #renderPiece(tex, piece) {
+      const r = E.render(this.o, tex, piece);
+      if (this.tint.enabled) r.color = Tint.toTinted(r.color, TP.resolve(this.tint, this.biomes));
+      r.tinted = this.tint.enabled ? Tint.applyTint(r.color, TP.previewRgb(this.tint, this.biomes)) : r.color;
+      return r;
+    }
+
     #allVariantResults() {
       const tex = this.#textures();
       if (!tex) return [];
       return this.variantList.map((v) => {
-        if (!this.variantResults.has(v.id)) this.variantResults.set(v.id, E.render(this.o, tex, v));
+        if (!this.variantResults.has(v.id)) this.variantResults.set(v.id, this.#renderPiece(tex, v));
         return { variant: v, result: this.variantResults.get(v.id) };
       });
     }
@@ -808,7 +830,10 @@
         label: def.label, name: "", kind: "block", size: all[0].result.size, sheetKey: this.targetSel.get() || null,
         items: all.map(({ variant, result }) => ({ color: result.color, normal: result.normal, label: variant.label })),
         // Fences and walls connect, which no tile of the game does yet: their cells are handed over as text.
-        buildTile: def.connects ? null : (cells) => JSON.parse("{" + artText(cells) + "}"),
+        buildTile: def.connects ? null : (cells) => ({
+          ...(this.tint.enabled ? { tags: ["biome_tinted"] } : {}),
+          ...JSON.parse("{" + artText(cells) + "}"),
+        }),
         snippet: artText,
         why: def.connects ? "Vallas y muros aún no son un tile del juego: aquí tienes sus celdas." : undefined,
       };

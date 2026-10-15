@@ -87,7 +87,8 @@
   function checkbox({ label, value, title = "", onChange }) {
     const input = h("input", { type: "checkbox", checked: !!value });
     input.addEventListener("change", () => onChange?.(input.checked));
-    const el = h("label", { class: "field check", title }, input, h("label", null, label));
+    // A span, not a label: a label inside the label has no control of its own and swallows the click on the text.
+    const el = h("label", { class: "field check", title }, input, h("span", null, label));
     return { el, input, get: () => input.checked, set: (v) => { input.checked = !!v; } };
   }
 
