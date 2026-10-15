@@ -107,7 +107,13 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; m
 /* Label + control rows inside panels. */
 .field { display: grid; grid-template-columns: 112px 1fr; align-items: center; gap: 8px; margin-bottom: 8px; min-height: var(--control-h); }
 .field > label { color: var(--muted); line-height: 1.2; }
-.field.slider > .ctl { display: grid; grid-template-columns: 1fr 58px; gap: 8px; align-items: center; }
+.field.slider > .ctl { display: grid; grid-template-columns: 1fr 66px 16px; gap: 5px; align-items: center; }
+.ctl-reset { min-height: 18px; width: 16px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+.ctl-reset:hover:not(:disabled) { color: var(--accent); background: transparent; border: 0; }
+.ctl-reset.off { visibility: hidden; }
+.ctl-help { display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; margin-left: 5px;
+  border-radius: 50%; border: 1px solid var(--line-strong); color: var(--faint); font-size: 9px; cursor: help; vertical-align: 1px; }
+.ctl-help:hover { color: var(--text); border-color: var(--muted); }
 .field.slider input[type=number] { padding: 2px 6px; text-align: right; }
 .field.check { grid-template-columns: 18px 1fr; cursor: pointer; }
 .field.check > label, .field.check > span { color: var(--text); cursor: pointer; }
@@ -134,3 +140,4 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; m
 .tint-hue { width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--line); margin-bottom: 8px; }
 .tint-stats { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0; }
 .tint-body .seg { margin-bottom: 8px; flex-wrap: wrap; }
+.basic .adv { display: none; }

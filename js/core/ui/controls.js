@@ -25,12 +25,19 @@
     return { el, body, head };
   }
 
-  /** Range + editable number. Double-click the label to reset to the default. */
+  /** A "?" that shows the explanation on hover, after a label (only when there is one). */
+  function help(title) {
+    return title ? h("span", { class: "ctl-help", title, "aria-label": title }, "?") : null;
+  }
+
+  /** Range + editable number + ↺ (shown while the value is not the default) + "?" with the explanation. */
   function slider({ label, min, max, step = 1, value, unit = "", title = "", onInput, onChange, defaultValue = value }) {
     const range = h("input", { type: "range", min, max, step, value, "aria-label": label });
     const number = h("input", { type: "number", min, max, step, value, "aria-label": label });
     const clamp = (v) => Math.min(Number(max), Math.max(Number(min), v));
     let committed = Number(value);
+    const reset = h("button", { class: "ctl-reset", tabIndex: -1, title: "Volver a " + defaultValue + unit, onclick: () => api.set(defaultValue, true) }, "↺");
+    const syncReset = () => { reset.classList.toggle("off", Number(range.value) === Number(defaultValue)); };
 
     const commit = () => {
       const v = Number(range.value);
@@ -41,12 +48,14 @@
     };
     range.addEventListener("input", () => {
       number.value = range.value;
+      syncReset();
       onInput?.(Number(range.value));
     });
     range.addEventListener("change", commit);
     number.addEventListener("input", () => {
       if (number.value === "" || Number.isNaN(Number(number.value))) return;
       range.value = String(clamp(Number(number.value)));
+      syncReset();
       onInput?.(Number(range.value));
     });
     number.addEventListener("change", () => {
@@ -54,16 +63,17 @@
       commit();
     });
     const labelEl = h("label", {
-      title: (title ? title + "\n" : "") + "Doble clic: valor por defecto (" + defaultValue + unit + ")",
+      title: "Doble clic: valor por defecto (" + defaultValue + unit + ")",
       ondblclick: () => api.set(defaultValue, true),
-    }, label);
-    const el = h("div", { class: "field slider" }, labelEl, h("div", { class: "ctl" }, range, number));
+    }, label, help(title));
+    const el = h("div", { class: "field slider" }, labelEl, h("div", { class: "ctl" }, range, number, reset));
     const api = {
       el,
       get: () => Number(range.value),
       set(v, notify = false) {
         range.value = String(v);
         number.value = range.value;
+        syncReset();
         if (notify) {
           onInput?.(Number(range.value));
           commit();
@@ -73,6 +83,7 @@
       },
       setDisabled(disabled) { range.disabled = disabled; number.disabled = disabled; },
     };
+    syncReset();
     return api;
   }
 
@@ -80,7 +91,7 @@
     const sel = h("select", { title, "aria-label": label },
       options.map(([v, text]) => h("option", { value: v, selected: v === value }, text)));
     sel.addEventListener("change", () => onChange?.(sel.value));
-    const el = label ? h("div", { class: "field" }, h("label", null, label), sel) : sel;
+    const el = label ? h("div", { class: "field" }, h("label", null, label, help(title)), sel) : sel;
     return { el, input: sel, get: () => sel.value, set: (v) => { sel.value = v; } };
   }
 
@@ -88,7 +99,7 @@
     const input = h("input", { type: "checkbox", checked: !!value });
     input.addEventListener("change", () => onChange?.(input.checked));
     // A span, not a label: a label inside the label has no control of its own and swallows the click on the text.
-    const el = h("label", { class: "field check", title }, input, h("span", null, label));
+    const el = h("label", { class: "field check", title }, input, h("span", null, label, help(title)));
     return { el, input, get: () => input.checked, set: (v) => { input.checked = !!v; } };
   }
 
@@ -142,5 +153,17 @@
     return h("span", { class: "kbd" }, text);
   }
 
-  Aura.controls = { section, slider, select, checkbox, segmented, numberPair, kbd };
+  /**
+   * Básico / Avanzado for a panel: in Básico the sections marked "adv" are hidden, so a first look shows only what
+   * changes how the thing looks. The choice is shared by every panel that uses the same key.
+   */
+  function detailSwitch(target, key = "panel:detail") {
+    const apply = (v) => target.classList.toggle("basic", v === "basic");
+    const seg = segmented({ label: "Nivel de detalle", value: prefs.get(key, "basic"), onChange: (v) => { prefs.set(key, v); apply(v); },
+      options: [["basic", "Básico", "Solo lo que cambia el aspecto"], ["advanced", "Avanzado", "Todos los ajustes: luz, mapas, pixel art, reparto…"]] });
+    apply(seg.get());
+    return seg.el;
+  }
+
+  Aura.controls = { section, slider, select, checkbox, segmented, numberPair, kbd, help, detailSwitch };
 })(window.Aura ??= {});

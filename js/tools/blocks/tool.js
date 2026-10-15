@@ -7,7 +7,7 @@
 // picker, the previews and saving.
 (function (Aura) {
   const { h } = Aura.dom;
-  const { section, slider, select, checkbox, segmented, numberPair } = Aura.controls;
+  const { section, slider, select, checkbox, segmented, numberPair, detailSwitch } = Aura.controls;
   const { decodePng, encodePng } = Aura.png;
   const { downloadBlob, stripExt } = Aura.fs;
   const { prefs } = Aura.storage;
@@ -17,6 +17,7 @@
   const Sh = Aura.blockShapes;
   const Tint = Aura.tint;
   const TP = Aura.tintPanel;
+  const { ContextView } = Aura.contextView;
 
   const SLOTS = [["top", "Arriba", "#5fd3b0"], ["left", "Izquierda", "#7fb2ff"], ["right", "Derecha", "#e27bd8"]];
   const VIEWS = [["color", "Color"], ["tinted", "Bioma"], ["normal", "Normales"], ["depth", "Profundidad"], ["ao", "AO"], ["gray", "Grises"]];
@@ -84,6 +85,8 @@
       this.biomes = [Tint.DEFAULT_TINT];
       this.#loadBiomes();
       host.appendChild(this.#buildLayout());
+      this.ctx = new ContextView(this.viewEl, { biomes: this.biomes });
+      this.#showContext(this.contextChk.get());
       new ResizeObserver(() => { this.#drawPicker(); this.#drawPreview(); }).observe(this.root);
       this.#renderList();
       this.#schedule();
@@ -103,6 +106,7 @@
 
     async #loadBiomes() {
       this.biomes = await Tint.listBiomes(this.project);
+      this.ctx?.setBiomes(this.biomes);
       if (this.panelScroll) this.#rebuildPanel();
     }
 
@@ -150,13 +154,15 @@
         onChange: (v) => { this.previewFacing = v; this.#render(false); },
       });
       this.guideChk = checkbox({ label: "Guías", value: true, onChange: () => this.#drawPreview() });
+      this.contextChk = checkbox({ label: "Contexto", value: prefs.get("blocks:context", false), title: "3 × 3 en el mundo: bioma, luz del día",
+        onChange: (v) => { prefs.set("blocks:context", v); this.#showContext(v); } });
       this.previewCanvas = h("canvas", { class: "bk-preview" });
       this.previewLabel = h("div", { class: "bk-preview-label" });
       this.strip = h("div", { class: "bk-strip" });
       this.varStrip = h("div", { class: "bk-strip bk-varstrip" });
       const stage = h("div", { class: "bk-stage" },
-        h("div", { class: "bk-toolbar" }, this.viewSeg.el, this.facingSeg.el, h("span", { class: "grow" }), this.guideChk.el),
-        h("div", { class: "bk-view" }, this.previewCanvas, this.previewLabel),
+        h("div", { class: "bk-toolbar" }, this.viewSeg.el, this.facingSeg.el, h("span", { class: "grow" }), this.contextChk.el, this.guideChk.el),
+        this.viewEl = h("div", { class: "bk-view" }, this.previewCanvas, this.previewLabel),
         this.strip,
         this.varStrip);
 
@@ -380,15 +386,18 @@
       this.tintUi = TP.tintSection({ id: "bk-tint", state: this.tint, biomes: this.biomes,
         onChange: () => { this.#save(); this.#schedule(); } });
       this.panelScroll = h("div", { class: "scroll" }, shape.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
+      for (const sec of [maskSection, cover, hair, light, pixel]) sec.el.classList.add("adv");
+      const detail = h("span");
       this.panel = h("div", { class: "bk-panel" },
-        h("div", { class: "bk-panel-head" }, h("span", null, "Ajustes"),
+        h("div", { class: "bk-panel-head" }, h("span", null, "Ajustes"), detail,
           h("button", { title: "Volver todo a los valores por defecto", onclick: () => {
             this.o = E.merge({});
             this.piece = mergePiece();
             this.#resetPreview();
             this.#save(); this.#rebuildPanel(); this.#schedule();
-          } }, "Restablecer todo")),
+          } }, "↺ Todo")),
         this.panelScroll);
+      detail.replaceWith(detailSwitch(this.panel));
       return this.panel;
     }
 
@@ -608,6 +617,7 @@
       }
       this.studio.slot?.("bk-time", Math.round(performance.now() - t0) + " ms", "Tiempo de generación");
       this.tintUi?.setStats(this.tint.enabled ? Tint.analyze(this.result.color) : null);
+      this.#updateContext();
       this.previewLabel.textContent = `${piece.label} · ${Sh.FACING_LABEL[piece.facing]}`;
       this.#drawPreview();
       this.#drawStrip();
@@ -636,7 +646,19 @@
       setTimeout(next, 0);
     }
 
-    /** Every variant, rendering whatever the background pass has not reached yet. */
+    #showContext(on) {
+      this.previewCanvas.hidden = on;
+      this.previewLabel.hidden = on;
+      this.ctx?.show(on);
+      if (on) this.#updateContext();
+    }
+
+    // The preview piece 3 × 3: whether it tiles with itself is what the context view is for.
+    #updateContext() {
+      if (!this.ctx?.visible || !this.result) return;
+      this.ctx.setContent({ kind: "block", size: this.result.size, variants: [{ parts: [this.result.color] }], tinted: this.tint.enabled, sways: false });
+    }
+
     // biome_tinted: the saved colour is the grey art; "tinted" shows it under the preview biome, as the game draws it.
     #renderPiece(tex, piece) {
       const r = E.render(this.o, tex, piece);
@@ -645,6 +667,7 @@
       return r;
     }
 
+    /** Every variant, rendering whatever the background pass has not reached yet. */
     #allVariantResults() {
       const tex = this.#textures();
       if (!tex) return [];

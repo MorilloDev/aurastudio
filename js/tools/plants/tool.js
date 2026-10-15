@@ -5,7 +5,7 @@
 // variants saved into consecutive atlas cells. The heavy parts are mesh.js, generators.js and raster.js.
 (function (Aura) {
   const { h } = Aura.dom;
-  const { section, slider, select, checkbox, segmented, numberPair } = Aura.controls;
+  const { section, slider, select, checkbox, segmented, numberPair, detailSwitch } = Aura.controls;
   const { decodePng, encodePng } = Aura.png;
   const { downloadBlob } = Aura.fs;
   const { prefs } = Aura.storage;
@@ -15,11 +15,17 @@
   const Cells = Aura.sheetCells;
   const Tint = Aura.tint;
   const TP = Aura.tintPanel;
+  const { ContextView } = Aura.contextView;
 
   const VIEWS = [["color", "Color"], ["tinted", "Bioma"], ["normal", "Normales"], ["depth", "Profundidad"], ["ao", "AO"], ["gray", "Grises"]];
   const MAPS = [["color", ""], ["normal", "_n"], ["depth", "_depth"], ["ao", "_ao"], ["gray", "_gray"]];
   const PREFS_KEY = "plants:settings";
   const VARIANT_DEFAULTS = { stages: 1, seeds: 1 };
+  // Size of the variety and variation pictures, and how many variations.
+  const THUMB = 48;
+  const GALLERY = 6;
+  // Variety pictures depend only on the type and the variety, so they are drawn once per session.
+  const thumbCache = new Map();
 
   function plantsTool() {
     return new PlantsTool();
@@ -52,6 +58,8 @@
       this.biomes = [Tint.DEFAULT_TINT];
       this.#loadBiomes();
       host.appendChild(this.#buildLayout());
+      this.ctx = new ContextView(this.viewEl, { biomes: this.biomes });
+      this.#showContext(this.contextChk.get());
       new ResizeObserver(() => this.#drawPreview()).observe(this.root);
       this.#schedule();
     }
@@ -69,6 +77,7 @@
 
     async #loadBiomes() {
       this.biomes = await Tint.listBiomes(this.project);
+      this.ctx?.setBiomes(this.biomes);
       if (this.panelScroll) this.#rebuildPanel();
     }
 
@@ -107,13 +116,15 @@
 
       this.viewSeg = segmented({ label: "Vista", value: this.view, options: VIEWS, onChange: (v) => { this.view = v; this.#drawPreview(); this.#drawStrip(); this.#drawVariantStrip(); } });
       this.guideChk = checkbox({ label: "Guías", value: true, onChange: () => this.#drawPreview() });
+      this.contextChk = checkbox({ label: "Contexto", value: prefs.get("plants:context", false), title: "3 × 3 en el mundo, sobre bloques de hierba: bioma, luz del día, viento",
+        onChange: (v) => { prefs.set("plants:context", v); this.#showContext(v); } });
       this.previewCanvas = h("canvas", { class: "bk-preview" });
       this.previewLabel = h("div", { class: "bk-preview-label" });
       this.strip = h("div", { class: "bk-strip" });
       this.varStrip = h("div", { class: "bk-strip bk-varstrip" });
       const stage = h("div", { class: "bk-stage" },
-        h("div", { class: "bk-toolbar" }, this.viewSeg.el, h("span", { class: "grow" }), this.guideChk.el),
-        h("div", { class: "bk-view" }, this.previewCanvas, this.previewLabel),
+        h("div", { class: "bk-toolbar" }, this.viewSeg.el, h("span", { class: "grow" }), this.contextChk.el, this.guideChk.el),
+        this.viewEl = h("div", { class: "bk-view" }, this.previewCanvas, this.previewLabel),
         this.strip, this.varStrip);
 
       this.root = h("div", { class: "bk" }, left, stage, this.#buildPanel());
@@ -220,19 +231,31 @@
       const sections = [];
       const presets = G.PRESETS[this.type];
       if (presets) {
-        // Variety first: it sets the plant's look and colours in one go; everything below stays editable.
+        // Variety first, as cards with a picture of each: it sets the plant's look and colours in one go; everything
+        // below stays editable.
         const current = this.o.variety ?? (t.presetParam ? this.o[t.presetParam] : "");
-        const varSel = select({ label: "Variedad", value: presets.some((pr) => pr.key === current) ? current : "",
-          options: [["", "— personalizada —"], ...presets.map((pr) => [pr.key, pr.label])],
-          title: "Pone la forma y los colores de esa variedad; luego puedes cambiar lo que quieras",
-          onChange: (v) => { if (v) this.#applyPreset(v); } });
-        sections.push(section({ id: "pl-variety", title: "Variedad" }, varSel.el,
-          h("div", { class: "pl-presets" }, presets.map((pr) => h("button", { class: pr.key === current ? "on" : "", onclick: () => this.#applyPreset(pr.key) }, pr.label)))));
+        const known = presets.find((pr) => pr.key === current);
+        const cards = h("div", { class: "pl-cards" }, presets.map((pr) => {
+          const c = h("canvas", { width: THUMB, height: THUMB });
+          this.#queueThumb(`${this.type}|${pr.key}`, c, () => ({ ...G.defaults(this.type), ...structuredClone(pr.values) }));
+          return h("button", { class: ["pl-card", pr.key === current && "on"], title: pr.label, onclick: () => this.#applyPreset(pr.key) },
+            c, h("span", null, pr.label));
+        }));
+        sections.push(section({ id: "pl-variety", title: "Variedad", extra: known ? known.label : "personalizada" }, cards));
       }
+      // Other random seeds of exactly these settings: the quickest way to find a nicer one.
+      this.galleryEl = h("div", { class: "pl-gallery" });
+      sections.push(section({ id: "pl-gallery", title: "Variaciones",
+        extra: h("span", { class: "bk-reset", role: "button", tabindex: 0, title: "Otras seis", onclick: (e) => { e.stopPropagation(); this.galleryBase = null; this.#fillGallery(); } }, "⟳") },
+        this.galleryEl, h("p", { class: "note" }, "La misma planta con otra semilla aleatoria. Clic para quedarte con esa.")));
       for (const [title, list] of Object.entries(t.params)) sections.push(this.#schemaSection("own-" + title, title, list));
       // A type may list the shared groups that mean something for it (a leaf block has no spacing, water or parts).
       for (const [title, list] of Object.entries(G.COMMON)) {
-        if (!t.common || t.common.includes(title)) sections.push(this.#schemaSection("common-" + title, title, list));
+        if (!t.common || t.common.includes(title)) {
+          const sec = this.#schemaSection("common-" + title, title, list);
+          if (title !== "Colores") sec.el.classList.add("adv");
+          sections.push(sec);
+        }
       }
 
       const light = section({ id: "pl-light", title: "Luz y mapas",
@@ -311,16 +334,68 @@
       this.tintUi = TP.tintSection({ id: "pl-tint", state: this.tint, biomes: this.biomes,
         onChange: () => { this.#save(); this.#schedule(); } });
       this.panelScroll = h("div", { class: "scroll" }, variants.el, ...sections.map((s) => s.el), this.tintUi.el, light.el, pixel.el, output.el);
+      light.el.classList.add("adv");
+      pixel.el.classList.add("adv");
+      const detail = h("span");
       this.panel = h("div", { class: "bk-panel" },
-        h("div", { class: "bk-panel-head" }, h("span", null, t.label),
+        h("div", { class: "bk-panel-head" }, h("span", null, t.label), detail,
           h("button", { title: "Esta planta y la luz a sus valores por defecto", onclick: () => {
             delete this.byType[this.type];
             this.r = R.merge({});
             this.variants = { ...VARIANT_DEFAULTS };
             this.#save(); this.#rebuildPanel(); this.#schedule();
-          } }, "Restablecer todo")),
+          } }, "↺ Todo")),
         this.panelScroll);
+      detail.replaceWith(detailSwitch(this.panel));
       return this.panel;
+    }
+
+    // ── Pictures for the panel, drawn one per tick after the main preview so dragging a slider never waits for them.
+
+    #thumbJobs = [];
+    #thumbTimer = 0;
+
+    #queueThumb(key, canvas, optsFn) {
+      const cached = key && thumbCache.get(key);
+      if (cached) { paintThumb(canvas, cached); return; }
+      this.#thumbJobs.push({ key, canvas, optsFn });
+      if (!this.#thumbTimer) this.#thumbTimer = setTimeout(() => this.#runThumbs(), 120);
+    }
+
+    #runThumbs() {
+      this.#thumbTimer = 0;
+      const job = this.#thumbJobs.shift();
+      if (!job) return;
+      if (job.canvas.isConnected) {
+        try {
+          const img = this.#thumbImage(job.optsFn());
+          if (job.key) thumbCache.set(job.key, img);
+          paintThumb(job.canvas, img);
+        } catch {
+          // A picture that fails is just left blank; the preview reports real errors.
+        }
+      }
+      if (this.#thumbJobs.length) this.#thumbTimer = setTimeout(() => this.#runThumbs(), 0);
+    }
+
+    // Small and cheap: no AO, no supersampling; the parts of a tall plant stacked.
+    #thumbImage(opts) {
+      const mesh = G.build(this.type, opts);
+      const ground = (opts.groundZ ?? 0) * Aura.blockEngine.BLOCK_HEIGHT;
+      const parts = R.renderParts(mesh, R.merge({ ...this.r, size: THUMB, ao: false, supersample: 2 }), ground, mesh.cells);
+      return stack(parts);
+    }
+
+    #fillGallery() {
+      if (!this.galleryEl) return;
+      this.galleryBase ??= 1 + Math.floor(Math.random() * 9000);
+      const o = this.o;
+      this.galleryEl.replaceChildren(...Array.from({ length: GALLERY }, (_, k) => {
+        const seed = ((this.galleryBase + k * 997) % 9999) + 1;
+        const c = h("canvas", { width: THUMB, height: THUMB });
+        this.#queueThumb(null, c, () => ({ ...o, seed }));
+        return h("button", { class: "pl-card", title: "Semilla " + seed, onclick: () => { this.o.seed = seed; this.#save(); this.#rebuildPanel(); this.#schedule(); } }, c);
+      }));
     }
 
     #rebuildPanel() {
@@ -400,6 +475,9 @@
       }
       this.studio.slot?.("pl-time", `${Math.round(performance.now() - t0)} ms · ${this.result.triangles} triángulos`, "Tiempo de generación");
       this.tintUi?.setStats(this.tint.enabled ? Tint.analyze(this.result.color) : null);
+      this.#updateContext();
+      clearTimeout(this.galleryTimer);
+      this.galleryTimer = setTimeout(() => this.#fillGallery(), 400);
       const cells = this.result.cells > 1 ? ` · ${this.result.cells} celdas` : "";
       this.previewLabel.textContent = `${G.TYPES[this.type].label} · ${v.label}${cells}`;
       this.#drawPreview();
@@ -424,9 +502,32 @@
           return;
         }
         this.#drawVariantThumb(v);
+        if (n >= list.length) this.#updateContext();
         setTimeout(next, 0);
       };
       setTimeout(next, 0);
+    }
+
+    #showContext(on) {
+      this.previewCanvas.hidden = on;
+      this.previewLabel.hidden = on;
+      this.ctx?.show(on);
+      if (on) this.#updateContext();
+    }
+
+    // Every seed variant of the current stage spread over the 3 × 3, so the patch looks like the world, not a stamp.
+    #updateContext() {
+      if (!this.ctx?.visible || !this.result) return;
+      const stage = this.variantList.find((v) => v.id === this.previewId)?.stage ?? 0;
+      const variants = [this.result, ...this.variantList.filter((v) => v.id !== this.previewId && v.stage === stage)
+        .map((v) => this.variantResults.get(v.id)).filter(Boolean)];
+      const t = G.TYPES[this.type], o = this.o;
+      const block = this.type === "LEAVES" && o.leafForm === "BLOCK";
+      this.ctx.setContent({
+        kind: block ? "block" : "plant", size: this.result.size, tinted: this.tint.enabled,
+        variants: variants.map((r) => ({ parts: r.parts.map((p) => p.color) })),
+        sways: !block && !["leaves", "fungi"].includes(t.category),
+      });
     }
 
     #allVariantResults() {
@@ -671,6 +772,26 @@
         this.snippetEl.select();
       }
     }
+  }
+
+  // A tall plant's parts one over another, half a cell apart like the game piles them.
+  function stack(parts) {
+    const S = parts[0].size, step = S / 2, w = S, hgt = S + (parts.length - 1) * step;
+    const rgba = new Uint8ClampedArray(w * hgt * 4);
+    parts.forEach((part, k) => {
+      const oy = hgt - S - k * step;
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const si = (y * S + x) * 4;
+        if (part.color[si + 3]) rgba.set(part.color.subarray(si, si + 4), ((oy + y) * w + x) * 4);
+      }
+    });
+    return { w, h: hgt, rgba };
+  }
+
+  function paintThumb(canvas, img) {
+    canvas.width = img.w;
+    canvas.height = img.h;
+    canvas.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(img.rgba), img.w, img.h), 0, 0);
   }
 
   Aura.plantsTool = { plantsTool };
