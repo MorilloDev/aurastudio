@@ -230,7 +230,10 @@
           h("div", { class: "pl-presets" }, presets.map((pr) => h("button", { class: pr.key === current ? "on" : "", onclick: () => this.#applyPreset(pr.key) }, pr.label)))));
       }
       for (const [title, list] of Object.entries(t.params)) sections.push(this.#schemaSection("own-" + title, title, list));
-      for (const [title, list] of Object.entries(G.COMMON)) sections.push(this.#schemaSection("common-" + title, title, list));
+      // A type may list the shared groups that mean something for it (a leaf block has no spacing, water or parts).
+      for (const [title, list] of Object.entries(G.COMMON)) {
+        if (!t.common || t.common.includes(title)) sections.push(this.#schemaSection("common-" + title, title, list));
+      }
 
       const light = section({ id: "pl-light", title: "Luz y mapas",
         extra: this.#sectionReset(() => {

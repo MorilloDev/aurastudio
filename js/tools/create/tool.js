@@ -10,7 +10,7 @@
 
   const MODES = [
     { id: "blocks", label: "Bloque", hint: "Cubos, losas, escaleras… con las caras de una hoja", make: () => Aura.blocksTool.blocksTool() },
-    { id: "plants", label: "Planta", hint: "Hierba, flores, cultivos, plantas de agua", make: () => Aura.plantsTool.plantsTool() },
+    { id: "plants", label: "Planta", hint: "Hierba, flores, cultivos, plantas de agua, hojas y semillas", make: () => Aura.plantsTool.plantsTool() },
   ];
 
   function createTool() {
