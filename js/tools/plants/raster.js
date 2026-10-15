@@ -31,6 +31,12 @@
     aoGround: true,            // the ground under the plant occludes too
     lightSteps: 0,             // 0 = smooth; n quantizes the final light into n steps (cel look)
     outline: 0,                // darken the silhouette's edge pixels by this much
+    toneSteps: 0,              // 0 = off; n flattens the finished colours into n tones spread over the sprite's own
+                               // light range — the flat, painted look of hand-made leaves (one value per leaf face)
+    innerEdges: 0,             // darken a pixel by this much where something nearer covers its neighbour: a thin dark
+                               // line where one leaf lies over another, so overlapping leaves keep their outline
+    innerEdgeGap: 0.04,
+    monochrome: false,         // the colour sheet in grays (its own brightness): for biome_tinted art the game colours        // how much nearer (in blocks along the view) the neighbour must be to cut a line
     grayFromColor: false,
     // Depth shade: what lies further back in the plant takes a darker, cooler colour, baked into the sprite itself —
     // the game reads no depth map, so this is how a dense bush keeps its volume once exported.
@@ -168,6 +174,7 @@
     const color = new Uint8ClampedArray(S * S * 4), normal = new Uint8ClampedArray(S * S * 4);
     const depth = new Uint8ClampedArray(S * S * 4), aoMap = new Uint8ClampedArray(S * S * 4), gray = new Uint8ClampedArray(S * S * 4);
     const mask = new Uint8Array(S * S);
+    const pz = new Float32Array(S * S).fill(-Infinity);
     let dMin = Infinity, dMax = -Infinity;
     // A fixed range per cell (not per plant), so every part of a multipart plant writes depth on the same scale.
     for (const x of [-0.75, 0.75]) for (const y of [-0.75, 0.75]) for (const z of [-0.2, 1.6]) {
@@ -244,8 +251,20 @@
         const grayShade = tint ? 1 - far + far * (0.2126 * tint[0] + 0.7152 * tint[1] + 0.0722 * tint[2]) : 1;
         gray[k] = gray[k + 1] = gray[k + 2] = Math.round(255 * base * light * grayShade); gray[k + 3] = 255;
         mask[py * S + px] = 1;
+        pz[py * S + px] = zs[best];
       }
     }
+
+    if (o.innerEdges > 0) innerEdges(color, gray, mask, pz, S, o.innerEdges, o.innerEdgeGap);
+
+    if (o.monochrome) {
+      for (let i = 0; i < mask.length; i++) {
+        if (!mask[i]) continue;
+        const k = i * 4, l = Math.round(0.2126 * color[k] + 0.7152 * color[k + 1] + 0.0722 * color[k + 2]);
+        color[k] = color[k + 1] = color[k + 2] = l;
+      }
+    }
+    if (o.toneSteps > 1) posterize(color, gray, mask, o.toneSteps);
 
     if (o.outline > 0) {
       const edge = [];
@@ -259,6 +278,58 @@
       for (const k of edge) for (let a = 0; a < 3; a++) color[k + a] *= 1 - o.outline;
     }
     return { size: S, color, normal, depth, ao: aoMap, gray, mask };
+  }
+
+  // ── Inner edges ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+  // The farther pixel of every pair where the depth jumps gets darker. Decided on a copy of the depths, so a line never
+  // grows into the next pixel; the silhouette's own edge is the outline option's job, not this one's.
+  function innerEdges(color, gray, mask, pz, S, amount, gap) {
+    const dark = [];
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const i = y * S + x;
+      if (!mask[i]) continue;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const X = x + dx, Y = y + dy;
+        if (X < 0 || Y < 0 || X >= S || Y >= S) continue;
+        const j = Y * S + X;
+        if (mask[j] && pz[j] - pz[i] > gap) { dark.push(i); break; }
+      }
+    }
+    const f = 1 - amount;
+    for (const i of dark) {
+      const k = i * 4;
+      for (let a = 0; a < 3; a++) color[k + a] = Math.round(color[k + a] * f);
+      gray[k] = gray[k + 1] = gray[k + 2] = Math.round(gray[k] * f);
+    }
+  }
+
+  // ── Tones ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Snaps every pixel's brightness to one of n tones spread between the sprite's darkest and brightest pixel, keeping
+   * its hue: the gradients that AO and depth leave across a leaf become flat bands, and the band edges fall where the
+   * light changes most (between leaves) instead of inside them. The gray map follows the same tones.
+   */
+  function posterize(color, gray, mask, n) {
+    const lum = (k) => 0.2126 * color[k] + 0.7152 * color[k + 1] + 0.0722 * color[k + 2];
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < mask.length; i++) {
+      if (!mask[i]) continue;
+      const l = lum(i * 4);
+      if (l < lo) lo = l;
+      if (l > hi) hi = l;
+    }
+    if (!(hi > lo)) return;
+    for (let i = 0; i < mask.length; i++) {
+      if (!mask[i]) continue;
+      const k = i * 4, l = lum(k);
+      const t = Math.round((l - lo) / (hi - lo) * (n - 1)) / (n - 1);
+      const target = lo + t * (hi - lo), f = l > 0 ? target / l : 0;
+      for (let a = 0; a < 3; a++) color[k + a] = Math.round(Math.min(255, color[k + a] * f));
+      const g = gray[k] * f;
+      gray[k] = gray[k + 1] = gray[k + 2] = Math.round(Math.min(255, g));
+    }
   }
 
   // ── Depth shade ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -281,6 +352,152 @@
       if (d > hi) hi = d;
     }
     return lo < hi ? [lo, hi] : null;
+  }
+
+  // ── Painted leaves ───────────────────────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * A leaf block painted straight into the sprite, the way a hand-drawn one is made: whole leaves facing the camera,
+   * laid in layers from the back, each one a flat shape cut in two tones along its midrib — instead of 3D leaves seen
+   * edge-on, which at 64 px turn into slivers and noise. The crown is the block's outline (top diamond, two sides)
+   * rounded off, and each leaf takes the light of the face it sits on, as the game lights a block: top brightest, left
+   * next, right darkest (normal map), with the tones falling off from the top down. Back layers sit a tone lower,
+   * which is what shows between the front leaves.
+   *
+   * spec: { seed, length, width, lengthVar, spacing, jitter, round, layers, holes, highlight, light, dark, tones }
+   * (lengths in pixels of a 64 px sprite; scaled to opts.size).
+   */
+  function paintLeaves(spec, opts) {
+    const S = opts.size, k = S / 64, N = S * S;
+    const color = new Uint8ClampedArray(N * 4), normal = new Uint8ClampedArray(N * 4);
+    const depth = new Uint8ClampedArray(N * 4), aoMap = new Uint8ClampedArray(N * 4), gray = new Uint8ClampedArray(N * 4);
+    const mask = new Uint8Array(N);
+    const rnd = mulberry(spec.seed >>> 0 || 1);
+    const uni = (a, b) => a + (b - a) * rnd();
+
+    const palette = tonePalette(spec.dark, spec.light, Math.max(3, spec.tones | 0));
+    const top = palette.length - 1;
+
+    // The block outline in sprite pixels: top diamond (0,16)-(32,0)-(64,16)-(32,32), sides down to y 48 / 64.
+    const C = [32 * k, 32 * k];
+    const hex = [[0, 16], [32, 0], [64, 16], [64, 48], [32, 64], [0, 48]].map(([x, y]) => [x * k, y * k]);
+    const edges = hex.map((a, i) => {
+      const b = hex[(i + 1) % hex.length];
+      let nx = b[1] - a[1], ny = a[0] - b[0];
+      const len = Math.hypot(nx, ny);
+      nx /= len; ny /= len;
+      if (nx * (C[0] - a[0]) + ny * (C[1] - a[1]) > 0) { nx = -nx; ny = -ny; }
+      return { nx, ny, h: nx * (a[0] - C[0]) + ny * (a[1] - C[1]) };
+    });
+    // 1 on the outline, less inside: the hexagon's own measure blended toward a circle by "round".
+    const outlineNorm = (x, y) => {
+      const dx = x - C[0], dy = y - C[1];
+      let hx = 0;
+      for (const e of edges) hx = Math.max(hx, (e.nx * dx + e.ny * dy) / e.h);
+      return hx + (Math.hypot(dx, dy) / (32 * k) - hx) * spec.round;
+    };
+    // Which face of the block a point is on: 0 top, 1 left, 2 right.
+    const faceOf = (x, y) => (y < (32 - Math.abs(x / k - 32) / 2) * k ? 0 : x < C[0] ? 1 : 2);
+    const FACE_N = [[0, 0, 1], [0, -1, 0], [1, 0, 0]];
+    const LIGHT = [-0.55, -0.83];   // screen direction the light comes from: up and a little left
+
+    // Layers back to front: denser and darker at the back so no hole goes all the way through.
+    const layers = Math.max(1, spec.layers | 0);
+    for (let L = 0; L < layers; L++) {
+      const fromFront = layers - 1 - L;
+      const spacing = spec.spacing * k * (fromFront === 0 ? 1 : spec.backSpacing);
+      const leaves = [];
+      const ox = uni(0, spacing), oy = uni(0, spacing);
+      for (let gy = -spacing; gy < S + spacing; gy += spacing * 0.866) {
+        const row = Math.round(gy / (spacing * 0.866));
+        for (let gx = -spacing + (row & 1) * spacing / 2; gx < S + spacing; gx += spacing) {
+          const x = gx + ox + uni(-0.35, 0.35) * spacing, y = gy + oy + uni(-0.35, 0.35) * spacing;
+          if (outlineNorm(x, y) > spec.fill) continue;
+          if (rnd() < (fromFront === 0 ? spec.holes : spec.backHoles)) continue;
+          leaves.push([x, y]);
+        }
+      }
+      leaves.sort((a, b) => a[1] - b[1]);
+
+      for (const [ax, ay] of leaves) {
+        const face = faceOf(ax, ay);
+        // Pointing out of the crown, the top face's leaves out of its own centre, so the top reads as a star of tips.
+        const cx = C[0], cy = face === 0 ? 16 * k : 30 * k;
+        let ang = Math.hypot(ax - cx, ay - cy) < 2 * k ? uni(0, Math.PI * 2) : Math.atan2(ay - cy, ax - cx);
+        ang += uni(-1, 1) * spec.jitter * Math.PI / 180;
+        const dx = Math.cos(ang), dy = Math.sin(ang), px = -dy, py = dx;
+        const len = spec.length * k * (1 + uni(-spec.lengthVar, spec.lengthVar)) * (fromFront ? 1.1 : 1);
+        const wid = len * spec.width * 0.5;
+        const bx = ax - dx * len * 0.3, by = ay - dy * len * 0.3;
+
+        // Light over the crown: bright over its upper part, darker down the sides and a little more on the right —
+        // the hand-made block's measured falloff, which is smoother than three flat cube faces.
+        const yv = ay / S, xv = ax / S;
+        const sm = (a, b, t) => { const q = Math.min(1, Math.max(0, (t - a) / (b - a))); return q * q * (3 - 2 * q); };
+        const lightness = 1 - 0.8 * sm(0.22, 0.7, yv) - 0.6 * Math.max(0, xv - 0.5) * 2;
+        let base = top - 2 + Math.round(Math.max(0, lightness) - 0.05) - fromFront;
+        const roll = rnd();
+        if (roll < spec.darker) base -= 1; else if (roll > 1 - spec.lighter) base += 1;
+        // The half turned to the light keeps the leaf's tone, the other drops one; the brightest top leaves get a
+        // highlight on their lit half.
+        const litSide = px * LIGHT[0] + py * LIGHT[1] > 0 ? 1 : -1;
+        const lit = Math.min(top, base + (face === 0 && fromFront === 0 && rnd() < spec.highlight ? 1 : 0));
+        const toneLit = Math.max(0, Math.min(top, lit)), toneShade = Math.max(0, Math.min(top, base - 1));
+        const dv = Math.round(255 * (1 - fromFront / Math.max(1, layers)));
+
+        const reach = len + 1;
+        const x0 = Math.max(0, Math.floor(bx - reach)), x1 = Math.min(S - 1, Math.ceil(bx + reach));
+        const y0 = Math.max(0, Math.floor(by - reach)), y1 = Math.min(S - 1, Math.ceil(by + reach));
+        for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+          const qx = x + 0.5 - bx, qy = y + 0.5 - by;
+          const u = (qx * dx + qy * dy) / len, v = qx * px + qy * py;
+          if (u <= 0 || u >= 1) continue;
+          // Lance: widest a little before the middle, pointed at both ends.
+          const half = wid * Math.pow(Math.sin(Math.PI * Math.pow(u, 0.75)), spec.point);
+          if (Math.abs(v) > half) continue;
+          if (outlineNorm(x + 0.5, y + 0.5) > spec.clip) continue;
+          const i = y * S + x, kk = i * 4;
+          const tone = (v >= 0 ? 1 : -1) === litSide ? toneLit : toneShade;
+          const c = palette[tone];
+          color[kk] = c[0]; color[kk + 1] = c[1]; color[kk + 2] = c[2]; color[kk + 3] = 255;
+          const g = Math.round(0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]);
+          gray[kk] = gray[kk + 1] = gray[kk + 2] = g; gray[kk + 3] = 255;
+          const n = FACE_N[face];
+          normal[kk] = Math.round((dot(n, RIGHT) * 0.5 + 0.5) * 255);
+          normal[kk + 1] = Math.round((dot(n, UP) * 0.5 + 0.5) * 255);
+          normal[kk + 2] = Math.round((dot(n, BACK) * 0.5 + 0.5) * 255);
+          normal[kk + 3] = 255;
+          depth[kk] = depth[kk + 1] = depth[kk + 2] = dv; depth[kk + 3] = 255;
+          aoMap[kk] = aoMap[kk + 1] = aoMap[kk + 2] = 255 - fromFront * 40; aoMap[kk + 3] = 255;
+          mask[i] = 1;
+        }
+      }
+    }
+    return { size: S, color, normal, depth, ao: aoMap, gray, mask };
+  }
+
+  // n tones from dark to light in sRGB, eased toward both ends — six of them land on the hand-made reference's own
+  // (99, 113, 134, 158, 176, 185) from its darkest and lightest.
+  function tonePalette(darkHex, lightHex, n) {
+    const a = hexRgb(darkHex), b = hexRgb(lightHex);
+    return Array.from({ length: n }, (_, i) => {
+      const u = i / (n - 1), t = Math.pow(u * u * (3 - 2 * u), 0.9);
+      return [0, 1, 2].map((c) => Math.round(a[c] + (b[c] - a[c]) * t));
+    });
+  }
+
+  function hexRgb(hex) {
+    const h = String(hex || "#808080").replace("#", "");
+    return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) || 0);
+  }
+
+  function mulberry(a) {
+    return () => {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
   }
 
   // ── Multipart ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -341,9 +558,10 @@
    * ground: the z the plant stands on.
    */
   function renderParts(mesh, opts, ground, cells) {
+    if (mesh.painted) return [paintLeaves(mesh.painted, opts)];
     if (cells <= 1) return [render(mesh, opts, ground)];
     return split(mesh, cells).map((part) => render(part, opts, ground - part.offset, lowered(mesh, part.offset)));
   }
 
-  Aura.plantRaster = { DEFAULTS, merge, render, renderParts, split };
+  Aura.plantRaster = { DEFAULTS, merge, render, renderParts, split, paintLeaves };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));
