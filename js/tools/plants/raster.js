@@ -32,6 +32,12 @@
     lightSteps: 0,             // 0 = smooth; n quantizes the final light into n steps (cel look)
     outline: 0,                // darken the silhouette's edge pixels by this much
     grayFromColor: false,
+    // Depth shade: what lies further back in the plant takes a darker, cooler colour, baked into the sprite itself —
+    // the game reads no depth map, so this is how a dense bush keeps its volume once exported.
+    depthShade: 0.45,          // 0 = off; how strongly the furthest pixels take the tint
+    depthTint: "#5a6a8c",      // multiplied into the colour at full depth
+    depthCurve: 1,             // >1 keeps the shade in the deepest part; <1 spreads it forward
+    depthMode: "back",         // "back": behind, along the ground; "view": along the view ray (lower reads deeper too)
   };
 
   function merge(opts = {}) {
@@ -173,6 +179,9 @@
     const occ = o.ao && o.aoStrength > 0 ? occupancy(occluders ?? mesh, cell, o.aoDistance + cell) : null;
     const hemi = hemisphere(Math.max(1, o.aoSamples));
     const blockedAt = (x, y, z) => (o.aoGround && z < ground) || occ.solid(x, y, z);
+    const depthOf = depthMeasure(o.depthMode);
+    const shadeRange = o.depthShade > 0 ? extent(occluders ?? mesh, depthOf) : null;
+    const tint = o.depthShade > 0 ? Aura.plantMesh.hexToLinear(o.depthTint) : null;
 
     for (let py = 0; py < S; py++) {
       for (let px = 0; px < S; px++) {
@@ -211,7 +220,13 @@
 
         const k = (py * S + px) * 4;
         const c = [cs[best * 3], cs[best * 3 + 1], cs[best * 3 + 2]];
-        for (let a = 0; a < 3; a++) color[k + a] = Math.round(clamp01(toSrgb(c[a] * light)) * 255);
+        let far = 0;
+        if (shadeRange) {
+          const t = clamp01((shadeRange[1] - depthOf(p)) / Math.max(1e-6, shadeRange[1] - shadeRange[0]));
+          far = o.depthShade * Math.pow(t, Math.max(0.05, o.depthCurve));
+        }
+        const tinted = (a) => (tint ? 1 - far + far * tint[a] : 1);
+        for (let a = 0; a < 3; a++) color[k + a] = Math.round(clamp01(toSrgb(c[a] * light * tinted(a))) * 255);
         color[k + 3] = 255;
         if (o.normals === "faces") {
           const f = wt >= wl && wt >= wr ? 0 : wl >= wr ? 1 : 2;
@@ -226,7 +241,8 @@
         depth[k] = depth[k + 1] = depth[k + 2] = dv; depth[k + 3] = 255;
         aoMap[k] = aoMap[k + 1] = aoMap[k + 2] = Math.round(255 * ao); aoMap[k + 3] = 255;
         const base = o.grayFromColor ? clamp01(toSrgb(0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2])) : 1;
-        gray[k] = gray[k + 1] = gray[k + 2] = Math.round(255 * base * light); gray[k + 3] = 255;
+        const grayShade = tint ? 1 - far + far * (0.2126 * tint[0] + 0.7152 * tint[1] + 0.0722 * tint[2]) : 1;
+        gray[k] = gray[k + 1] = gray[k + 2] = Math.round(255 * base * light * grayShade); gray[k + 3] = 255;
         mask[py * S + px] = 1;
       }
     }
@@ -243,6 +259,28 @@
       for (const k of edge) for (let a = 0; a < 3; a++) color[k + a] *= 1 - o.outline;
     }
     return { size: S, color, normal, depth, ao: aoMap, gray, mask };
+  }
+
+  // ── Depth shade ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+  // Larger = nearer the camera. "back" drops the view ray's vertical part, so a tall plant is not darker at its foot
+  // just for being lower; "view" keeps it, which also shades a bush's low inside.
+  function depthMeasure(mode) {
+    if (mode === "view") return (p) => dot(p, BACK);
+    return (p) => p[0] * BACK[0] + p[1] * BACK[1];
+  }
+
+  // Measured on the whole plant (the occluders when one part is drawn): every part of a multipart plant is moved
+  // down by the same offset as its occluders, so all parts share one range and the shade carries on across the cut.
+  function extent(mesh, depthOf) {
+    let lo = Infinity, hi = -Infinity;
+    const pos = mesh.pos;
+    for (let i = 0; i < pos.length; i += 3) {
+      const d = depthOf([pos[i], pos[i + 1], pos[i + 2]]);
+      if (d < lo) lo = d;
+      if (d > hi) hi = d;
+    }
+    return lo < hi ? [lo, hi] : null;
   }
 
   // ── Multipart ────────────────────────────────────────────────────────────────────────────────────────────────────

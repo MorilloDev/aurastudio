@@ -191,6 +191,11 @@
     #rCheck(label, key, title = "") {
       return checkbox({ label, value: this.r[key], title, onChange: (v) => this.#rSet(key, v) }).el;
     }
+    #rColor(label, key, title = "") {
+      const input = h("input", { type: "color", value: this.r[key], title, oninput: (e) => this.#rSet(key, e.target.value) });
+      return h("div", { class: "field", ondblclick: () => { input.value = R.DEFAULTS[key]; this.#rSet(key, R.DEFAULTS[key]); } },
+        h("label", { title: "Doble clic: por defecto" }, label), input);
+    }
     #rSet(path, v) {
       const keys = path.split(".");
       const last = keys.pop();
@@ -218,7 +223,8 @@
 
       const light = section({ id: "pl-light", title: "Luz y mapas",
         extra: this.#sectionReset(() => {
-          for (const k of ["shading", "shade", "normals", "ao", "aoDistance", "aoStrength", "aoSteps", "aoSamples", "aoGround"]) this.r[k] = structuredClone(R.DEFAULTS[k]);
+          for (const k of ["shading", "shade", "normals", "ao", "aoDistance", "aoStrength", "aoSteps", "aoSamples", "aoGround",
+            "depthShade", "depthTint", "depthCurve", "depthMode"]) this.r[k] = structuredClone(R.DEFAULTS[k]);
           this.#save(); this.#rebuildPanel(); this.#schedule();
         }) },
         this.#rCheck("Luz por caras (como los materiales)", "shading"),
@@ -233,7 +239,13 @@
         this.#rSlider("Distancia AO", "aoDistance", 0.02, 0.5, 0.01, "En bloques"),
         this.#rSlider("Fuerza AO", "aoStrength", 0, 1, 0.01),
         this.#rSlider("Escalones AO", "aoSteps", 0, 8, 1),
-        this.#rSlider("Muestras AO", "aoSamples", 4, 48, 1));
+        this.#rSlider("Muestras AO", "aoSamples", 4, 48, 1),
+        this.#rSlider("Sombra por profundidad", "depthShade", 0, 1, 0.01, "Lo que está más atrás se oscurece hacia el tono; queda dentro del sprite (el juego no lee la profundidad)"),
+        this.#rColor("Tono del fondo", "depthTint", "Se multiplica con el color en lo más profundo"),
+        this.#rSlider("Curva", "depthCurve", 0.25, 4, 0.05, "Más de 1: solo lo más profundo; menos de 1: llega más adelante"),
+        h("div", { class: "field" }, h("label", null, "Profundidad"),
+          segmented({ label: "Profundidad", value: this.r.depthMode, options: [["back", "Hacia atrás"], ["view", "Atrás y abajo"]],
+            onChange: (v) => this.#rSet("depthMode", v) }).el));
 
       const pixel = section({ id: "pl-pixel", title: "Pixel art",
         extra: this.#sectionReset(() => {
