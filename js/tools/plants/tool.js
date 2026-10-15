@@ -63,7 +63,16 @@
 
     /** This type's options: its defaults with whatever was changed on top. */
     get o() {
-      this.byType[this.type] = { ...G.defaults(this.type), ...(this.byType[this.type] ?? {}) };
+      let saved = this.byType[this.type];
+      if (!saved) {
+        // First time on this type: start from its first variety (or the one its head / style names), so a sunflower
+        // is yellow and a kelp green from the start.
+        const t = G.TYPES[this.type], presets = G.PRESETS[this.type];
+        const base = G.defaults(this.type);
+        const pr = presets?.find((x) => t.presetParam && x.key === base[t.presetParam]) ?? presets?.[0];
+        saved = pr ? { ...structuredClone(pr.values), variety: pr.key } : {};
+      }
+      this.byType[this.type] = { ...G.defaults(this.type), ...saved };
       return this.byType[this.type];
     }
 
@@ -101,10 +110,20 @@
     }
 
     #renderTypes() {
-      this.typeList.replaceChildren(...Object.entries(G.TYPES).map(([k, t]) =>
-        h("div", { class: ["bk-sheet", k === this.type && "active"], onclick: () => this.#setType(k) },
-          h("div", { class: "id" }, t.label),
-          h("div", { class: "path" }, t.growth ? "cultivo · etapas de crecimiento" : k === "FLOWER" ? "8 cabezas" : "briznas volumétricas"))));
+      // Grouped by where the plant belongs, each with its varieties as a hint.
+      const items = [];
+      for (const [cat, title] of G.CATEGORIES) {
+        const types = Object.entries(G.TYPES).filter(([, t]) => t.category === cat);
+        if (!types.length) continue;
+        items.push(h("div", { class: "pl-cat" }, title));
+        for (const [k, t] of types) {
+          const presets = G.PRESETS[k];
+          const sub = presets ? presets.map((pr) => pr.label).join(" · ") : t.growth ? "etapas de crecimiento" : "";
+          items.push(h("div", { class: ["bk-sheet", k === this.type && "active"], onclick: () => this.#setType(k) },
+            h("div", { class: "id" }, t.label), sub && h("div", { class: "path", title: sub }, sub)));
+        }
+      }
+      this.typeList.replaceChildren(...items);
     }
 
     #setType(k) {
@@ -120,7 +139,12 @@
     /** A control for one schema entry, bound to this type's options. */
     #control([key, label, kind, , min, max, step, title]) {
       const o = this.o;
-      const set = (v) => { this.o[key] = v; this.#save(); this.#schedule(); };
+      const set = (v) => {
+        this.o[key] = v;
+        // An option that names a variety (a flower's head, pumpkin or melon) also brings that variety's colours.
+        if (G.TYPES[this.type].presetParam === key && this.#applyPreset(v)) return;
+        this.#save(); this.#schedule();
+      };
       const def = G.defaults(this.type)[key];
       if (kind === "color") {
         const input = h("input", { type: "color", value: o[key], title: title ?? "", oninput: (e) => set(e.target.value) });
@@ -130,6 +154,17 @@
       if (Array.isArray(kind)) return select({ label, value: o[key], options: kind, title: title ?? "", onChange: set }).el;
       return slider({ label, min, max, step, value: o[key], defaultValue: def, title: title ?? "",
         onInput: (v) => set(kind === "int" ? Math.round(v) : v) }).el;
+    }
+
+    /** Applies a variety of the current type: its shape and colours, which stay editable. False if there is none. */
+    #applyPreset(key) {
+      const pr = G.PRESETS[this.type]?.find((x) => x.key === key);
+      if (!pr) return false;
+      Object.assign(this.o, structuredClone(pr.values), { variety: key });
+      this.#save();
+      this.#rebuildPanel();
+      this.#schedule();
+      return true;
     }
 
     #sectionReset(run) {
@@ -167,6 +202,17 @@
     #buildPanel() {
       const t = G.TYPES[this.type];
       const sections = [];
+      const presets = G.PRESETS[this.type];
+      if (presets) {
+        // Variety first: it sets the plant's look and colours in one go; everything below stays editable.
+        const current = this.o.variety ?? (t.presetParam ? this.o[t.presetParam] : "");
+        const varSel = select({ label: "Variedad", value: presets.some((pr) => pr.key === current) ? current : "",
+          options: [["", "— personalizada —"], ...presets.map((pr) => [pr.key, pr.label])],
+          title: "Pone la forma y los colores de esa variedad; luego puedes cambiar lo que quieras",
+          onChange: (v) => { if (v) this.#applyPreset(v); } });
+        sections.push(section({ id: "pl-variety", title: "Variedad" }, varSel.el,
+          h("div", { class: "pl-presets" }, presets.map((pr) => h("button", { class: pr.key === current ? "on" : "", onclick: () => this.#applyPreset(pr.key) }, pr.label)))));
+      }
       for (const [title, list] of Object.entries(t.params)) sections.push(this.#schemaSection("own-" + title, title, list));
       for (const [title, list] of Object.entries(G.COMMON)) sections.push(this.#schemaSection("common-" + title, title, list));
 
@@ -239,7 +285,7 @@
       this.panel = h("div", { class: "bk-panel" },
         h("div", { class: "bk-panel-head" }, h("span", null, t.label),
           h("button", { title: "Esta planta y la luz a sus valores por defecto", onclick: () => {
-            this.byType[this.type] = {};
+            delete this.byType[this.type];
             this.r = R.merge({});
             this.variants = { ...VARIANT_DEFAULTS };
             this.#save(); this.#rebuildPanel(); this.#schedule();
@@ -374,6 +420,22 @@
       ctx.setLineDash([4, 4]);
       ctx.strokeStyle = "rgba(120,220,160,.55)";
       ctx.stroke();
+      // The water's surface, for plants that live in or on it.
+      const mode = G.waterMode(this.type, this.o);
+      if (mode !== "LAND") {
+        const zw = z + this.o.waterDepth * H;
+        const wp = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]].map(([x, y]) => {
+          const [px, py] = Aura.blockEngine.project([x, y, zw], S, H);
+          return [ox + px * zoom, oy + py * zoom];
+        });
+        ctx.beginPath();
+        wp.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        ctx.closePath();
+        ctx.fillStyle = "rgba(70,140,230,.10)";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(110,170,255,.7)";
+        ctx.stroke();
+      }
       ctx.setLineDash([]);
     }
 

@@ -70,6 +70,14 @@
       ["patchColor", "Color manchas", "color", L(0.45, 0.4, 0.15)],
       ["noiseScale", "Escala ruido", "num", 0.2, 0.02, 2, 0.01],
     ],
+    "Agua": [
+      ["waterMode", "Agua", [["AUTO", "Automático"], ["LAND", "Tierra (sin agua)"], ["UNDERWATER", "Sumergida"],
+        ["SURFACE", "Flotando"], ["EMERGENT", "Sale del agua"]], "AUTO", null, null, null,
+        "Automático: cada planta donde vive (algas sumergidas, nenúfares flotando, juncos saliendo del agua)"],
+      ["waterDepth", "Profundidad", "num", 1, 0.1, 1.5, 0.01, "Altura de la superficie del agua sobre el suelo, en bloques"],
+      ["waterFit", "Ajustar al agua", "bool", true, null, null, null, "Sumergidas: se encogen bajo la superficie; emergentes: se estiran hasta salir"],
+      ["emergeHeight", "Sale del agua", "num", 0.3, 0, 1, 0.01, "Cuánto asoma una planta emergente, en bloques"],
+    ],
     "Base": [
       ["aoBase", "Oscurecer base", "num", 0.25, 0, 1, 0.01, "Oscurece donde la planta toca el suelo"],
       ["aoBaseHeight", "Altura oscuro", "num", 0.3, 0.01, 1.5, 0.01],
@@ -79,6 +87,7 @@
 
   const TYPES = {
     GRASS: {
+      category: "herbs",
       label: "Hierba",
       params: {
         "Hierba": [
@@ -99,6 +108,7 @@
       defaults: { count: 40, separation: 0.10, positionJitter: 0.6, segments: 4, inclination: 10, inclinationVariation: 12, bend: 0.15, leanMode: "RADIAL", leanSpread: 20 },
     },
     FLOWER: {
+      category: "herbs",
       label: "Flor",
       params: {
         "Tallo": [
@@ -136,6 +146,7 @@
       defaults: { count: 6, separation: 0.6, positionJitter: 0.5, segments: 4, tubeSides: 5, inclination: 3, inclinationVariation: 6, bend: 0.15 },
     },
     WHEAT: {
+      category: "crops",
       label: "Trigo",
       params: {
         "Trigo": [
@@ -160,6 +171,7 @@
       growth: true,
     },
     CARROT: {
+      category: "crops",
       label: "Zanahoria",
       params: {
         "Zanahoria": [
@@ -181,6 +193,7 @@
       growth: true,
     },
     POTATO: {
+      category: "crops",
       label: "Patata",
       params: {
         "Patata": [
@@ -205,6 +218,7 @@
       growth: true,
     },
     CORN: {
+      category: "crops",
       label: "Maíz",
       params: {
         "Maíz": [
@@ -224,6 +238,7 @@
       growth: true,
     },
     PUMPKIN: {
+      category: "crops",
       label: "Calabaza / sandía",
       params: {
         "Fruto": [
@@ -834,6 +849,41 @@
     }
   }
 
+  /** Where this plant lives: the panel's choice, or for "Automático" the type's own habitat. */
+  function waterMode(type, p) {
+    const t = TYPES[type];
+    if (t?.water === "HANGING") return "LAND";
+    return p.waterMode === "AUTO" ? (t?.water ?? "LAND") : p.waterMode;
+  }
+
+  /**
+   * Moves or stretches one plant (vertices from first on, ground at z = 0) to respect the water: floating ones are
+   * lifted to the surface, submerged ones squeezed to stay under it, emergent ones stretched until they reach out.
+   */
+  function fitToWater(pos, first, p, mode) {
+    if (mode === "LAND" || first >= pos.length) return;
+    const surface = p.waterSurface, H = Aura.blockEngine.BLOCK_HEIGHT;
+    if (mode === "SURFACE") {
+      for (let j = first + 2; j < pos.length; j += 3) pos[j] += surface;
+      return;
+    }
+    if (!p.waterFit) return;
+    let top = -Infinity;
+    for (let j = first + 2; j < pos.length; j += 3) top = Math.max(top, pos[j]);
+    if (top <= 1e-6) return;
+    let k;
+    if (mode === "UNDERWATER") {
+      const limit = surface - H * 0.05;
+      if (top <= limit) return;
+      k = limit / top;
+    } else {
+      const want = surface + p.emergeHeight * H;
+      if (top >= want) return;
+      k = want / top;
+    }
+    for (let j = first + 2; j < pos.length; j += 3) pos[j] *= Math.max(0.05, k);
+  }
+
   /**
    * Builds the whole patch of plants. opts: the panel options (see defaults()); type: a TYPES key.
    * Returns { pos: Float32Array, col: Float32Array, triangles } in blocks, z up, ground at opts.groundZ.
@@ -845,7 +895,11 @@
     const mb = new M.MeshBuilder(p);
     const gen = GENERATORS[type] ?? genGrass;
     const pts = keepInCell(positions(p, rng(p.seed)), p);
-    const ground = p.groundZ * Aura.blockEngine.BLOCK_HEIGHT;
+    const H = Aura.blockEngine.BLOCK_HEIGHT;
+    const ground = p.groundZ * H;
+    const mode = waterMode(type, p);
+    p.waterSurface = p.waterDepth * H;
+    p.waterModeResolved = mode;
     pts.forEach((pos, i) => {
       // One generator per plant, seeded by its index: changing the count adds or removes plants without reshuffling
       // the ones already there.
@@ -855,6 +909,7 @@
       gen(mb, p, r, pos);
       const k = (p.sizeVariation > 0 ? 1 + r.uniform(-p.sizeVariation, p.sizeVariation) : 1) * p.scale;
       if (k !== 1) for (let j = first; j < mb.pos.length; j += 3) for (let a = 0; a < 3; a++) mb.pos[j + a] = pos[a] + (mb.pos[j + a] - pos[a]) * k;
+      fitToWater(mb.pos, first, p, mode);
     });
     colorNoise(mb, p);
     if (ground) for (let j = 2; j < mb.pos.length; j += 3) mb.pos[j] += ground;
@@ -862,5 +917,20 @@
     return { pos: Float32Array.from(mb.pos), col: Float32Array.from(mb.col), triangles: mb.triangleCount };
   }
 
-  Aura.plantGen = { COMMON, TYPES, defaults, build };
+  // Variety presets: picking one sets the plant's shape and its own colours, which stay editable afterwards. A type
+  // with presetParam also applies the preset named like that option's value when the option changes (a flower's head).
+  const PRESETS = {};
+  const CATEGORIES = [["herbs", "Hierbas y flores"], ["crops", "Cultivos"], ["water", "Agua"], ["fungi", "Hongos, rocas y cristales"], ["climbers", "Trepadoras y colgantes"]];
+
+  /** Adds a plant type (used by generators-more.js). */
+  function register(key, def, gen, presets = null) {
+    TYPES[key] = def;
+    GENERATORS[key] = gen;
+    if (presets) PRESETS[key] = presets;
+  }
+
+  Aura.plantGen = {
+    COMMON, TYPES, PRESETS, CATEGORIES, defaults, build, register, waterMode,
+    helpers: { L, deg, vary, positions, leanDirection, kink, nodeColors, featherLeaf, petal, flowerCenter, segmentedStem, growthColor },
+  };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));

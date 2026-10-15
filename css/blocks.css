@@ -54,3 +54,7 @@
 .bk-snippet { min-height: 70px; }
 .bk-panel input[type=color] { width: 100%; height: 26px; padding: 0 2px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .pl-types { flex: 1 1 auto; }
+.pl-cat { padding: 10px 12px 4px; color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.pl-presets { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.pl-presets button { padding: 2px 8px; min-height: 24px; font-size: 12px; }
+.pl-presets button.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }

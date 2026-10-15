@@ -107,6 +107,21 @@
     return out;
   }
 
+  /** 0..1, 1 right on a crack: the borders between Voronoi cells, the pattern dry mud or stone breaks into. */
+  function crack(p, scale, width, seed) {
+    if (width <= 0) return 0;
+    const q = [p[0] * scale + seed * 13.1, p[1] * scale + seed * 7.7, p[2] * scale + seed * 3.3];
+    const b = q.map(Math.floor);
+    let f1 = Infinity, f2 = Infinity;
+    for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const cx = b[0] + dx, cy = b[1] + dy, cz = b[2] + dz;
+      const fx = cx + (hash3(cx, cy, cz) * 0.5 + 0.5), fy = cy + (hash3(cy, cz, cx) * 0.5 + 0.5), fz = cz + (hash3(cz, cx, cy) * 0.5 + 0.5);
+      const d = Math.hypot(q[0] - fx, q[1] - fy, q[2] - fz);
+      if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) f2 = d;
+    }
+    return clamp01(1 - (f2 - f1) / width);
+  }
+
   // ── Paths ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
   /** A unit vector perpendicular to t, preferring horizontal so a vertical stem gets an X/Y frame. */
@@ -343,18 +358,52 @@
     // ── solids ──
 
     /** Icosphere with radial noise — tubers, berries, buds, flower centres. colorFn(point, normal) -> colour. */
-    blob(center, radius, colorFn, r, { subdiv = 2, noise = 0, squash = [1, 1, 1], orient = null } = {}) {
+    blob(center, radius, colorFn, r, { subdiv = 2, noise = 0, squash = [1, 1, 1], orient = null, displace = null } = {}) {
       const { verts, faces } = icosphere(subdiv);
       const pts = verts.map((v) => {
         let d = V.mul(v, radius);
         if (noise > 0) d = V.mul(d, 1 + r.uniform(-noise, noise));
         d = [d[0] * squash[0], d[1] * squash[1], d[2] * squash[2]];
         if (orient) d = orient(d);
-        return V.add(center, d);
+        let q = V.add(center, d);
+        // displace(point, outward) pushes a vertex along its outward direction (cracks carved into a rock).
+        if (displace) q = V.add(q, V.mul(V.norm(d), displace(q, V.norm(d))));
+        return q;
       });
       const cols = pts.map((q) => colorFn(q, V.norm(V.sub(q, center))));
       for (const [a, b, c] of faces) this.tri(pts[a], pts[b], pts[c], cols[a], cols[b], cols[c]);
       return pts;
+    }
+
+    /**
+     * Cubes on a grid: cells is a Set of "i,j,k" keys; only faces between a filled and an empty cell are built, so a
+     * voxel rock costs its surface. colorFn(cell [i, j, k], direction index 0..5) -> colour.
+     */
+    voxels(cells, origin, size, colorFn) {
+      const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+      const h = size / 2;
+      for (const key of cells) {
+        const c = key.split(",").map(Number);
+        const centre = [origin[0] + (c[0] + 0.5) * size, origin[1] + (c[1] + 0.5) * size, origin[2] + (c[2] + 0.5) * size];
+        DIRS.forEach((d, di) => {
+          if (cells.has(`${c[0] + d[0]},${c[1] + d[1]},${c[2] + d[2]}`)) return;
+          const ax = d[0] ? 0 : d[1] ? 1 : 2;
+          const [a1, a2] = [0, 1, 2].filter((a) => a !== ax).map((a) => { const e = [0, 0, 0]; e[a] = 1; return e; });
+          const fc = V.add(centre, V.mul(d, h));
+          const corner = (s1, s2) => V.add(fc, V.add(V.mul(a1, s1 * h), V.mul(a2, s2 * h)));
+          const col = colorFn(c, di);
+          this.quad(corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1), col, col, col, col);
+        });
+      }
+    }
+
+    /** Multiplies the colours of every triangle built since triangle index first by its own random factor. */
+    facetShade(first, r, amount) {
+      if (amount <= 0) return;
+      for (let t = first; t < this.triangleCount; t++) {
+        const k = 1 + r.uniform(-amount, amount);
+        for (let i = t * 9; i < t * 9 + 9; i++) this.col[i] *= k;
+      }
     }
 
     /** Pointed grain / crystal: a straight prism ending in a pyramid. */
@@ -408,7 +457,7 @@
   }
 
   Aura.plantMesh = {
-    V, UP, clamp01, lerp, smooth, rng, noise3,
+    V, UP, clamp01, lerp, smooth, rng, noise3, crack,
     hexToLinear, linearToHex, toSrgb, jitterColor, gradient,
     anyPerp, tangents, frames, bezierPath, arcPath, headMatrix, leafProfile,
     MeshBuilder,
