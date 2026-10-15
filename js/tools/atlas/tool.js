@@ -83,6 +83,7 @@
     mount(host, studio) {
       this.studio = studio;
       this.showMarks = prefs.get("atlas:marks", true);
+      this.showCoords = prefs.get("atlas:coords", false);
       host.appendChild(this.#buildLayout());
       this.vp = new Viewport(this.canvas);
       this.vp.on("change", () => this.#draw());
@@ -167,6 +168,8 @@
       this.viewSeg = h("div", { class: "seg" });
       this.marksBtn = h("button", { class: this.showMarks ? "on" : "", title: "Marcas: celdas usadas, referencias rotas, arte sin usar (M)",
         onclick: () => this.#toggleMarks() }, "Marcas");
+      this.coordsBtn = h("button", { class: this.showCoords ? "on" : "", title: "Coordenadas [x, y] de cada celda, como van en el JSON (C)",
+        onclick: () => this.#toggleCoords() }, "Coords");
       this.undoBtn = h("button", { class: "icon", title: "Deshacer (Ctrl+Z)", onclick: () => this.history.undo() }, "↶");
       this.redoBtn = h("button", { class: "icon", title: "Rehacer (Ctrl+Y)", onclick: () => this.history.redo() }, "↷");
       this.saveBtn = h("button", { class: "primary", title: "Guardar la hoja, sus mapas y los JSON cambiados (Ctrl+S)", onclick: () => this.save() }, "Guardar");
@@ -175,7 +178,7 @@
       this.viewEl = h("div", { class: "at-view" }, this.canvas, this.banner);
       const stage = h("div", { class: "at-stage" },
         h("div", { class: "at-toolbar" },
-          this.viewSeg, this.marksBtn,
+          this.viewSeg, this.marksBtn, this.coordsBtn,
           h("button", { title: "Ver la hoja entera (F)", onclick: () => this.#fit() }, "Encajar"),
           h("span", { class: "grow" }),
           this.undoBtn, this.redoBtn, this.saveBtn),
@@ -267,6 +270,35 @@
       prefs.set("atlas:marks", this.showMarks);
       this.marksBtn.classList.toggle("on", this.showMarks);
       this.#draw();
+    }
+
+    #toggleCoords() {
+      this.showCoords = !this.showCoords;
+      prefs.set("atlas:coords", this.showCoords);
+      this.coordsBtn.classList.toggle("on", this.showCoords);
+      this.#draw();
+    }
+
+    // "x,y" in each cell's corner. Brighter where the cell has art or a tile points at it; below ~26 px a label would
+    // cover the art, so it is left out until the user zooms in (the status bar still shows the hovered cell).
+    #drawCoords(g, rect, cw) {
+      if (cw < 26) return;
+      const size = Math.max(9, Math.min(13, Math.floor(cw / 6)));
+      g.font = `600 ${size}px ui-monospace, Consolas, monospace`;
+      g.textBaseline = "top";
+      for (let y = 0; y < this.rows; y++) {
+        for (let x = 0; x < this.cols; x++) {
+          const k = x + "," + y;
+          const used = this.#artCells.has(k) || this.#cellRefs.has(k);
+          const [rx, ry] = rect(x, y);
+          const label = `${x},${y}`;
+          const w = g.measureText(label).width + 6;
+          g.fillStyle = used ? "rgba(0,0,0,.72)" : "rgba(0,0,0,.35)";
+          g.fillRect(rx + 1, ry + 1, w, size + 4);
+          g.fillStyle = used ? "rgba(255,255,255,.95)" : "rgba(255,255,255,.4)";
+          g.fillText(label, rx + 4, ry + 3);
+        }
+      }
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -452,6 +484,8 @@
           g.strokeRect(ox + rr.x * z + 1, oy + rr.y * z + 1, rr.w * z - 2, rr.h * z - 2);
         }
       }
+
+      if (this.showCoords) this.#drawCoords(g, rect, cw);
 
       // The open tile's cells.
       if (this.tile) {
@@ -1467,6 +1501,7 @@
         { id: "atlas.cancel", title: "Cancelar / quitar selección", group: "Atlas", keys: ["Escape"], hidden: true, run: () => this.#cancel() },
         { id: "atlas.fit", title: "Ver la hoja entera", group: "Atlas", keys: ["F"], enabled: has, run: () => this.#fit() },
         { id: "atlas.marks", title: "Mostrar/ocultar marcas", group: "Atlas", keys: ["M"], enabled: has, run: () => this.#toggleMarks() },
+        { id: "atlas.coords", title: "Mostrar/ocultar coordenadas", group: "Atlas", keys: ["C"], enabled: has, run: () => this.#toggleCoords() },
         { id: "atlas.all", title: "Seleccionar todo el arte", group: "Atlas", keys: ["Ctrl+A"], enabled: has, run: () => this.#select([...this.#artCells].map(pk)) },
         { id: "atlas.left", title: "Mover selección a la izquierda", group: "Atlas", keys: ["ArrowLeft"], enabled: sel, hidden: true, run: arrow(-1, 0) },
         { id: "atlas.right", title: "Mover selección a la derecha", group: "Atlas", keys: ["ArrowRight"], enabled: sel, hidden: true, run: arrow(1, 0) },
