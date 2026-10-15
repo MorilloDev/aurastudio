@@ -372,6 +372,7 @@
     const color = new Uint8ClampedArray(N * 4), normal = new Uint8ClampedArray(N * 4);
     const depth = new Uint8ClampedArray(N * 4), aoMap = new Uint8ClampedArray(N * 4), gray = new Uint8ClampedArray(N * 4);
     const mask = new Uint8Array(N);
+    const seam = new Uint8Array(N);
     const rnd = mulberry(spec.seed >>> 0 || 1);
     const uni = (a, b) => a + (b - a) * rnd();
 
@@ -445,19 +446,30 @@
         const toneLit = Math.max(0, Math.min(top, lit)), toneShade = Math.max(0, Math.min(top, base - 1));
         const dv = Math.round(255 * (1 - fromFront / Math.max(1, layers)));
 
-        const reach = len + 1;
+        // A rim one tone (or more) under the leaf's shaded half, drawn around it over whatever lies behind: what keeps
+        // neighbouring leaves apart, as the dark seams between the leaves of a hand-drawn block do.
+        const rim = Math.max(0, spec.edge) * k;
+        const toneRim = Math.max(0, toneShade - Math.max(1, spec.edgeTones | 0));
+        const reach = len + rim + 1;
+        const mx = bx + dx * len * 0.5, my = by + dy * len * 0.5;
         const x0 = Math.max(0, Math.floor(bx - reach)), x1 = Math.min(S - 1, Math.ceil(bx + reach));
         const y0 = Math.max(0, Math.floor(by - reach)), y1 = Math.min(S - 1, Math.ceil(by + reach));
         for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
           const qx = x + 0.5 - bx, qy = y + 0.5 - by;
-          const u = (qx * dx + qy * dy) / len, v = qx * px + qy * py;
-          if (u <= 0 || u >= 1) continue;
+          const along = qx * dx + qy * dy, u = along / len, v = qx * px + qy * py;
+          if (along <= -rim || along >= len + rim) continue;
           // Lance: widest a little before the middle, pointed at both ends.
-          const half = wid * Math.pow(Math.sin(Math.PI * Math.pow(u, 0.75)), spec.point);
-          if (Math.abs(v) > half) continue;
+          const uc = Math.min(1, Math.max(0, u));
+          const half = wid * Math.pow(Math.sin(Math.PI * Math.pow(uc, 0.75)), spec.point);
+          const inLeaf = u > 0 && u < 1 && Math.abs(v) <= half;
+          if (!inLeaf && (rim <= 0 || Math.abs(v) > half + rim)) continue;
           if (outlineNorm(x + 0.5, y + 0.5) > spec.clip) continue;
           const i = y * S + x, kk = i * 4;
-          const tone = (v >= 0 ? 1 : -1) === litSide ? toneLit : toneShade;
+          // The rim never eats into the silhouette: it only darkens what is already painted behind it.
+          if (!inLeaf && !mask[i]) continue;
+          // "edgeShadow": the rim only on the side away from the light, like the leaf's own shadow on the one behind.
+          if (!inLeaf && spec.edgeShadow && (x + 0.5 - mx) * LIGHT[0] + (y + 0.5 - my) * LIGHT[1] > 0) continue;
+          const tone = !inLeaf ? toneRim : (v >= 0 ? 1 : -1) === litSide ? toneLit : toneShade;
           const c = palette[tone];
           color[kk] = c[0]; color[kk + 1] = c[1]; color[kk + 2] = c[2]; color[kk + 3] = 255;
           const g = Math.round(0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]);
@@ -470,7 +482,17 @@
           depth[kk] = depth[kk + 1] = depth[kk + 2] = dv; depth[kk + 3] = 255;
           aoMap[kk] = aoMap[kk + 1] = aoMap[kk + 2] = 255 - fromFront * 40; aoMap[kk + 3] = 255;
           mask[i] = 1;
+          seam[i] = inLeaf ? 0 : 1;
         }
+      }
+    }
+    // Pinholes: a few seam pixels left open, so the block is seen through in specks between the leaves (the
+    // reference's many one- and two-pixel gaps) instead of in a few big holes.
+    if (spec.pinholes > 0) {
+      for (let i = 0; i < N; i++) {
+        if (!seam[i] || rnd() >= spec.pinholes) continue;
+        mask[i] = 0;
+        for (const map of [color, normal, depth, aoMap, gray]) map.fill(0, i * 4, i * 4 + 4);
       }
     }
     return { size: S, color, normal, depth, ao: aoMap, gray, mask };
