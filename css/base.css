@@ -81,6 +81,7 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; m
 .badge.warn { background: var(--warn-soft); color: var(--warn); }
 .badge.bad { background: var(--bad-soft); color: var(--bad); }
 .badge.plain { background: var(--panel-3); color: var(--muted); }
+.swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); display: inline-block; flex: none; }
 
 /* Segmented control: one choice of a few. */

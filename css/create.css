@@ -1,0 +1,6 @@
+/* Crear: one tab for everything the studio generates, a mode bar on top of the generator it shows. */
+.cr { position: absolute; inset: 0; display: grid; grid-template-rows: auto 1fr; }
+.cr-bar { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.cr-bar .hint { color: var(--muted); font-size: 12px; }
+.cr-host { position: absolute; inset: 0; display: none; }
+.cr-host.active { display: block; }

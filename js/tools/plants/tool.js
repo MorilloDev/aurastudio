@@ -9,7 +9,7 @@
   const { decodePng, encodePng } = Aura.png;
   const { downloadBlob } = Aura.fs;
   const { prefs } = Aura.storage;
-  const { listSheets } = Aura.normalsSheets;
+  const { listSheets } = Aura.sheetFiles;
   const G = Aura.plantGen;
   const R = Aura.plantRaster;
   const Cells = Aura.sheetCells;
@@ -285,6 +285,7 @@
         this.sizeSel.el, this.targetSel.el, this.targetCell.el, this.saveN.el,
         h("button", { class: "primary", onclick: () => this.#saveVariants(), title: "Una celda por variante, seguidas desde la celda X / Y" }, "Guardar variantes en el atlas"),
         h("button", { onclick: () => this.#saveVariants(true), title: "Solo la vista previa, en la celda X / Y" }, "Guardar solo la vista previa"),
+        h("button", { onclick: () => this.#sendToAtlas(), title: "Abre la pestaña Atlas para elegir las celdas viendo la hoja; allí mismo creas su tile" }, "Enviar al Atlas →"),
         this.snippetEl,
         h("button", { onclick: () => this.#copySnippet() }, "Copiar celdas"),
         h("div", { class: "bk-sep" }),
@@ -584,6 +585,29 @@
       } catch (err) {
         this.studio.toast("No pude guardar.", { kind: "bad", detail: err.message });
       }
+    }
+
+    /**
+     * Hands every variant to the Atlas tab (one cell per part, bottom first). One plant becomes one tile there — a tall
+     * one as "parts" stacked upward; stages and seeds are several tiles, so they go over as their cells only.
+     */
+    #sendToAtlas() {
+      const all = this.#allVariantResults();
+      if (!all.length) return;
+      const flat = all.flatMap((a) => a.result.parts.map((part, pi) => ({ variant: a.variant, part: pi, parts: a.result.cells, result: part })));
+      const t = G.TYPES[this.type];
+      this.studio.pendingPlacement = {
+        label: t.label, name: t.label, kind: "plant", size: flat[0].result.size, sheetKey: this.targetSel.get() || null,
+        items: flat.map((f) => ({ color: f.result.color, normal: f.result.normal, label: f.variant.label })),
+        buildTile: all.length === 1
+          ? (coords) => (coords.length === 1
+            ? { art: { default: { front: coords[0] } } }
+            : { parts: coords.map((c, i) => ({ offsetY: i, art: { default: { front: c } } })) })
+          : null,
+        snippet: (cells) => this.#snippet(flat.map((f, i) => ({ ...f, cell: cells[i] }))),
+        why: "Varias etapas o semillas son varios tiles; por ahora copia sus celdas al JSON que toque.",
+      };
+      this.studio.activate("atlas");
     }
 
     /**

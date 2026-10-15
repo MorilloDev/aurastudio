@@ -11,7 +11,7 @@
   const { decodePng, encodePng } = Aura.png;
   const { downloadBlob, stripExt } = Aura.fs;
   const { prefs } = Aura.storage;
-  const { listSheets } = Aura.normalsSheets;
+  const { listSheets } = Aura.sheetFiles;
   const Cells = Aura.sheetCells;
   const E = Aura.blockEngine;
   const Sh = Aura.blockShapes;
@@ -357,6 +357,7 @@
         h("button", { class: "primary", onclick: () => this.#saveVariantsToAtlas(),
           title: "Una celda por variante, seguidas desde la celda X / Y" }, "Guardar variantes en el atlas"),
         h("button", { onclick: () => this.#saveToAtlas(), title: "Solo la vista previa, en la celda X / Y" }, "Guardar solo la vista previa"),
+        h("button", { onclick: () => this.#sendToAtlas(), title: "Abre la pestaña Atlas para elegir las celdas viendo la hoja; allí mismo creas su tile" }, "Enviar al Atlas →"),
         this.snippetEl,
         h("button", { onclick: () => this.#copySnippet() }, "Copiar \"art\""),
         h("div", { class: "bk-sep" }),
@@ -795,6 +796,23 @@
       } catch (err) {
         this.studio.toast("No pude guardar.", { kind: "bad", detail: err.message });
       }
+    }
+
+    /** Hands every variant to the Atlas tab, which places them where the user clicks and offers to make the tile. */
+    #sendToAtlas() {
+      const all = this.#allVariantResults();
+      if (!all.length) { this.studio.toast("Elige antes las texturas de las caras.", { kind: "warn" }); return; }
+      const def = Sh.SHAPES[this.piece.shape] ?? Sh.SHAPES.cube;
+      const artText = (cells) => Sh.artSnippet(this.piece.shape, all.map((a, i) => ({ variant: a.variant, cell: cells[i] })));
+      this.studio.pendingPlacement = {
+        label: def.label, name: "", kind: "block", size: all[0].result.size, sheetKey: this.targetSel.get() || null,
+        items: all.map(({ variant, result }) => ({ color: result.color, normal: result.normal, label: variant.label })),
+        // Fences and walls connect, which no tile of the game does yet: their cells are handed over as text.
+        buildTile: def.connects ? null : (cells) => JSON.parse("{" + artText(cells) + "}"),
+        snippet: artText,
+        why: def.connects ? "Vallas y muros aún no son un tile del juego: aquí tienes sus celdas." : undefined,
+      };
+      this.studio.activate("atlas");
     }
 
     async #copySnippet(quiet = false) {

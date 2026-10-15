@@ -5,7 +5,7 @@
 (function (Aura) {
   const { decodePng, encodePng } = Aura.png;
   const { joinPath, dirName, stripExt, writeInDir } = Aura.fs;
-  const { companionPath, refreshCompanions } = Aura.normalsSheets;
+  const { companionPath, refreshCompanions } = Aura.sheetFiles;
 
   /** Cells for n sprites, row by row from start, wrapping at the sheet's width. */
   function layoutCells(start, n, cols) {

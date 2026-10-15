@@ -6,10 +6,11 @@ Solo HTML, CSS y JavaScript: nada que instalar ni compilar.
 **Para usarla** abre `index.html` en Chrome o Edge (hace falta la API de carpetas del navegador).
 **Para cambiarla** edita los archivos y recarga la página (F5).
 
-| Pestaña | Estado |
+| Pestaña | Qué hace |
 |---|---|
-| Normal maps | migrada (v2) |
-| Estructuras, Atlas, Partículas | versión anterior dentro del Studio (v1), se migran en las próximas fases |
+| Crear | Genera sprites con su `_n`: modo **Bloque** (cubos, losas, escaleras… con caras de una hoja) y **Planta** (hierba, flores, cultivos, plantas de agua). «Enviar al Atlas» los coloca en una hoja. |
+| Atlas | Edita las hojas de tiles: mover, intercambiar, copiar y vaciar celdas arrastrando. Los mapas (`_n`, `_d`…) y las coordenadas de los JSON de tiles se actualizan solos. Inspector con formulario y JSON, tiles nuevos, revisión de referencias rotas. Deshacer/rehacer y Ctrl+S. |
+| Estructuras, Partículas | versión anterior dentro del Studio (v1) |
 
 ## Estructura
 
@@ -34,8 +35,10 @@ legacy/*.js             herramientas aún no migradas, tal cual (su HTML como te
 Cada archivo es un script normal que se registra en `window.Aura` (`Aura.dom`, `Aura.history`…) y toma de ahí lo que
 usa, así que el orden de los `<script>` en `index.html` importa: un archivo solo puede usar los de encima.
 
-El generador de normal maps (`js/tools/normals/generator.js`) es una sola función sin nada de fuera: su texto arranca el
-proceso en segundo plano (Web Worker), porque una página abierta desde el disco no puede cargar un worker de otro archivo.
+`js/tools/shared/` tiene lo que usan varias herramientas: `sheets.js` (las hojas del proyecto y sus mapas `_n`, `_d`…),
+`mgcb.js` (añadir un mapa nuevo al `.mgcb` copiando la entrada de su hoja) y `cells.js` (escribir sprites en celdas).
+El Atlas está en `js/tools/atlas/`: `tiles.js` (los JSON de tiles y su formato), `layers.js` (la hoja y sus mapas como
+píxeles) y `tool.js` (la interfaz).
 
 ### Añadir una herramienta
 
