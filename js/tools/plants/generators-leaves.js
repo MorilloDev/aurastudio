@@ -51,7 +51,7 @@
     mb.ribbon(path, widths, side, cols, { fold, details: "LEAF" });
   }
 
-  /** Pine / spruce: a twig with needles fanned around it. */
+  /** Pine / spruce: a green rib with needles fanned around it. */
   function needleSpray(mb, base, dir, normal, length, c0, c1, r, needles = 9) {
     const d = V.norm(dir);
     const tip = V.add(base, V.mul(d, length));
@@ -162,12 +162,6 @@
       if (p.leafHang > 0) dir = V.norm(V.lerp(dir, [0, 0, -1], p.leafHang));
       speciesLeaf(mb, p, r, w, dir, normal);
     }
-    for (let i = 0; i < p.twigCount; i++) {
-      const from = toWorld([r.uniform(-0.4, 0.4), r.uniform(-0.4, 0.4), r.uniform(-0.6, 0.2)]);
-      const to = V.add(from, V.mul(V.norm([r.uniform(-1, 1), r.uniform(-1, 1), r.uniform(-0.2, 0.8)]), r.uniform(0.25, 0.5)));
-      mb.tube([from, V.lerp(from, to, 0.5), to], [p.twigWidth, p.twigWidth * 0.7, p.twigWidth * 0.35], 4,
-        [V.mul(p.twigColorL, 0.8), p.twigColorL, p.twigColorL], { capTip: false });
-    }
     for (let i = 0; i < p.blossomCount; i++) {
       const q = [r.uniform(-1, 1), r.uniform(-1, 1), r.uniform(-0.2, 1)];
       const s = Math.max(Math.abs(q[0]), Math.abs(q[1]), Math.abs(q[2]));
@@ -187,7 +181,7 @@
       const x = out[0] ? out[0] * 0.49 : u, y = out[1] ? out[1] * 0.49 : u;
       const len = H * p.vineLength * r.uniform(0.5, 1);
       const pts = Array.from({ length: 5 }, (_, k) => [x + r.uniform(-0.02, 0.02), y + r.uniform(-0.02, 0.02), H - len * k / 4]);
-      mb.tube(pts, pts.map(() => p.twigWidth * 0.5), 3, pts.map(() => p.vineColorL), { capTip: false });
+      mb.tube(pts, pts.map(() => 0.007), 3, pts.map(() => p.vineColorL), { capTip: false });
       for (let k = 1; k < 5; k++) {
         if (r.random() > 0.7) continue;
         speciesLeaf(mb, { ...p, leafSize: p.leafSize * 0.6 }, r, pts[k], V.norm(V.add(out, [0, 0, -0.6])), out);
@@ -214,7 +208,7 @@
     }
   }
 
-  /** Leaves fallen on the ground: flat, a little cupped, overlapping in layers, with a few twigs. */
+  /** Leaves fallen on the ground: flat, a little cupped, overlapping in layers. */
   function genLeafGround(mb, p, r) {
     const reach = 0.5 - p.cellMargin;
     for (let i = 0; i < p.leafCount; i++) {
@@ -228,13 +222,6 @@
         continue;
       }
       speciesLeaf(mb, { ...p, leafCurl: p.leafCurl * 0.5, leafShape: p.leafShape === "PALM" ? "NARROW" : p.leafShape }, r, at, dir, normal);
-    }
-    for (let i = 0; i < p.twigCount; i++) {
-      const a = r.uniform(0, 2 * Math.PI), l = r.uniform(0.15, 0.35);
-      const from = [r.uniform(-reach, reach) * 0.7, r.uniform(-reach, reach) * 0.7, p.twigWidth];
-      const to = V.add(from, [Math.cos(a) * l, Math.sin(a) * l, 0]);
-      mb.tube([from, V.lerp(from, to, 0.5), to], [p.twigWidth, p.twigWidth * 0.8, p.twigWidth * 0.5], 4,
-        [V.mul(p.twigColorL, 0.8), p.twigColorL, p.twigColorL], { capTip: false });
     }
   }
 
@@ -257,6 +244,17 @@
   }
 
   function genLeaves(mb, p, r) {
+    // Painted: no mesh at all — the raster paints the sprite from these numbers (Aura.plantRaster.paintLeaves). Its
+    // tones run from the species' base colour (darkest) to its tip colour (lightest), so every species paints too.
+    if (p.leafForm === "PAINTED") {
+      mb.painted = {
+        seed: p.seed, length: p.paintLength, lengthVar: 0.25, width: p.paintWidth, point: p.paintPoint,
+        spacing: p.paintSpacing, backSpacing: 1.1, jitter: p.paintJitter, layers: p.paintLayers, holes: p.paintHoles,
+        backHoles: p.paintBackHoles, round: p.paintRound, fill: p.paintFill, clip: p.paintClip, darker: p.paintDarker,
+        lighter: p.paintLighter, highlight: p.paintHighlight, light: p.leafTipColor, dark: p.leafColor, tones: p.paintTones,
+      };
+      return;
+    }
     if (p.leafForm === "GROUND") genLeafGround(mb, p, r);
     else if (p.leafForm === "PILE") genLeafPile(mb, p, r);
     else genLeafBlock(mb, p, r);
@@ -333,7 +331,7 @@
 
   if (!G.CATEGORIES.some(([k]) => k === "leaves")) G.CATEGORIES.splice(1, 0, ["leaves", "Hojas y semillas"]);
 
-  const SPECIES = [["OAK", "Roble"], ["BIRCH", "Abedul"], ["PINE", "Pino"], ["SPRUCE", "Abeto"], ["JUNGLE", "Jungla"],
+  const SPECIES = [["AURA", "Aura (pintado, gris)"], ["OAK", "Roble"], ["BIRCH", "Abedul"], ["PINE", "Pino"], ["SPRUCE", "Abeto"], ["JUNGLE", "Jungla"],
     ["JUNGLE_PALM", "Jungla · palmera"], ["JUNGLE_MONSTERA", "Jungla · costilla de Adán"], ["JUNGLE_BANANA", "Jungla · platanera"],
     ["JUNGLE_VINES", "Jungla · con lianas"], ["ACACIA", "Acacia"], ["DARK_OAK", "Roble oscuro"], ["CHERRY", "Cerezo"],
     ["MANGROVE", "Manglar"], ["WILLOW", "Sauce"], ["AUTUMN", "Otoño"], ["DEAD", "Seca"]];
@@ -344,9 +342,9 @@
     presetParam: "leafSpecies",
     params: {
       "Hojas": [
-        ["leafForm", "Forma", [["BLOCK", "Bloque de hojas"], ["GROUND", "En el suelo"], ["PILE", "Montón"]], "BLOCK", null, null, null,
-          "Bloque: la copa de un árbol, cabe justo en el bloque y empalma con sus vecinos. Suelo: hojarasca. Montón: un montículo"],
-        ["leafSpecies", "Especie", SPECIES, "OAK"],
+        ["leafForm", "Forma", [["PAINTED", "Bloque pintado (2D)"], ["BLOCK", "Bloque de hojas (3D)"], ["GROUND", "En el suelo"], ["PILE", "Montón"]], "PAINTED", null, null, null,
+          "Pintado: hojas enteras de frente, en capas, como un bloque dibujado a mano (se ajusta en «Pintado»). Bloque 3D: hojas modeladas. Suelo: hojarasca. Montón: un montículo"],
+        ["leafSpecies", "Especie", SPECIES, "AURA"],
         ["leafShape", "Hoja", [["LOBED", "Lobulada"], ["OVAL", "Ovalada"], ["ROUND", "Redonda"], ["LANCE", "Lanceolada"], ["NARROW", "Estrecha"],
           ["HEART", "Corazón"], ["SPLIT", "Partida (monstera)"], ["TINY", "Diminuta"], ["NEEDLE", "Agujas"], ["PALM", "Fronda"]], "LOBED"],
         ["leafCount", "Cantidad", "int", 240, 5, 1500, 1],
@@ -368,9 +366,6 @@
         ["blockHoles", "Huecos", "num", 0.15, 0, 1, 0.01, "Claros entre las hojas"],
         ["blockCore", "Núcleo oscuro", "num", 0, 0, 1, 0.01, "0 = sin núcleo: entre las hojas se ve a través (transparente). Más de 0: un cubo oscuro dentro tapa los huecos"],
         ["coreColor", "Color núcleo", "color", L(0.02, 0.08, 0.015)],
-        ["twigCount", "Ramitas", "int", 4, 0, 40, 1],
-        ["twigWidth", "Grosor ramita", "num", 0.014, 0.004, 0.05, 0.001],
-        ["twigColor", "Color ramita", "color", L(0.18, 0.1, 0.05)],
         ["blossomCount", "Flores", "int", 0, 0, 120, 1],
         ["blossomSize", "Tamaño flor", "num", 0.05, 0.015, 0.15, 0.005],
         ["blossomColor", "Color flor", "color", L(1, 0.6, 0.75)],
@@ -379,6 +374,23 @@
         ["vineLength", "Largo colgante", "num", 0.8, 0.1, 1, 0.01],
         ["vineColor", "Color colgante", "color", L(0.1, 0.3, 0.05)],
       ],
+      "Pintado": [
+        ["paintLength", "Largo de hoja", "num", 9, 4, 24, 0.5, "En pixeles de un sprite de 64"],
+        ["paintWidth", "Ancho de hoja", "num", 0.55, 0.2, 1, 0.01, "Respecto al largo"],
+        ["paintPoint", "Punta", "num", 1.2, 0.5, 3, 0.05, "Más = hojas más afiladas"],
+        ["paintSpacing", "Separación", "num", 5, 3, 14, 0.25, "Entre hojas, en pixeles: menos = más hojas"],
+        ["paintJitter", "Desorden", "num", 70, 0, 180, 1, "Grados que se aparta cada hoja de apuntar hacia fuera"],
+        ["paintLayers", "Capas", "int", 2, 1, 4, 1, "Las de atrás van un tono más oscuras y se ven entre las de delante"],
+        ["paintHoles", "Huecos delante", "num", 0.06, 0, 0.6, 0.01],
+        ["paintBackHoles", "Huecos detrás", "num", 0.12, 0, 0.8, 0.01, "Lo que deja ver a través del bloque"],
+        ["paintRound", "Redondez", "num", 0.6, 0, 1, 0.01, "0 = la silueta del bloque; 1 = un círculo"],
+        ["paintFill", "Llenado", "num", 0.95, 0.5, 1.2, 0.01, "Hasta dónde llegan las hojas hacia el borde"],
+        ["paintClip", "Puntas fuera", "num", 1.22, 1, 1.5, 0.01, "Cuánto pueden salir las puntas de la silueta"],
+        ["paintDarker", "Hojas más oscuras", "num", 0.28, 0, 0.8, 0.01, "Parte de las hojas un tono por debajo"],
+        ["paintLighter", "Hojas más claras", "num", 0.1, 0, 0.8, 0.01],
+        ["paintHighlight", "Brillos arriba", "num", 0.35, 0, 1, 0.01, "Hojas de arriba con su mitad iluminada en el tono más claro"],
+        ["paintTones", "Tonos", "int", 6, 3, 10, 1, "Entre el color base (el más oscuro) y el de la punta (el más claro)"],
+      ],
       "Suelo y montón": [
         ["pileHeight", "Altura montón", "num", 0.45, 0.05, 1, 0.01, "En bloques"],
         ["pileRadius", "Radio montón", "num", 0.45, 0.15, 0.5, 0.01],
@@ -386,22 +398,25 @@
     },
     defaults: { count: 1, distribution: "GRID", keepInCell: false, fitSprite: false, aoBase: 0, colorVariation: 0.12, leafTwist: 25, leafSegments: 4, cellMargin: 0.04 },
   }, (mb, p, r) => genLeaves(mb, p, r), [
-    { key: "OAK", label: "Roble", values: { leafShape: "LOBED", leafSize: 0.16, leafWidth: 0.6, leafCount: 240, leafCurl: 0.3, leafHang: 0, leafColor: L(0.08, 0.25, 0.04), leafTipColor: L(0.25, 0.5, 0.1), leafAltChance: 0, blockRound: 0.25, blockHoles: 0.15, blockCore: 0, coreColor: L(0.02, 0.08, 0.015), twigCount: 4, blossomCount: 0, vineCount: 0 } },
-    { key: "BIRCH", label: "Abedul", values: { leafShape: "OVAL", leafSize: 0.11, leafWidth: 0.7, leafCount: 320, leafCurl: 0.2, leafHang: 0, leafColor: L(0.18, 0.4, 0.07), leafTipColor: L(0.55, 0.75, 0.2), leafAltChance: 0, blockRound: 0.3, blockHoles: 0.22, blockCore: 0, coreColor: L(0.05, 0.12, 0.02), twigCount: 3, twigColor: L(0.75, 0.72, 0.65), blossomCount: 0, vineCount: 0 } },
-    { key: "PINE", label: "Pino", values: { leafShape: "NEEDLE", leafSize: 0.2, leafCount: 110, leafHang: 0.1, leafColor: L(0.03, 0.15, 0.05), leafTipColor: L(0.08, 0.3, 0.1), leafAltChance: 0, blockRound: 0.35, blockHoles: 0.18, blockCore: 0, coreColor: L(0.01, 0.05, 0.02), twigCount: 6, twigColor: L(0.2, 0.1, 0.05), blossomCount: 0, vineCount: 0 } },
-    { key: "SPRUCE", label: "Abeto", values: { leafShape: "NEEDLE", leafSize: 0.16, leafCount: 140, leafHang: 0.25, leafColor: L(0.02, 0.1, 0.06), leafTipColor: L(0.05, 0.22, 0.13), leafAltChance: 0, blockRound: 0.1, blockHoles: 0.08, blockCore: 0, coreColor: L(0.01, 0.04, 0.025), twigCount: 4, twigColor: L(0.18, 0.09, 0.04), blossomCount: 0, vineCount: 0 } },
-    { key: "JUNGLE", label: "Jungla", values: { leafShape: "HEART", leafSize: 0.22, leafWidth: 0.75, leafCount: 150, leafCurl: 0.35, leafHang: 0.15, veinStrength: 0.2, leafColor: L(0.02, 0.3, 0.03), leafTipColor: L(0.15, 0.65, 0.08), leafAltChance: 0, blockRound: 0.15, blockHoles: 0.1, blockCore: 0, coreColor: L(0.01, 0.08, 0.01), twigCount: 2, blossomCount: 0, vineCount: 6, vineColor: L(0.08, 0.28, 0.04) } },
-    { key: "JUNGLE_PALM", label: "Jungla · palmera", values: { leafShape: "PALM", leafSize: 0.42, leafCount: 45, leafHang: 0, leafColor: L(0.05, 0.3, 0.05), leafTipColor: L(0.3, 0.6, 0.1), leafAltChance: 0, blockRound: 0.4, blockHoles: 0, blockCore: 0, coreColor: L(0.01, 0.05, 0.01), twigCount: 0, blossomCount: 0, vineCount: 0 } },
-    { key: "JUNGLE_MONSTERA", label: "Jungla · costilla de Adán", values: { leafShape: "SPLIT", leafSize: 0.3, leafWidth: 0.95, leafCount: 120, leafCurl: 0.25, leafHang: 0.1, veinStrength: 0.25, leafColor: L(0.01, 0.2, 0.03), leafTipColor: L(0.08, 0.45, 0.08), leafAltChance: 0, blockRound: 0.2, blockHoles: 0.05, blockCore: 0, coreColor: L(0.005, 0.06, 0.01), twigCount: 0, blossomCount: 0, vineCount: 3, vineColor: L(0.08, 0.25, 0.04) } },
-    { key: "JUNGLE_BANANA", label: "Jungla · platanera", values: { leafShape: "LANCE", leafSize: 0.36, leafWidth: 0.42, leafCount: 70, leafCurl: 0.15, leafHang: 0.2, leafRuffle: 0.3, biteChance: 0.25, leafColor: L(0.1, 0.4, 0.05), leafTipColor: L(0.4, 0.75, 0.15), leafAltChance: 0.1, leafAltColor: L(0.5, 0.45, 0.15), blockRound: 0.2, blockHoles: 0.08, blockCore: 0, coreColor: L(0.02, 0.1, 0.02), twigCount: 0, blossomCount: 0, vineCount: 0 } },
-    { key: "JUNGLE_VINES", label: "Jungla · con lianas", values: { leafShape: "HEART", leafSize: 0.14, leafWidth: 0.8, leafCount: 210, leafCurl: 0.3, leafHang: 0.2, leafColor: L(0.03, 0.28, 0.03), leafTipColor: L(0.18, 0.6, 0.1), leafAltChance: 0, blockRound: 0.15, blockHoles: 0.12, blockCore: 0, coreColor: L(0.01, 0.07, 0.01), twigCount: 2, blossomCount: 0, vineCount: 16, vineLength: 1, vineColor: L(0.1, 0.32, 0.05) } },
-    { key: "ACACIA", label: "Acacia", values: { leafShape: "TINY", leafSize: 0.07, leafWidth: 0.5, leafCount: 520, leafCurl: 0.1, leafHang: 0, leafColor: L(0.15, 0.25, 0.04), leafTipColor: L(0.4, 0.48, 0.12), leafAltChance: 0, blockRound: 0.45, blockHoles: 0.35, blockCore: 0, coreColor: L(0.05, 0.08, 0.02), twigCount: 8, twigColor: L(0.25, 0.15, 0.08), blossomCount: 0, vineCount: 0 } },
-    { key: "DARK_OAK", label: "Roble oscuro", values: { leafShape: "LOBED", leafSize: 0.18, leafWidth: 0.65, leafCount: 300, leafCurl: 0.3, leafHang: 0.05, leafColor: L(0.02, 0.12, 0.02), leafTipColor: L(0.1, 0.28, 0.05), leafAltChance: 0, blockRound: 0.1, blockHoles: 0.05, blockCore: 0, coreColor: L(0.005, 0.03, 0.005), twigCount: 3, blossomCount: 0, vineCount: 0 } },
-    { key: "CHERRY", label: "Cerezo", values: { leafShape: "OVAL", leafSize: 0.1, leafWidth: 0.7, leafCount: 260, leafCurl: 0.3, leafHang: 0, leafColor: L(0.8, 0.35, 0.5), leafTipColor: L(1, 0.7, 0.82), leafAltChance: 0.15, leafAltColor: L(0.2, 0.45, 0.1), blockRound: 0.35, blockHoles: 0.18, blockCore: 0, coreColor: L(0.35, 0.12, 0.2), twigCount: 4, twigColor: L(0.2, 0.08, 0.06), blossomCount: 40, blossomColor: L(1, 0.85, 0.9), blossomCenterColor: L(1, 0.6, 0.7), vineCount: 0 } },
-    { key: "MANGROVE", label: "Manglar", values: { leafShape: "OVAL", leafSize: 0.12, leafWidth: 0.55, leafCount: 280, leafCurl: 0.2, leafHang: 0.05, leafColor: L(0.05, 0.25, 0.06), leafTipColor: L(0.2, 0.45, 0.12), leafAltChance: 0, blockRound: 0.2, blockHoles: 0.15, blockCore: 0, coreColor: L(0.02, 0.07, 0.02), twigCount: 4, twigColor: L(0.3, 0.15, 0.08), blossomCount: 0, vineCount: 5, vineLength: 0.6, vineColor: L(0.28, 0.3, 0.1) } },
-    { key: "WILLOW", label: "Sauce", values: { leafShape: "NARROW", leafSize: 0.22, leafWidth: 0.25, leafCount: 260, leafCurl: 0.1, leafHang: 0.8, leafColor: L(0.15, 0.38, 0.12), leafTipColor: L(0.45, 0.65, 0.25), leafAltChance: 0, blockRound: 0.3, blockHoles: 0.2, blockCore: 0, coreColor: L(0.04, 0.1, 0.03), twigCount: 3, blossomCount: 0, vineCount: 10, vineLength: 1, vineColor: L(0.2, 0.4, 0.12) } },
-    { key: "AUTUMN", label: "Otoño", values: { leafShape: "LOBED", leafSize: 0.15, leafWidth: 0.62, leafCount: 240, leafCurl: 0.35, leafHang: 0, leafColor: L(0.8, 0.28, 0.02), leafTipColor: L(1, 0.62, 0.05), leafAltChance: 0.35, leafAltColor: L(0.65, 0.05, 0.02), blockRound: 0.25, blockHoles: 0.2, blockCore: 0, coreColor: L(0.2, 0.05, 0.01), twigCount: 5, blossomCount: 0, vineCount: 0 } },
-    { key: "DEAD", label: "Seca", values: { leafShape: "OVAL", leafSize: 0.12, leafWidth: 0.55, leafCount: 90, leafCurl: 0.8, leafHang: 0.1, leafColor: L(0.25, 0.15, 0.05), leafTipColor: L(0.45, 0.3, 0.12), leafAltChance: 0.3, leafAltColor: L(0.15, 0.1, 0.05), blockRound: 0.3, blockHoles: 0.5, blockCore: 0, twigCount: 25, twigColor: L(0.2, 0.13, 0.08), blossomCount: 0, vineCount: 0 } },
+    // Dalvin's hand-made leaf block, measured: whole pointed leaves facing the camera in two layers, two tones each,
+    // six grays from 99 to 185, lighter on top and darker down the right. Painted (no mesh); gray for biome_tinted.
+    { key: "AURA", label: "Aura (pintado, gris)", values: { leafForm: "PAINTED", paintLength: 9, paintWidth: 0.55, paintPoint: 1.2, paintSpacing: 5, paintJitter: 70, paintLayers: 2, paintHoles: 0.06, paintBackHoles: 0.12, paintRound: 0.6, paintFill: 0.95, paintClip: 1.22, paintDarker: 0.28, paintLighter: 0.1, paintHighlight: 0.35, paintTones: 6, leafColor: "#636363", leafTipColor: "#b9b9b9", leafAltChance: 0 } },
+    { key: "OAK", label: "Roble", values: { leafShape: "LOBED", leafSize: 0.16, leafWidth: 0.6, leafCount: 240, leafCurl: 0.3, leafHang: 0, leafColor: L(0.08, 0.25, 0.04), leafTipColor: L(0.25, 0.5, 0.1), leafAltChance: 0, blockRound: 0.25, blockHoles: 0.15, blockCore: 0, coreColor: L(0.02, 0.08, 0.015), blossomCount: 0, vineCount: 0 } },
+    { key: "BIRCH", label: "Abedul", values: { leafShape: "OVAL", leafSize: 0.11, leafWidth: 0.7, leafCount: 320, leafCurl: 0.2, leafHang: 0, leafColor: L(0.18, 0.4, 0.07), leafTipColor: L(0.55, 0.75, 0.2), leafAltChance: 0, blockRound: 0.3, blockHoles: 0.22, blockCore: 0, coreColor: L(0.05, 0.12, 0.02), blossomCount: 0, vineCount: 0 } },
+    { key: "PINE", label: "Pino", values: { leafShape: "NEEDLE", leafSize: 0.2, leafCount: 110, leafHang: 0.1, leafColor: L(0.03, 0.15, 0.05), leafTipColor: L(0.08, 0.3, 0.1), leafAltChance: 0, blockRound: 0.35, blockHoles: 0.18, blockCore: 0, coreColor: L(0.01, 0.05, 0.02), blossomCount: 0, vineCount: 0 } },
+    { key: "SPRUCE", label: "Abeto", values: { leafShape: "NEEDLE", leafSize: 0.16, leafCount: 140, leafHang: 0.25, leafColor: L(0.02, 0.1, 0.06), leafTipColor: L(0.05, 0.22, 0.13), leafAltChance: 0, blockRound: 0.1, blockHoles: 0.08, blockCore: 0, coreColor: L(0.01, 0.04, 0.025), blossomCount: 0, vineCount: 0 } },
+    { key: "JUNGLE", label: "Jungla", values: { leafShape: "HEART", leafSize: 0.22, leafWidth: 0.75, leafCount: 150, leafCurl: 0.35, leafHang: 0.15, veinStrength: 0.2, leafColor: L(0.02, 0.3, 0.03), leafTipColor: L(0.15, 0.65, 0.08), leafAltChance: 0, blockRound: 0.15, blockHoles: 0.1, blockCore: 0, coreColor: L(0.01, 0.08, 0.01), blossomCount: 0, vineCount: 6, vineColor: L(0.08, 0.28, 0.04) } },
+    { key: "JUNGLE_PALM", label: "Jungla · palmera", values: { leafShape: "PALM", leafSize: 0.42, leafCount: 45, leafHang: 0, leafColor: L(0.05, 0.3, 0.05), leafTipColor: L(0.3, 0.6, 0.1), leafAltChance: 0, blockRound: 0.4, blockHoles: 0, blockCore: 0, coreColor: L(0.01, 0.05, 0.01), blossomCount: 0, vineCount: 0 } },
+    { key: "JUNGLE_MONSTERA", label: "Jungla · costilla de Adán", values: { leafShape: "SPLIT", leafSize: 0.3, leafWidth: 0.95, leafCount: 120, leafCurl: 0.25, leafHang: 0.1, veinStrength: 0.25, leafColor: L(0.01, 0.2, 0.03), leafTipColor: L(0.08, 0.45, 0.08), leafAltChance: 0, blockRound: 0.2, blockHoles: 0.05, blockCore: 0, coreColor: L(0.005, 0.06, 0.01), blossomCount: 0, vineCount: 3, vineColor: L(0.08, 0.25, 0.04) } },
+    { key: "JUNGLE_BANANA", label: "Jungla · platanera", values: { leafShape: "LANCE", leafSize: 0.36, leafWidth: 0.42, leafCount: 70, leafCurl: 0.15, leafHang: 0.2, leafRuffle: 0.3, biteChance: 0.25, leafColor: L(0.1, 0.4, 0.05), leafTipColor: L(0.4, 0.75, 0.15), leafAltChance: 0.1, leafAltColor: L(0.5, 0.45, 0.15), blockRound: 0.2, blockHoles: 0.08, blockCore: 0, coreColor: L(0.02, 0.1, 0.02), blossomCount: 0, vineCount: 0 } },
+    { key: "JUNGLE_VINES", label: "Jungla · con lianas", values: { leafShape: "HEART", leafSize: 0.14, leafWidth: 0.8, leafCount: 210, leafCurl: 0.3, leafHang: 0.2, leafColor: L(0.03, 0.28, 0.03), leafTipColor: L(0.18, 0.6, 0.1), leafAltChance: 0, blockRound: 0.15, blockHoles: 0.12, blockCore: 0, coreColor: L(0.01, 0.07, 0.01), blossomCount: 0, vineCount: 16, vineLength: 1, vineColor: L(0.1, 0.32, 0.05) } },
+    { key: "ACACIA", label: "Acacia", values: { leafShape: "TINY", leafSize: 0.07, leafWidth: 0.5, leafCount: 520, leafCurl: 0.1, leafHang: 0, leafColor: L(0.15, 0.25, 0.04), leafTipColor: L(0.4, 0.48, 0.12), leafAltChance: 0, blockRound: 0.45, blockHoles: 0.35, blockCore: 0, coreColor: L(0.05, 0.08, 0.02), blossomCount: 0, vineCount: 0 } },
+    { key: "DARK_OAK", label: "Roble oscuro", values: { leafShape: "LOBED", leafSize: 0.18, leafWidth: 0.65, leafCount: 300, leafCurl: 0.3, leafHang: 0.05, leafColor: L(0.02, 0.12, 0.02), leafTipColor: L(0.1, 0.28, 0.05), leafAltChance: 0, blockRound: 0.1, blockHoles: 0.05, blockCore: 0, coreColor: L(0.005, 0.03, 0.005), blossomCount: 0, vineCount: 0 } },
+    { key: "CHERRY", label: "Cerezo", values: { leafShape: "OVAL", leafSize: 0.1, leafWidth: 0.7, leafCount: 260, leafCurl: 0.3, leafHang: 0, leafColor: L(0.8, 0.35, 0.5), leafTipColor: L(1, 0.7, 0.82), leafAltChance: 0.15, leafAltColor: L(0.2, 0.45, 0.1), blockRound: 0.35, blockHoles: 0.18, blockCore: 0, coreColor: L(0.35, 0.12, 0.2), blossomCount: 40, blossomColor: L(1, 0.85, 0.9), blossomCenterColor: L(1, 0.6, 0.7), vineCount: 0 } },
+    { key: "MANGROVE", label: "Manglar", values: { leafShape: "OVAL", leafSize: 0.12, leafWidth: 0.55, leafCount: 280, leafCurl: 0.2, leafHang: 0.05, leafColor: L(0.05, 0.25, 0.06), leafTipColor: L(0.2, 0.45, 0.12), leafAltChance: 0, blockRound: 0.2, blockHoles: 0.15, blockCore: 0, coreColor: L(0.02, 0.07, 0.02), blossomCount: 0, vineCount: 5, vineLength: 0.6, vineColor: L(0.28, 0.3, 0.1) } },
+    { key: "WILLOW", label: "Sauce", values: { leafShape: "NARROW", leafSize: 0.22, leafWidth: 0.25, leafCount: 260, leafCurl: 0.1, leafHang: 0.8, leafColor: L(0.15, 0.38, 0.12), leafTipColor: L(0.45, 0.65, 0.25), leafAltChance: 0, blockRound: 0.3, blockHoles: 0.2, blockCore: 0, coreColor: L(0.04, 0.1, 0.03), blossomCount: 0, vineCount: 10, vineLength: 1, vineColor: L(0.2, 0.4, 0.12) } },
+    { key: "AUTUMN", label: "Otoño", values: { leafShape: "LOBED", leafSize: 0.15, leafWidth: 0.62, leafCount: 240, leafCurl: 0.35, leafHang: 0, leafColor: L(0.8, 0.28, 0.02), leafTipColor: L(1, 0.62, 0.05), leafAltChance: 0.35, leafAltColor: L(0.65, 0.05, 0.02), blockRound: 0.25, blockHoles: 0.2, blockCore: 0, coreColor: L(0.2, 0.05, 0.01), blossomCount: 0, vineCount: 0 } },
+    { key: "DEAD", label: "Seca", values: { leafShape: "OVAL", leafSize: 0.12, leafWidth: 0.55, leafCount: 90, leafCurl: 0.8, leafHang: 0.1, leafColor: L(0.25, 0.15, 0.05), leafTipColor: L(0.45, 0.3, 0.12), leafAltChance: 0.3, leafAltColor: L(0.15, 0.1, 0.05), blockRound: 0.3, blockHoles: 0.5, blockCore: 0, blossomCount: 0, vineCount: 0 } },
   ]);
 
   G.register("SEEDS", {
