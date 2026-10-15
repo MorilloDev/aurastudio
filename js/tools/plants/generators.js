@@ -965,6 +965,8 @@
     const cells = cellsFor(mb.pos, p, H);
     // Without Multiparte the one-tile limit is a rule, not a preference: it is fitted even with "Ajustar al sprite" off.
     if (p.fitSprite || !p.multipart) fitCells(mb.pos, ground, cells);
+    // A painted generator (leaves) hands the raster a description instead of triangles; it is one cell by definition.
+    if (mb.painted) return { pos: new Float32Array(0), col: new Float32Array(0), triangles: 0, cells: 1, painted: mb.painted };
     return { pos: Float32Array.from(mb.pos), col: Float32Array.from(mb.col), triangles: mb.triangleCount, cells };
   }
 
