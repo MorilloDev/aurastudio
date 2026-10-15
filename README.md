@@ -8,8 +8,9 @@ Solo HTML, CSS y JavaScript: nada que instalar ni compilar.
 
 | Pestaña | Qué hace |
 |---|---|
-| Crear | Genera sprites con su `_n`: modo **Bloque** (cubos, losas, escaleras… con caras de una hoja) y **Planta** (hierba, flores, cultivos, plantas de agua). «Enviar al Atlas» los coloca en una hoja. |
-| Atlas | Edita las hojas de tiles: mover, intercambiar, copiar y vaciar celdas arrastrando. Los mapas (`_n`, `_d`…) y las coordenadas de los JSON de tiles se actualizan solos. Inspector con formulario y JSON, tiles nuevos, revisión de referencias rotas. Deshacer/rehacer y Ctrl+S. |
+| Crear | Genera sprites con su `_n`: modo **Bloque** (cubos, losas, escaleras… con caras de una hoja) y **Planta** (hierba, flores, cultivos, plantas de agua, hojas de 16 especies, semillas). Sección Bioma (escala de grises para `biome_tinted`), vista Contexto (3 × 3 con bioma, luz y viento), Básico/Avanzado, Crecimiento (etapas y columnas). «Enviar al Atlas» lo coloca en una hoja. |
+| Atlas | Edita las hojas de tiles: mover, intercambiar, copiar y vaciar celdas arrastrando. Los mapas (`_n`, `_d`…) y las coordenadas de los JSON de tiles se actualizan solos. Inspector con formulario y JSON, tiles nuevos (también juegos completos de crecimiento), vista Bioma y pasar a gris, revisión de referencias rotas. Deshacer/rehacer y Ctrl+S. |
+| Biomas | Crea y edita los biomas de `Data/Biomes`: mapa de clima (qué bioma gana, huecos y solapes), muestra con los tiles reales, materiales, decoración, colores, revisión de tiles que no existen. |
 | Estructuras, Partículas | versión anterior dentro del Studio (v1) |
 
 ## Estructura

@@ -1,0 +1,33 @@
+/* Biomas tool: list, climate map / sample, inspector. */
+.bm { position: absolute; inset: 0; display: grid; grid-template-columns: 230px minmax(0, 1fr) 400px; }
+.bm-left { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.bm-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.bm-list { flex: 1; padding: 4px 0; }
+.bm-item { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer; border-left: 3px solid transparent; }
+.bm-item:hover { background: var(--panel-2); }
+.bm-item.active { background: var(--accent-soft); border-left-color: var(--accent); }
+.bm-stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.bm-toolbar { display: flex; align-items: center; gap: 10px; padding: 6px 8px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.bm-extra { gap: 12px; }
+.bm-slice { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.bm-slice input[type=range] { width: 70px; }
+.bm-view { position: relative; flex: 1; min-height: 0; background: var(--canvas-bg); }
+.bm-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.bm-legend { position: absolute; left: 10px; bottom: 8px; display: flex; gap: 14px; font-size: 12px; color: var(--muted); align-items: center; }
+.bm-legend i { display: inline-block; width: 12px; height: 12px; margin-right: 5px; vertical-align: -2px; border-radius: 2px; }
+.bm-gap { background: repeating-linear-gradient(45deg, #555 0 2px, transparent 2px 5px); border: 1px solid var(--line); }
+.bm-over { background: radial-gradient(#fff 30%, transparent 35%) 0 0 / 4px 4px; border: 1px solid var(--line); }
+.bm-panel { background: var(--panel); border-left: 1px solid var(--line); min-height: 0; }
+.bm-panel .field { grid-template-columns: 110px 1fr; margin-bottom: 6px; }
+.bm-panel .section-body > button { width: 100%; margin-top: 4px; }
+.bm-pair { display: grid; grid-template-columns: 58px 1fr 58px; gap: 6px; align-items: center; }
+.bm-pair input { padding: 2px 5px; }
+.bm-range { position: relative; height: 6px; background: var(--panel-3); border-radius: 3px; }
+.bm-range i { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 3px; }
+.bm-row { display: grid; grid-template-columns: 32px 1fr 76px 26px; gap: 5px; align-items: center; margin-bottom: 4px; }
+.bm-row.with-on { grid-template-columns: 32px 1fr 70px 96px 26px; }
+.bm-row input, .bm-row select { min-height: 26px; padding: 2px 5px; }
+.bm-row input.bad { border-color: var(--bad); color: var(--bad); }
+.bm-thumb { width: 32px; height: 32px; image-rendering: pixelated; background: #2f3338; border-radius: 4px; }
+.bm-panel .note.bad { color: var(--bad); }
+.bm-panel .note.bad:empty { display: none; }
