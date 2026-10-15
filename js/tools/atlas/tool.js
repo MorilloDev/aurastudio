@@ -1144,7 +1144,7 @@
       if (!opts.length) return h("p", { class: "note" }, "No hay archivos de tiles (Data/Tiles/*.json) donde crear uno.");
       const base = placement?.p.name ?? "";
       const nameIn = h("input", { type: "text", value: base, placeholder: "Nombre (p. ej. Oak Leaves)", spellcheck: false });
-      const idIn = h("input", { type: "text", placeholder: "id: del nombre", spellcheck: false });
+      const idIn = h("input", { type: "text", value: placement?.p.id ?? "", placeholder: "id: del nombre", spellcheck: false });
       const fileSel = select({ options: opts, value: opts[0][0] });
       const kindSel = select({ options: TILE_KINDS.map(([k, t]) => [k, t]), value: placement?.p.kind ?? "block" });
       const preview = h("pre", { class: "at-json" });
@@ -1161,17 +1161,24 @@
         if (!name) throw new Error("Ponle un nombre.");
         const id = idIn.value.trim() || T.deriveIdPath(name);
         if (!/^[a-z0-9_]+(:[a-z0-9_/]+)?$/.test(id)) throw new Error("El id solo lleva minúsculas, números y _ .");
+        const onOtherSheet = T.docSheet(doc) !== T.sheetKey(this.sheet.id);
+        // A growth export is a whole set (every stage, or base / middle / top), each built complete by its sender.
+        if (placement?.p.buildTiles) {
+          const tiles = placement.p.buildTiles(coords, { id, name });
+          if (onOtherSheet) for (const t of tiles) t.sheetId = this.sheet.id;
+          return { doc, tiles };
+        }
         const tile = { id, name, ...structuredClone(TILE_KINDS.find(([k]) => k === kindSel.get())[2]) };
-        if (T.docSheet(doc) !== T.sheetKey(this.sheet.id)) tile.sheetId = this.sheet.id;
+        if (onOtherSheet) tile.sheetId = this.sheet.id;
         Object.assign(tile, placement?.p.buildTile ? placement.p.buildTile(coords) : { art: { default: { front: coords[0] } } });
-        return { doc, tile };
+        return { doc, tiles: [tile] };
       };
       const refresh = () => {
         try {
-          const { tile } = build();
-          preview.textContent = T.formatJson(tile);
-          const taken = this.docs.some((d) => d.root?.tiles.some((t) => t && T.tileId(t) === T.tileId(tile)));
-          error.textContent = taken ? `Ya existe un tile «${T.tileId(tile)}».` : "";
+          const { tiles } = build();
+          preview.textContent = tiles.length === 1 ? T.formatJson(tiles[0]) : T.formatJson(tiles);
+          const taken = tiles.find((tile) => this.docs.some((d) => d.root?.tiles.some((t) => t && T.tileId(t) === T.tileId(tile))));
+          error.textContent = taken ? `Ya existe un tile «${T.tileId(taken)}».` : "";
         } catch (err) {
           preview.textContent = "";
           error.textContent = err.message;
@@ -1183,12 +1190,13 @@
       const create = () => {
         refresh();
         if (error.textContent) return;
-        const { doc, tile } = build();
+        const { doc, tiles } = build();
         const list = doc.root.tiles;
-        this.tile = tile;
+        this.tile = tiles[0];
         if (placement) this.placed = null;
-        this.#run(`Nuevo tile ${tile.name}`, () => list.push(tile), () => list.splice(list.indexOf(tile), 1));
-        this.studio.setStatus(`Tile «${tile.id}» añadido a ${doc.name}. Guarda para escribirlo (Ctrl+S).`, "ok");
+        this.#run(tiles.length === 1 ? `Nuevo tile ${tiles[0].name}` : `${tiles.length} tiles nuevos`,
+          () => list.push(...tiles), () => list.splice(list.indexOf(tiles[0]), tiles.length));
+        this.studio.setStatus(`${tiles.map((t) => "«" + t.id + "»").join(", ")} añadido(s) a ${doc.name}. Guarda para escribirlo (Ctrl+S).`, "ok");
       };
       refresh();
       details.append(
@@ -1196,7 +1204,7 @@
         h("div", { class: "field" }, h("label", null, "Nombre"), nameIn),
         h("div", { class: "field" }, h("label", null, "Id"), idIn),
         h("div", { class: "field" }, h("label", null, "Archivo"), fileSel.el),
-        h("div", { class: "field" }, h("label", null, "Clase"), kindSel.el),
+        placement?.p.buildTiles ? null : h("div", { class: "field" }, h("label", null, "Clase"), kindSel.el),
         preview, error,
         h("button", { class: "primary", onclick: create }, "Crear tile"));
       return details;
@@ -1207,9 +1215,12 @@
       const snippet = p.snippet?.(cells) ?? "";
       return section({ id: "at-placed", title: "Recién colocado", extra: h("button", { class: "ghost", title: "Cerrar", onclick: () => { this.placed = null; this.#renderPanel(); } }, "×") },
         h("p", { class: "note" }, h("b", null, p.label), ` en ${cells.length} celda(s) desde [${cells[0].join(", ")}].`),
-        p.buildTile ? this.#newTileForm(cells, this.placed)
+        p.buildTile || p.buildTiles ? this.#newTileForm(cells, this.placed)
           : h("div", null, h("p", { class: "note" }, p.why ?? "Esto no es un solo tile: copia su arte al JSON que toque."),
-            h("textarea", { class: "at-raw", rows: 6, readonly: true, value: snippet })));
+            h("textarea", { class: "at-raw", rows: 6, readonly: true, value: snippet })),
+        // Items the tiles need (seeds, the harvest) live in the items files, which this tab does not edit.
+        p.itemsText ? h("div", null, h("div", { class: "at-sub" }, "Items para tu archivo de items"),
+          h("textarea", { class: "at-raw", rows: 6, readonly: true, value: p.itemsText() })) : null);
     }
 
     #tileSection(tile) {

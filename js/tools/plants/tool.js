@@ -24,6 +24,20 @@
   // Size of the variety and variation pictures, and how many variations.
   const THUMB = 48;
   const GALLERY = 6;
+  // Growth export (phase 5): what each growing type becomes in the game. Stage plants are a chain of tiles
+  // (id_0 → id_1 → …, "growth": { "next", "days" }); column plants a base with its middle and top tiles.
+  const STAGE_ITEMS = {
+    WHEAT: ["Wheat", "Wheat Seeds"], CARROT: ["Carrot", "Carrot"], POTATO: ["Potato", "Potato"],
+    CORN: ["Corn", "Corn Seeds"], PUMPKIN: ["Pumpkin", "Pumpkin Seeds"],
+  };
+  const COLUMN_TYPES = {
+    BAMBOO: { product: "Bamboo", on: ["dirt", "grass", "sand"], maxHeight: 6, opts: {} },
+    PAPYRUS: { product: "Papyrus", on: ["sand", "dirt", "grass"], maxHeight: 4, opts: { waterMode: "LAND" } },
+    SEAWEED: { product: "Kelp", on: ["sand", "dirt", "stone"], maxHeight: 0, habitat: "submerged", opts: { waterDepth: 3.2, waterFill: true } },
+  };
+  const HABITATS = { UNDERWATER: "submerged", EMERGENT: "emergent", SURFACE: "floating" };
+  const slug = (s) => String(s).trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+
   // Variety pictures depend only on the type and the variety, so they are drawn once per session.
   const thumbCache = new Map();
 
@@ -333,7 +347,8 @@
 
       this.tintUi = TP.tintSection({ id: "pl-tint", state: this.tint, biomes: this.biomes,
         onChange: () => { this.#save(); this.#schedule(); } });
-      this.panelScroll = h("div", { class: "scroll" }, variants.el, ...sections.map((s) => s.el), this.tintUi.el, light.el, pixel.el, output.el);
+      const growth = this.#growthSection();
+      this.panelScroll = h("div", { class: "scroll" }, variants.el, ...sections.map((s) => s.el), this.tintUi.el, growth?.el, light.el, pixel.el, output.el);
       light.el.classList.add("adv");
       pixel.el.classList.add("adv");
       const detail = h("span");
@@ -506,6 +521,117 @@
         setTimeout(next, 0);
       };
       setTimeout(next, 0);
+    }
+
+    // ── Growth export ──
+
+    /** This type's export settings: ids and names from its label, its own items and day range, all editable. */
+    get growthOut() {
+      this.byGrowth ??= prefs.get("plants:growth", {});
+      const t = G.TYPES[this.type], col = COLUMN_TYPES[this.type];
+      const [product, seeds] = STAGE_ITEMS[this.type] ?? [col?.product ?? t.label, ""];
+      const base = { id: slug(col?.product ?? product), name: col?.product ?? product, days: col ? [0.5, 1] : [1, 2], product, seeds, maxHeight: col?.maxHeight ?? 5 };
+      return (this.byGrowth[this.type] = { ...base, ...(this.byGrowth[this.type] ?? {}) });
+    }
+
+    #growthSection() {
+      const t = G.TYPES[this.type], col = COLUMN_TYPES[this.type];
+      if (!t.growth && !col) return null;
+      const g = this.growthOut;
+      const save = () => prefs.set("plants:growth", this.byGrowth);
+      const text = (label, key, title) => {
+        const input = h("input", { type: "text", value: g[key], spellcheck: false, title, onchange: () => { g[key] = input.value.trim(); save(); } });
+        return h("div", { class: "field" }, h("label", null, label), input);
+      };
+      const days = numberPair({ label: "Días por paso", values: g.days, min: 0, max: 100, titles: ["Mínimo", "Máximo"],
+        onChange: ([a, b]) => { g.days = [Math.max(0.05, a), Math.max(0.05, a, b)]; save(); } });
+      days.inputs.forEach((i) => { i.step = "0.1"; });
+      const rows = col
+        ? [text("Id", "id"), text("Nombre", "name"), days.el, text("Producto", "product", "El item que suelta"),
+          slider({ label: "Altura máx.", min: 0, max: 16, step: 1, value: g.maxHeight, defaultValue: col.maxHeight,
+            title: "0 = crece hasta que algo lo pare (un techo, la superficie del agua)", onChange: (v) => { g.maxHeight = v; save(); } }).el,
+          h("p", { class: "note" }, "Se dibuja una columna de 3 y se corta en ", h("b", null, "base, medio y punta"), ": tres tiles que encajan apilados.")]
+        : [text("Id", "id", "Las etapas serán id_0, id_1…"), text("Nombre", "name"), days.el,
+          text("Producto", "product", "Lo que suelta la última etapa"), text("Semillas", "seeds", "Item que la planta (vacío o igual al producto: se planta el producto)"),
+          h("p", { class: "note" }, `Etapas: las de Variantes (ahora ${this.variants.stages}). De cada etapa se exporta la semilla 1.`)];
+      return section({ id: "pl-growth", title: "Crecimiento" }, ...rows,
+        h("button", { class: "primary", onclick: () => (col ? this.#sendColumn() : this.#sendStages()) }, "Enviar crecimiento al Atlas →"));
+    }
+
+    // Shared by every tile of a growing set: what the example crops and canes in the game data carry.
+    #growthBase() {
+      const mode = G.waterMode(this.type, this.o);
+      return {
+        type: "solid", hardness: 1,
+        tags: [...(this.tint.enabled ? ["biome_tinted"] : []), "herb", "fragile", "flammable"].filter((tag) => !(HABITATS[mode] && tag === "flammable")),
+        ...(HABITATS[mode] ? { habitat: HABITATS[mode] } : {}),
+      };
+    }
+
+    #sendStages() {
+      const n = this.variants.stages;
+      if (n < 2) { this.studio.toast("Pon al menos 2 etapas en Variantes.", { kind: "warn" }); return; }
+      const g = this.growthOut, t = G.TYPES[this.type];
+      const results = Array.from({ length: n }, (_, s) => {
+        const v = this.variantList.find((x) => x.id === `s${s}_v0`);
+        if (!this.variantResults.has(v.id)) this.variantResults.set(v.id, this.#renderOne(v));
+        return this.variantResults.get(v.id);
+      });
+      const flat = results.flatMap((r, s) => r.parts.map((part, k) => ({ stage: s, part: k, color: part.color, normal: part.normal, label: `Etapa ${s + 1}` })));
+      const seeds = g.seeds && g.seeds !== g.product ? g.seeds : "";
+      const crop = t.category === "crops";
+      const drop = (item, min, max) => ({ item, chance: 1.0, minQty: min, maxQty: max });
+      this.studio.pendingPlacement = {
+        label: `${t.label} · ${n} etapas`, name: g.name, id: g.id, kind: "plant", size: results[0].size, sheetKey: this.targetSel.get() || null,
+        items: flat,
+        buildTiles: (coords, { id, name }) => results.map((r, s) => {
+          const cs = coords.filter((_, i) => flat[i].stage === s);
+          const last = s === n - 1;
+          return {
+            id: `${id}_${s}`, name: last ? name : `${name} (${s + 1}/${n})`,
+            ...(cs.length === 1 ? { art: { default: { front: cs[0] } } } : { parts: cs.map((c, k) => ({ offsetY: k, art: { default: { front: c } } })) }),
+            ...this.#growthBase(),
+            placement: { attach: ["floor"], on: crop ? ["farmland"] : ["grass", "dirt"] },
+            ...(crop ? { spawnOn: ["grass", "dirt"] } : {}),
+            shaderEffect: "wind",
+            ...(last ? {} : { growth: { next: `${id}_${s + 1}`, days: g.days } }),
+            drops: last
+              ? [drop(g.product, 1, 2), ...(seeds ? [drop(seeds, 1, 3)] : [])]
+              : [drop(seeds || g.product, 1, 1)],
+          };
+        }),
+        itemsText: () => [
+          seeds && `{ "id": "${slug(seeds)}", "name": "${seeds}", "desc": "", "type": "TileItem", "maxStack": 256, "tileType": "herb", "tile": "${g.id}_0" }`,
+          seeds ? `{ "id": "${slug(g.product)}", "name": "${g.product}", "desc": "", "type": "Material", "maxStack": 256, "iconCoord": [ 0, 0 ] }`
+            : `{ "id": "${slug(g.product)}", "name": "${g.product}", "desc": "", "type": "TileItem", "maxStack": 256, "tileType": "herb", "tile": "${g.id}_0" }`,
+        ].filter(Boolean).join(",\n"),
+      };
+      this.studio.activate("atlas");
+    }
+
+    #sendColumn() {
+      const g = this.growthOut, col = COLUMN_TYPES[this.type], t = G.TYPES[this.type];
+      const v = { id: "column", opts: { ...this.o, ...col.opts, multipart: true, cells: 3, fillCells: true } };
+      const r = this.#renderOne(v);
+      if (r.parts.length < 3) { this.studio.toast("No salió una columna de 3 celdas.", { kind: "bad" }); return; }
+      const roles = ["base", "middle", "top"];
+      const flat = r.parts.slice(0, 3).map((part, k) => ({ color: part.color, normal: part.normal, label: roles[k] }));
+      const drop = { item: g.product, chance: 1.0, minQty: 1, maxQty: 1 };
+      this.studio.pendingPlacement = {
+        label: `${t.label} · base, medio y punta`, name: g.name, id: g.id, kind: "plant", size: r.size, sheetKey: this.targetSel.get() || null,
+        items: flat,
+        buildTiles: (coords, { id, name }) => [
+          {
+            id, name, art: { default: { front: coords[0] } }, ...this.#growthBase(), ...(col.habitat ? { habitat: col.habitat } : {}),
+            placement: { attach: ["floor"], on: col.on }, shaderEffect: "wind",
+            growth: { type: "column", maxHeight: g.maxHeight, middle: `${id}_middle`, top: `${id}_top`, days: g.days }, drops: [drop],
+          },
+          { id: `${id}_middle`, name, art: { default: { front: coords[1] } }, ...this.#growthBase(), shaderEffect: "wind", drops: [drop] },
+          { id: `${id}_top`, name, art: { default: { front: coords[2] } }, ...this.#growthBase(), shaderEffect: "wind", drops: [drop] },
+        ],
+        itemsText: () => `{ "id": "${slug(g.product)}", "name": "${g.product}", "desc": "", "type": "TileItem", "maxStack": 256, "tileType": "herb", "tile": "${g.id}" }`,
+      };
+      this.studio.activate("atlas");
     }
 
     #showContext(on) {

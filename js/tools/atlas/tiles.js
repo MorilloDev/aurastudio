@@ -162,8 +162,8 @@
   }
 
   // -------------------------------------------------------------------------------------------------------------------
-  // JSON out — the style the project's files are written in (the same the old Atlas tool wrote): two-space indent, arrays
-  // of plain values on one line ([ 0, 0 ]), and each art state on one line so a tile's art reads as a table.
+  // JSON out — the style the project's files are written in: two-space indent, arrays of plain values on one line
+  // ([ 0, 0 ]), small flat objects on one line, and each art state on one line so a tile's art reads as a table.
 
   function formatJson(v, indent = "", role = null) {
     if (Array.isArray(v)) {
@@ -176,6 +176,13 @@
       const keys = Object.keys(v).filter((k) => v[k] !== undefined);
       if (!keys.length) return "{}";
       if (role === "artState") return `{ ${keys.map((k) => `${JSON.stringify(k)}: ${formatJson(v[k])}`).join(", ")} }`;
+      // A small flat object ({ "item": …, "minQty": 1 }, "placement", "growth") stays on one line, as the files are
+      // written by hand; anything holding objects, or too long, opens up.
+      const flat = keys.every((k) => v[k] === null || typeof v[k] !== "object" || (Array.isArray(v[k]) && v[k].every((x) => x === null || typeof x !== "object")));
+      if (flat && role !== "art") {
+        const line = `{ ${keys.map((k) => `${JSON.stringify(k)}: ${formatJson(v[k])}`).join(", ")} }`;
+        if (line.length <= 96) return line;
+      }
       const inner = indent + "  ";
       const childRole = (k) => (role === "art" ? "artState" : k === "art" ? "art" : null);
       return `{\n${keys.map((k) => `${inner}${JSON.stringify(k)}: ${formatJson(v[k], inner, childRole(k))}`).join(",\n")}\n${indent}}`;
