@@ -252,6 +252,7 @@
         spacing: p.paintSpacing, backSpacing: 1.1, jitter: p.paintJitter, layers: p.paintLayers, holes: p.paintHoles,
         backHoles: p.paintBackHoles, round: p.paintRound, fill: p.paintFill, clip: p.paintClip, darker: p.paintDarker,
         lighter: p.paintLighter, highlight: p.paintHighlight, light: p.leafTipColor, dark: p.leafColor, tones: p.paintTones,
+        edge: p.paintEdge, edgeTones: 1, edgeShadow: p.paintEdgeShadow, pinholes: p.paintPinholes,
       };
       return;
     }
@@ -375,18 +376,21 @@
         ["vineColor", "Color colgante", "color", L(0.1, 0.3, 0.05)],
       ],
       "Pintado": [
-        ["paintLength", "Largo de hoja", "num", 9, 4, 24, 0.5, "En pixeles de un sprite de 64"],
+        ["paintLength", "Largo de hoja", "num", 10, 4, 24, 0.5, "En pixeles de un sprite de 64"],
         ["paintWidth", "Ancho de hoja", "num", 0.55, 0.2, 1, 0.01, "Respecto al largo"],
-        ["paintPoint", "Punta", "num", 1.2, 0.5, 3, 0.05, "Más = hojas más afiladas"],
-        ["paintSpacing", "Separación", "num", 5, 3, 14, 0.25, "Entre hojas, en pixeles: menos = más hojas"],
+        ["paintPoint", "Punta", "num", 1.4, 0.5, 3, 0.05, "Más = hojas más afiladas"],
+        ["paintSpacing", "Separación", "num", 5.2, 3, 14, 0.25, "Entre hojas, en pixeles: menos = más hojas"],
         ["paintJitter", "Desorden", "num", 70, 0, 180, 1, "Grados que se aparta cada hoja de apuntar hacia fuera"],
         ["paintLayers", "Capas", "int", 2, 1, 4, 1, "Las de atrás van un tono más oscuras y se ven entre las de delante"],
+        ["paintEdge", "Borde entre hojas", "num", 1, 0, 3, 0.5, "Pixeles de la línea oscura que separa cada hoja de la de detrás: lo que deja ver su forma"],
+        ["paintEdgeShadow", "Borde solo en la sombra", "bool", true, null, null, null, "La línea solo del lado contrario a la luz, como la sombra de la hoja; apagado: alrededor de toda la hoja"],
+        ["paintPinholes", "Agujeritos", "num", 0.25, 0, 0.8, 0.01, "Parte de esa línea que queda abierta: se ve a través en puntitos, no en agujeros grandes"],
         ["paintHoles", "Huecos delante", "num", 0.06, 0, 0.6, 0.01],
-        ["paintBackHoles", "Huecos detrás", "num", 0.12, 0, 0.8, 0.01, "Lo que deja ver a través del bloque"],
+        ["paintBackHoles", "Huecos detrás", "num", 0.08, 0, 0.8, 0.01, "Hojas de atrás que faltan: agujeros más grandes"],
         ["paintRound", "Redondez", "num", 0.6, 0, 1, 0.01, "0 = la silueta del bloque; 1 = un círculo"],
-        ["paintFill", "Llenado", "num", 0.95, 0.5, 1.2, 0.01, "Hasta dónde llegan las hojas hacia el borde"],
-        ["paintClip", "Puntas fuera", "num", 1.22, 1, 1.5, 0.01, "Cuánto pueden salir las puntas de la silueta"],
-        ["paintDarker", "Hojas más oscuras", "num", 0.28, 0, 0.8, 0.01, "Parte de las hojas un tono por debajo"],
+        ["paintFill", "Llenado", "num", 0.93, 0.5, 1.2, 0.01, "Hasta dónde llegan las hojas hacia el borde"],
+        ["paintClip", "Puntas fuera", "num", 1.3, 1, 1.5, 0.01, "Cuánto pueden salir las puntas de la silueta"],
+        ["paintDarker", "Hojas más oscuras", "num", 0.25, 0, 0.8, 0.01, "Parte de las hojas un tono por debajo"],
         ["paintLighter", "Hojas más claras", "num", 0.1, 0, 0.8, 0.01],
         ["paintHighlight", "Brillos arriba", "num", 0.35, 0, 1, 0.01, "Hojas de arriba con su mitad iluminada en el tono más claro"],
         ["paintTones", "Tonos", "int", 6, 3, 10, 1, "Entre el color base (el más oscuro) y el de la punta (el más claro)"],
@@ -400,7 +404,7 @@
   }, (mb, p, r) => genLeaves(mb, p, r), [
     // Dalvin's hand-made leaf block, measured: whole pointed leaves facing the camera in two layers, two tones each,
     // six grays from 99 to 185, lighter on top and darker down the right. Painted (no mesh); gray for biome_tinted.
-    { key: "AURA", label: "Aura (pintado, gris)", values: { leafForm: "PAINTED", paintLength: 9, paintWidth: 0.55, paintPoint: 1.2, paintSpacing: 5, paintJitter: 70, paintLayers: 2, paintHoles: 0.06, paintBackHoles: 0.12, paintRound: 0.6, paintFill: 0.95, paintClip: 1.22, paintDarker: 0.28, paintLighter: 0.1, paintHighlight: 0.35, paintTones: 6, leafColor: "#636363", leafTipColor: "#b9b9b9", leafAltChance: 0 } },
+    { key: "AURA", label: "Aura (pintado, gris)", values: { leafForm: "PAINTED", paintLength: 10, paintWidth: 0.55, paintPoint: 1.4, paintSpacing: 5.2, paintJitter: 70, paintLayers: 2, paintEdge: 1, paintEdgeShadow: true, paintPinholes: 0.25, paintHoles: 0.06, paintBackHoles: 0.08, paintRound: 0.6, paintFill: 0.93, paintClip: 1.3, paintDarker: 0.25, paintLighter: 0.1, paintHighlight: 0.35, paintTones: 6, leafColor: "#636363", leafTipColor: "#b9b9b9", leafAltChance: 0 } },
     { key: "OAK", label: "Roble", values: { leafShape: "LOBED", leafSize: 0.16, leafWidth: 0.6, leafCount: 240, leafCurl: 0.3, leafHang: 0, leafColor: L(0.08, 0.25, 0.04), leafTipColor: L(0.25, 0.5, 0.1), leafAltChance: 0, blockRound: 0.25, blockHoles: 0.15, blockCore: 0, coreColor: L(0.02, 0.08, 0.015), blossomCount: 0, vineCount: 0 } },
     { key: "BIRCH", label: "Abedul", values: { leafShape: "OVAL", leafSize: 0.11, leafWidth: 0.7, leafCount: 320, leafCurl: 0.2, leafHang: 0, leafColor: L(0.18, 0.4, 0.07), leafTipColor: L(0.55, 0.75, 0.2), leafAltChance: 0, blockRound: 0.3, blockHoles: 0.22, blockCore: 0, coreColor: L(0.05, 0.12, 0.02), blossomCount: 0, vineCount: 0 } },
     { key: "PINE", label: "Pino", values: { leafShape: "NEEDLE", leafSize: 0.2, leafCount: 110, leafHang: 0.1, leafColor: L(0.03, 0.15, 0.05), leafTipColor: L(0.08, 0.3, 0.1), leafAltChance: 0, blockRound: 0.35, blockHoles: 0.18, blockCore: 0, coreColor: L(0.01, 0.05, 0.02), blossomCount: 0, vineCount: 0 } },
