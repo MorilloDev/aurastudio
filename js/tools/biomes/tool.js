@@ -1,6 +1,6 @@
 "use strict";
 
-// Biomas: create, edit and look at the biomes of Data/Biomes. The climate map shows which biome the generator picks for
+// Biomas: create, edit and look at the biomes of Data/Worldgen/Biomes. The climate map shows which biome the generator picks for
 // every temperature × humidity (at the continentalness / erosion / peaks chosen below it), with gaps and overlaps marked;
 // the sample lays out a patch of the biome with its real tiles from the atlases — surface, its variants, decoration,
 // foliage colour — so a biome is judged by how it looks, not by its numbers. The inspector edits every key BiomeData
@@ -160,7 +160,7 @@
     #renderList() {
       clear(this.listEl);
       if (!this.project) { this.listEl.append(h("div", { class: "empty-state" }, "Abre la carpeta del proyecto para ver sus biomas.")); return; }
-      if (!this.docs.length) { this.listEl.append(h("div", { class: "empty-state" }, "No hay biomas en Data/Biomes. Crea el primero con «+ Nuevo».")); return; }
+      if (!this.docs.length) { this.listEl.append(h("div", { class: "empty-state" }, "No hay biomas en Data/Worldgen/Biomes. Crea el primero con «+ Nuevo».")); return; }
       const groups = [["surface", "Por clima"], ["coast", "Costa"], ["ocean", "Mar abierto"]];
       for (const [k, title] of groups) {
         const docs = this.docs.filter((d) => (d.root ? B.kindOf(d.root) : "surface") === k);
@@ -225,7 +225,7 @@
       if (!name) return;
       const id = T.deriveIdPath(name);
       const path = B.newBiomePath(this.project, this.docs, id);
-      if (!path) { this.studio.toast("No encuentro Data/Tiles para saber dónde va Data/Biomes.", { kind: "bad" }); return; }
+      if (!path) { this.studio.toast("No encuentro Data/Tiles para saber dónde va Data/Worldgen/Biomes.", { kind: "bad" }); return; }
       const base = this.current?.root && B.kindOf(this.current.root) === "surface" ? structuredClone(this.current.root) : null;
       const root = base ? { ...base, id, name } : B.blank(id, name);
       const doc = { entry: null, path, name: baseName(path), root, eol: "\n", baseline: "", error: null, isNew: true };

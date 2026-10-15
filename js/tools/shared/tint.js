@@ -175,7 +175,7 @@
     if (!project) return [DEFAULT_TINT, ...FALLBACK_BIOMES];
     if (cache.key === project && cache.at === project.scannedAt) return cache.list;
     const list = [DEFAULT_TINT];
-    const entries = project.filter((e) => /(^|\/)data\/biomes\/.+\.json$/.test(e.lower)).sort((a, b) => a.path.localeCompare(b.path));
+    const entries = project.filter((e) => /(^|\/)data\/(worldgen\/)?biomes\/.+\.json$/.test(e.lower)).sort((a, b) => a.path.localeCompare(b.path));
     for (const entry of entries) {
       try {
         const json = await readJson(entry.handle);

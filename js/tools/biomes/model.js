@@ -1,6 +1,6 @@
 "use strict";
 
-// Biome files (Data/Biomes/*.json) as BiomeData reads them: placement (surface by climate, coast strip, or open-sea
+// Biome files (Data/Worldgen/Biomes/*.json) as BiomeData reads them: placement (surface by climate, coast strip, or open-sea
 // decoration only), materials, decoration and colours — plus the multi-noise pick the generator uses (the biome whose
 // climate box is nearest, summing squared distances per parameter), so the Studio can show which biome wins where.
 (function (Aura) {
@@ -18,7 +18,7 @@
   // DecorationSurface, as "on" in a decoration entry ("" = Auto: from the tile's habitat).
   const SURFACES = [["", "Automático"], ["surface", "Suelo"], ["seafloor", "Fondo del agua"], ["shallows", "Orilla (emergente)"], ["watersurface", "Sobre el agua"]];
 
-  const isBiomeFile = (entry) => /(^|\/)data\/biomes\/.+\.json$/.test(entry.lower);
+  const isBiomeFile = (entry) => /(^|\/)data\/(worldgen\/)?biomes\/.+\.json$/.test(entry.lower);
 
   async function loadBiomes(project) {
     const docs = [];
@@ -98,14 +98,14 @@
     return out;
   }
 
-  /** Where a new biome file goes: next to the other biomes, or Data/Biomes beside Data/Tiles. */
+  /** Where a new biome file goes: next to the other biomes, or Data/Worldgen/Biomes beside Data/Tiles. */
   function newBiomePath(project, docs, id) {
     if (docs.length) return joinPath(dirName(docs[0].path), id + ".json");
     const tiles = project.filter((e) => /(^|\/)data\/tiles\/.+\.json$/.test(e.lower))[0];
     if (!tiles) return null;
     const at = tiles.lower.lastIndexOf("data/tiles/");
     const data = tiles.path.slice(0, at + 4);
-    return joinPath(data, "Biomes", id + ".json");
+    return joinPath(data, "Worldgen", "Biomes", id + ".json");
   }
 
   Aura.biomeModel = { PARAMS, SURFACES, loadBiomes, serialize, isDirty, kindOf, boxOf, pick, inside, blank, tileRefs, newBiomePath };
