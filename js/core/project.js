@@ -101,10 +101,15 @@
         const hit = this.get(joinPath(dirName(m.path), rel));
         if (hit) return hit;
       }
-      // Atlas paths start at Content; a project opened at Content itself or above without an mgcb still resolves.
-      const tail = normalizePath(rel).toLowerCase();
-      for (const entry of this.files.values()) {
-        if (entry.lower === tail || entry.lower.endsWith("/" + tail)) return entry;
+      // Atlas paths start at Content ("Assets/Tiles/Dirt"). A project opened at Content or above, without an mgcb,
+      // finds the whole path; one opened inside it (at Assets) only has the end of it, so leading folders are dropped
+      // one at a time — never down to the bare file name, which could match a png elsewhere.
+      const parts = normalizePath(rel).toLowerCase().split("/");
+      for (let skip = 0; skip < parts.length - 1; skip++) {
+        const tail = parts.slice(skip).join("/");
+        for (const entry of this.files.values()) {
+          if (entry.lower === tail || entry.lower.endsWith("/" + tail)) return entry;
+        }
       }
       return null;
     }

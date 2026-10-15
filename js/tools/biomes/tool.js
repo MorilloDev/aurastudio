@@ -543,6 +543,14 @@
           }
         }
       }
+      // A sheet that did not load (no png for its atlases.json entry) would leave the sample blank without a word.
+      const missingSheets = [...need].filter((k) => !this.#sheets.get(k)?.value);
+      if (missingSheets.length) {
+        g.fillStyle = "#f0b45a"; g.font = "13px system-ui";
+        g.fillText(`No encuentro el PNG de la hoja ${missingSheets.map((k) => "«" + k + "»").join(", ")} (atlases.json).`, 20, 30);
+        g.fillText("Abre la carpeta Content (o la del proyecto) para que las rutas de atlases.json se encuentren.", 20, 50);
+        return;
+      }
       const pieces = [];
       for (const d of draws) {
         const parts = d.info.parts.length ? d.info.parts : [{ x: 0, y: 0, z: 0, coord: d.info.coord }];
@@ -563,6 +571,11 @@
       const z = Math.max(1, Math.floor(Math.min((W - 40) / scene.width, (H - 60) / scene.height) * 2) / 2);
       g.imageSmoothingEnabled = false;
       g.drawImage(scene, Math.round((W - scene.width * z) / 2), Math.round((H - 30 - scene.height * z) / 2), scene.width * z, scene.height * z);
+      const problems = [...need].map((k) => this.#sheets.get(k)?.reason).filter(Boolean);
+      if (problems.length) {
+        g.fillStyle = "#f0b45a"; g.font = "13px system-ui";
+        problems.slice(0, 6).forEach((t, i) => g.fillText(t, 16, 24 + i * 18));
+      }
       const water = (r.decoration ?? []).filter((d) => { const info = this.#tileInfo(d.tile); return info && ((d.on && d.on !== "surface") || (!d.on && info.habitat !== "land")); }).length;
       this.legend.append(h("span", { class: "faint" }, `${GRID}×${GRID} columnas · decoración ×${this.sample.density}` + (water ? ` · ${water} de agua no se dibujan` : "")));
     }
@@ -572,13 +585,21 @@
       if (this.#sheets.has(key)) return this.#sheets.get(key).promise;
       const slot = { value: undefined };
       slot.promise = (async () => {
+        // By its atlases.json id; failing that, a png named like the sheet ("dirt" → Dirt.png), so a sheet missing from
+        // atlases.json still shows (the game would not draw it, which the message says).
         const atlas = this.project?.atlases.find((a) => T.sheetKey(a.id) === key);
-        if (!atlas?.png) return (slot.value = null);
-        const img = await decodePng(await atlas.png.handle.getFile());
+        let png = atlas?.png ?? null;
+        if (!png) {
+          png = this.project?.filter((e) => e.lower.endsWith(".png") && e.name.toLowerCase() === key + ".png")[0] ?? null;
+          slot.reason = !atlas ? `«${key}» no está en atlases.json` + (png ? " (uso " + png.path + ")" : "")
+            : `no encuentro el PNG de «${key}» (${atlas.texture})`;
+        }
+        if (!png) return (slot.value = null);
+        const img = await decodePng(await png.handle.getFile());
         const c = new OffscreenCanvas(img.w, img.h);
         c.getContext("2d").putImageData(new ImageData(img.rgba, img.w, img.h), 0, 0);
         return (slot.value = { canvas: c, img });
-      })().catch(() => (slot.value = null));
+      })().catch((err) => { slot.reason = `no pude leer la hoja «${key}»: ${err.message}`; return (slot.value = null); });
       this.#sheets.set(key, slot);
       return slot.promise;
     }
