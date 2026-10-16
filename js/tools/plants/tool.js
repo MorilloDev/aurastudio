@@ -1,6 +1,6 @@
 "use strict";
 
-// Plantas: grass, flowers and crops built in the browser (a port of the Stylized Foliage Generator add-on) and drawn
+// Plants: grass, flowers and crops built in the browser (a port of the Stylized Foliage Generator add-on) and drawn
 // with the game's camera into a sprite with its normal map, depth, AO and grayscale — plus growth stages and seed
 // variants saved into consecutive atlas cells. The heavy parts are mesh.js, generators.js and raster.js.
 (function (Aura) {
@@ -32,6 +32,7 @@
   };
   const COLUMN_TYPES = {
     BAMBOO: { product: "Bamboo", on: ["dirt", "grass", "sand"], maxHeight: 6, opts: {} },
+    SUGAR_CANE: { product: "Sugar Cane", on: ["sand", "dirt", "grass"], maxHeight: 5, opts: {} },
     PAPYRUS: { product: "Papyrus", on: ["sand", "dirt", "grass"], maxHeight: 4, opts: { waterMode: "LAND" } },
     SEAWEED: { product: "Kelp", on: ["sand", "dirt", "stone"], maxHeight: 0, habitat: "submerged", opts: { waterDepth: 3.2, waterFill: true } },
   };
