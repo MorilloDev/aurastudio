@@ -10,10 +10,17 @@
   // ── Camera ───────────────────────────────────────────────────────────────────────────────────────────────────────
   // Blender camera rotation (60°, 0°, 45°), orthographic. These are its right / up / forward axes in world space; the
   // normal map stores a normal as (n·right, n·up, n·back), which is what NormalMapLoader decodes (top = #80EEBF…).
-  const RIGHT = [Math.SQRT1_2, Math.SQRT1_2, 0];
-  const UP = [-0.3535534, 0.3535534, 0.8660254];
-  const FWD = [-0.6123724, 0.6123724, -0.5];
-  const BACK = [-FWD[0], -FWD[1], -FWD[2]];
+  //
+  // The free rotation the tool offers is a *camera orbit*: the piece stays axis-aligned in world space (the voxel
+  // grid and the ray marcher do not care about the camera), and the four basis vectors below are rotated by the
+  // inverse of the requested rotation. A point q of the piece therefore appears in the sprite at (q · RIGHT', q · UP'),
+  // which is the same as (R q · RIGHT, R q · UP): rotating the camera by R⁻¹ is the same as rotating the piece by R.
+  // The ORDER of the Euler angles is Rz · Ry · Rx (pitch, then yaw, then roll), right-handed around the world axes.
+  const RIGHT0 = [Math.SQRT1_2, Math.SQRT1_2, 0];
+  const UP0 = [-0.3535534, 0.3535534, 0.8660254];
+  const FWD0 = [-0.6123724, 0.6123724, -0.5];
+  const BACK0 = [-FWD0[0], -FWD0[1], -FWD0[2]];
+  const BASE_CAMERA = { RIGHT: RIGHT0, UP: UP0, FWD: FWD0, BACK: BACK0, identity: true };
 
   // √(2/3): the block height that makes a 1 × 1 block fill a square sprite (32 px diamond over 32 px sides at 64).
   const BLOCK_HEIGHT = 0.8164966;
@@ -32,6 +39,7 @@
 
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+  const deg2rad = (d) => (d * Math.PI) / 180;
 
   /** Small deterministic random generator (mulberry32), so a seed always gives the same chips, lips and hairs. */
   function rng(seed) {
@@ -42,6 +50,27 @@
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
+  }
+
+  /** Camera basis after rotating the *piece* by rotation {x, y, z} (degrees). Identity when all angles are 0. */
+  function cameraBasis(rot) {
+    if (!rot || (!rot.x && !rot.y && !rot.z)) return BASE_CAMERA;
+    const cx = Math.cos(deg2rad(rot.x)), sx = Math.sin(deg2rad(rot.x));
+    const cy = Math.cos(deg2rad(rot.y)), sy = Math.sin(deg2rad(rot.y));
+    const cz = Math.cos(deg2rad(rot.z)), sz = Math.sin(deg2rad(rot.z));
+    // R = Rz · Ry · Rx (rows are the images of the basis vectors).
+    const R = [
+      [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
+      [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
+      [-sy, cy * sx, cy * cx],
+    ];
+    // Each basis vector b of the sprite becomes Rᵀ b: (R q) · b = q · (Rᵀ b).
+    const applyT = (b) => [
+      R[0][0] * b[0] + R[1][0] * b[1] + R[2][0] * b[2],
+      R[0][1] * b[0] + R[1][1] * b[1] + R[2][1] * b[2],
+      R[0][2] * b[0] + R[1][2] * b[1] + R[2][2] * b[2],
+    ];
+    return { RIGHT: applyT(RIGHT0), UP: applyT(UP0), FWD: applyT(FWD0), BACK: applyT(BACK0), identity: false };
   }
 
   // ── Textures ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -103,57 +132,53 @@
     seed: 3,
   };
 
-  // Procedural edge masks: the faces of the piece carry on past some of their edges in a ragged outline (fibres on a
-  // log, grass over a dirt block, roots under a slab), painted with the same texture so there is no seam.
   const MASK_DEFAULTS = {
     enabled: true,
     zones: { backLeft: true, backRight: true, frontLeft: false, frontRight: false, bottomLeft: true, bottomRight: true },
-    length: 3,                  // longest tongue, in voxels
-    density: 0.55,              // share of the edge that sticks out
-    variation: 0.7,             // 0 = every tongue full length, 1 = from one voxel to full length
-    style: "spikes",            // "spikes": one-voxel fibres; "waves": a smooth ragged edge; "blocks": square teeth
-    width: 1,                   // voxels per tongue (spikes / blocks) or per wave
+    length: 3,
+    density: 0.55,
+    variation: 0.7,
+    style: "spikes",
+    width: 1,
     seed: 7,
   };
 
-  // Cover: the top's texture running over the top edge and down the side faces to a ragged line (snow on dirt, grass
-  // over a cliff), painted as if the top carried on bent over the edge, so it joins the top with no seam.
   const COVER_DEFAULTS = {
     enabled: false,
-    left: true, right: true,    // which side faces it runs down
-    depth: 5,                   // voxels down from the top edge, before the ragged part
-    ragged: 5,                  // extra voxels the ragged line reaches below the depth
-    style: "waves",             // "waves", "spikes" or "blocks", as the edge masks
+    left: true, right: true,
+    depth: 5,
+    ragged: 5,
+    style: "waves",
     width: 2,
     density: 0.75,
     variation: 0.6,
-    thickness: 0,               // voxels it stands out of the side (0 = painted on, 1–2 = a layer with volume)
+    thickness: 0,
     seed: 11,
   };
 
   const DEFAULTS = {
-    size: 64,                   // sprite width and height, px; a full block always fills it
-    res: 32,                    // voxels per block edge: 32 = one voxel per 2 px of a 64 px sprite, 64 = one per pixel
+    size: 64,
+    res: 32,
     blockHeight: BLOCK_HEIGHT,
-    rotation: { yaw: 0, flipX: false, flipY: false },  // world yaw + pixel mirrors, applied at the very end
+    rotation: { x: 0, y: 0, z: 0 },   // free camera orbit, in degrees
     mask: MASK_DEFAULTS,
     cover: COVER_DEFAULTS,
-    autoFit: true,              // shorten tongues and hairs that would leave the sprite
-    texMode: "auto",            // "follow": textures turn with the piece; "world": top texture always on top; "auto"
-    uvMode: "world",            // "world": a slab shows half the side texture; "fit": the texture is squeezed onto it
-    chips: 0,                   // 0..1 chance that a voxel on an edge of the piece is chipped away
+    autoFit: true,
+    texMode: "auto",
+    uvMode: "world",
+    chips: 0,
     seed: 1,
-    shading: true,              // bake the face light like the Blender materials
+    shading: true,
     shade: { top: 1, left: 0.75, right: 0.55 },
     ao: true,
-    aoDistance: 0.25,           // in blocks
+    aoDistance: 0.25,
     aoStrength: 0.6,
     aoSamples: 16,
-    aoSteps: 4,                 // AO quantized to this many levels (0 = smooth): pixel art reads cleaner in steps
-    grayFromTexture: false,     // grayscale pass keeps the texture's own brightness
-    edgeLight: 0.12,            // brighten the top faces' rim
-    outline: 0,                 // darken the silhouette's inner edge pixels by this much
-    cleanup: true,              // replace lone pixels surrounded by one colour
+    aoSteps: 4,
+    grayFromTexture: false,
+    edgeLight: 0.12,
+    outline: 0,
+    cleanup: true,
     hair: HAIR_DEFAULTS,
   };
 
@@ -171,8 +196,6 @@
 
   const CUBE = { boxes: [{ min: [0, 0, 0], max: [1, 1, 1] }], state: "default", facing: "front" };
 
-  // Texture coordinates past a face's edge wrap around: atlas textures tile, so a tongue or a hair that carries on
-  // past the edge keeps the pattern going instead of smearing the edge texel.
   const wrap01 = (x) => (x >= 0 && x <= 1 ? Math.min(x, 1 - 1e-6) : x - Math.floor(x));
 
   // ── Edge mask profiles ───────────────────────────────────────────────────────────────────────────────────────────
@@ -183,13 +206,11 @@
     return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
   }
 
-  /** Length (voxels) of the tongue at position t along one edge line. zone and line keep different edges unrelated. */
   function profile(m, zone, line, t) {
     const L = Math.max(0, Math.round(m.length));
     if (!L) return 0;
     const w = Math.max(1, Math.round(m.width));
     if (m.style === "waves") {
-      // Smooth value noise along the edge, cut at the density so the gaps are part of the wave.
       const x = t / (w * 3), x0 = Math.floor(x), f = x - x0, s = f * f * (3 - 2 * f);
       const n = hash(zone, line, x0, m.seed) * (1 - s) + hash(zone, line, x0 + 1, m.seed) * s;
       const v = clamp01((n - (1 - m.density)) / Math.max(0.05, m.density));
@@ -207,8 +228,9 @@
    * The piece as a voxel grid. Cell voxels are i, j, k in 0..res-1 (x, y, z, z up); the edge masks spill past the cell
    * by up to their length on every side. Grid values: 0 empty, 255 the piece itself (coloured by whichever of its
    * faces is seen), 1..254 a mask voxel, whose record in V.ext says which texture it carries on.
+   * `basis` is used only by spriteFits, which projects a candidate voxel with the current camera.
    */
-  function buildVoxels(o, tex, piece) {
+  function buildVoxels(o, tex, piece, basis) {
     const R = o.res;
     const m = o.mask;
     const pad = m.enabled ? Math.max(1, Math.round(m.length)) + 1 : 1;
@@ -220,12 +242,9 @@
     const vx = 1 / R, vz = o.blockHeight / R;
 
     const follow = o.texMode === "follow" || (o.texMode === "auto" && piece.state === "horizontal");
-    // The yaw the mode bar pushes down is a world rotation: it feeds the transform that turns local boxes into world
-    // boxes, so every downstream pass (voxels, masks, cover, hairs, slopes) works on the already-rotated piece.
-    const tf = Shapes.transform(piece.state, piece.facing, follow, o.rotation?.yaw ?? 0);
+    const tf = Shapes.transform(piece.state, piece.facing, follow);
     const worldBoxes = Shapes.boxesToWorld(piece.boxes, tf);
 
-    // The piece itself. partOf remembers which part (1-based) a voxel belongs to, for the slopes.
     const base = new Uint8Array(R * R * R);
     const partOf = new Uint8Array(R * R * R);
     const bIdx = (i, j, k) => (k * R + j) * R + i;
@@ -236,24 +255,18 @@
       const sloped = !!b.cuts?.length;
       for (let k = lo[2]; k < hi[2]; k++) for (let j = lo[1]; j < hi[1]; j++) for (let i = lo[0]; i < hi[0]; i++) {
         if (!inCell(i, j, k)) continue;
-        // A sloped part fills every voxel any part of it touches (27 sample points), so its true surface never lies
-        // in front of the voxels: render() then finds the exact plane inside the first voxel the ray reaches.
         if (sloped && !touchesPart(b, tf, i, j, k, R)) continue;
-        // A voxel any plain box fills is solid all through, so a plain part wins it over a sloped one.
         const n = bIdx(i, j, k);
         if (!base[n] || !sloped) partOf[n] = pi + 1;
         base[n] = 1;
       }
     });
     const isBase = (i, j, k) => inCell(i, j, k) && base[bIdx(i, j, k)] === 1;
-    // Voxels of a sloped part are only the steps under a smooth surface: top edge masks, cover, chips and top hairs
-    // skip them, or every step would sprout a tongue. Bottom edges of a ramp are real edges and keep theirs.
     const isSloped = (i, j, k) => inCell(i, j, k) && !!parts[partOf[bIdx(i, j, k)] - 1];
     for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
       if (base[bIdx(i, j, k)]) grid[idx(i, j, k)] = 255;
     }
 
-    // Texture frame bounds, for squeezing the textures onto the piece ("fit").
     let fitLo = [0, 0, 0], fitHi = [1, 1, 1];
     if (o.uvMode === "fit") {
       fitLo = [1, 1, 1]; fitHi = [0, 0, 0];
@@ -264,7 +277,6 @@
         }
       }
     }
-    /** World unit point + world direction of the surface → [texture name, u, v], wrapped past the face's edges. */
     const uvAt = (up, wd) => {
       let lp = tf.texLocal(up);
       if (o.uvMode === "fit") lp = lp.map((v, a) => (v - fitLo[a]) / Math.max(1e-6, fitHi[a] - fitLo[a]));
@@ -276,7 +288,7 @@
       if (!o.autoFit) return true;
       const S = o.size, H = o.blockHeight;
       for (const dx of [0, 1]) for (const dy of [0, 1]) for (const dz of [0, 1]) {
-        const [px, py] = project([-0.5 + (i + dx) * vx, -0.5 + (j + dy) * vx, (k + dz) * vz], S, H);
+        const [px, py] = project([-0.5 + (i + dx) * vx, -0.5 + (j + dy) * vx, (k + dz) * vz], S, H, basis);
         if (px < -1e-6 || px > S + 1e-6 || py < -1e-6 || py > S + 1e-6) return false;
       }
       return true;
@@ -285,7 +297,6 @@
     const random = rng(o.seed);
     const solidNow = (i, j, k) => (inside(i, j, k) ? grid[idx(i, j, k)] : 0);
 
-    // Chipped edges: piece voxels with two open sides (the bottom does not count) are knocked off now and then.
     if (o.chips > 0) {
       const chip = [];
       for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
@@ -300,9 +311,6 @@
       for (const c of chip) grid[c] = 0;
     }
 
-    // Edge masks. Each zone: the two open sides that make the edge, which texture carries on (world direction of its
-    // face), how the tongue grows, and the axis the edge runs along (for the profile). Back and bottom tongues are the
-    // face itself carrying on in its own plane; front tongues fold over the edge and hang down the side face.
     const ZONES = [
       { key: "backLeft", open: [4, 1], owner: W_UP, step: [-1, 0, 0], along: 1 },
       { key: "backRight", open: [4, 2], owner: W_UP, step: [0, 1, 0], along: 0 },
@@ -322,8 +330,6 @@
           const line = z.along === 0 ? j * 4096 + k : i * 4096 + k;
           const len = profile(m, zi + 1, line, cell[z.along]);
           for (let s = 0; s < len; s++) {
-            // Back and bottom tongues are the face carrying on in its own plane; front ones fold over the top's edge
-            // and hang just outside the side face, one voxel lower per step.
             const a = z.fold ? i + z.fold[0] : i + z.step[0] * (s + 1);
             const b = z.fold ? j + z.fold[1] : j + z.step[1] * (s + 1);
             const c = z.fold ? k - s : k + z.step[2] * (s + 1);
@@ -334,9 +340,6 @@
       });
     }
 
-    // Cover. coverTop(i, j, k, wd): for a voxel on a side face (wd = left or right), the k of the top edge it hangs
-    // under when it lies in the covered band, else -1. A side whose column is capped by more of the piece (a face
-    // under an overhang) has no top edge there, so nothing runs down it.
     const cv = o.cover;
     const coverRagged = { ...cv, length: cv.ragged };
     const coverTop = (i, j, k, wd) => {
@@ -350,7 +353,6 @@
       return kk - k < reach ? kk : -1;
     };
     if (cv.enabled && cv.thickness > 0) {
-      // A layer with volume: voxels in front of the covered band, marked as front tongues so they unfold the same way.
       for (const [wd, zone] of [[W_LEFT, 3], [W_RIGHT, 4]]) {
         const d = DIRS[wd];
         for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
@@ -375,461 +377,5 @@
 
   // ── Slopes ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
-  /** True when local point lp (0..1) lies inside part b: its box and every cut (n·p ≤ d). */
   function inPart(b, lp, eps = 1e-6) {
-    for (let a = 0; a < 3; a++) if (lp[a] < b.min[a] - eps || lp[a] > b.max[a] + eps) return false;
-    for (const c of b.cuts ?? []) if (c.n[0] * lp[0] + c.n[1] * lp[1] + c.n[2] * lp[2] > c.d + eps) return false;
-    return true;
-  }
-
-  /** Conservative test for a convex part: the voxel is out only when all eight corners break the same limit. */
-  function touchesPart(b, tf, i, j, k, R) {
-    const corners = [];
-    for (const dx of [0, 1]) for (const dy of [0, 1]) for (const dz of [0, 1]) corners.push(tf.toLocal([(i + dx) / R, (j + dy) / R, (k + dz) / R]));
-    const eps = 1e-6;
-    for (let a = 0; a < 3; a++) {
-      if (corners.every((c) => c[a] < b.min[a] + eps) || corners.every((c) => c[a] > b.max[a] - eps)) return false;
-    }
-    for (const c of b.cuts) {
-      if (corners.every((q) => c.n[0] * q[0] + c.n[1] * q[1] + c.n[2] * q[2] > c.d - eps)) return false;
-    }
-    return true;
-  }
-
-  /**
-   * A sloped part as world-space half-spaces (n·p ≤ d, p in blocks with z up), for exact ray hits; null for a plain
-   * box, which the voxels already draw exactly. Each constraint keeps its local normal, which picks the texture.
-   */
-  function slopePart(b, tf, H) {
-    if (!b.cuts?.length) return null;
-    const c = [0.5, 0.5, 0.5];
-    const o0 = tf.toWorld(c);
-    const axes = [0, 1, 2].map((a) => { const e = c.slice(); e[a] += 1; const w = tf.toWorld(e); return [w[0] - o0[0], w[1] - o0[1], w[2] - o0[2]]; });
-    const cons = [];
-    const add = (n, d, isCut) => {
-      // Local n·p ≤ d → unit space (the transform is a rotation / mirror about the centre) → world (z scaled by H).
-      const nu = [0, 1, 2].map((r) => n[0] * axes[0][r] + n[1] * axes[1][r] + n[2] * axes[2][r]);
-      const du = d - (n[0] + n[1] + n[2]) * 0.5 + (nu[0] + nu[1] + nu[2]) * 0.5;
-      const nw = [nu[0], nu[1], nu[2] / H], dw = du - 0.5 * (nu[0] + nu[1]);
-      const len = Math.hypot(nw[0], nw[1], nw[2]);
-      const ll = Math.hypot(n[0], n[1], n[2]);
-      cons.push({ n: [nw[0] / len, nw[1] / len, nw[2] / len], d: dw / len, local: [n[0] / ll, n[1] / ll, n[2] / ll], isCut });
-    };
-    for (let a = 0; a < 3; a++) {
-      const e = [0, 0, 0]; e[a] = 1;
-      add(e, b.max[a], false);
-      add([-e[0], -e[1], -e[2]], -b.min[a], false);
-    }
-    for (const cc of b.cuts) add(cc.n, cc.d, true);
-    return { box: b, cons };
-  }
-
-  /** Where a ray enters a sloped part: { t, con } or null if it misses. */
-  function enterPart(part, o, dir) {
-    let tin = -Infinity, tout = Infinity, con = null;
-    for (const c of part.cons) {
-      const den = c.n[0] * dir[0] + c.n[1] * dir[1] + c.n[2] * dir[2];
-      const num = c.d - (c.n[0] * o[0] + c.n[1] * o[1] + c.n[2] * o[2]);
-      if (Math.abs(den) < 1e-12) { if (num < 0) return null; continue; }
-      const t = num / den;
-      if (den < 0) { if (t > tin) { tin = t; con = c; } } else if (t < tout) tout = t;
-    }
-    return tin <= tout && con ? { t: tin, con } : null;
-  }
-
-  /** Texture and coordinates on a slope: the part's local frame, the texture stretched over the slope's length. */
-  function slopeUV(part, con, lp) {
-    const n = con.local;
-    const ax = [Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2])];
-    const name = ax[1] >= ax[0] && ax[1] >= ax[2] ? "top" : ax[2] >= ax[0] ? "left" : "right";
-    const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    const crs = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-    const nrm = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
-    const dt = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let eu, ev;
-    if (ax[1] < 0.5) {
-      // Steep or vertical (diagonal wall): v runs up the piece.
-      ev = nrm(sub([0, 1, 0], [n[0] * n[1], n[1] * n[1], n[2] * n[1]]));
-      eu = nrm(crs(ev, n));
-    } else {
-      // A slope you could walk on: u across it, v up it.
-      const ref = ax[0] < 0.7 ? [1, 0, 0] : [0, 0, 1];
-      eu = nrm(sub(ref, [n[0] * dt(ref, n), n[1] * dt(ref, n), n[2] * dt(ref, n)]));
-      ev = nrm(crs(n, eu));
-      if (ev[1] < 0) ev = [-ev[0], -ev[1], -ev[2]];
-    }
-    const b = part.box;
-    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
-    for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) {
-      const q = [x, y, z];
-      if (!inPart(b, q, 1e-4)) continue;
-      u0 = Math.min(u0, dt(q, eu)); u1 = Math.max(u1, dt(q, eu));
-      v0 = Math.min(v0, dt(q, ev)); v1 = Math.max(v1, dt(q, ev));
-    }
-    return [name, (dt(lp, eu) - u0) / Math.max(1e-6, u1 - u0), (dt(lp, ev) - v0) / Math.max(1e-6, v1 - v0)];
-  }
-
-  /** World point -> sprite pixel coordinates (x right, y down), a full block centred in an S × S sprite. */
-  function project(p, S, H) {
-    const c = [p[0], p[1], p[2] - H / 2];
-    const s = Math.SQRT2 / S;
-    return [dot(c, RIGHT) / s + S / 2, -dot(c, UP) / s + S / 2];
-  }
-
-  // ── Ray casting ──────────────────────────────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Walks a ray through the voxel grid (Amanatides & Woo). Returns { t, owner, axis, sign, i, j, k } for the first
-   * solid voxel within maxT, or null. axis/sign give the side that was entered, i.e. the hit face's normal is
-   * -sign along axis.
-   */
-  function march(V, origin, dir, maxT) {
-    const size = [V.vx, V.vx, V.vz];
-    const lo = [V.iLo, V.jLo, V.kLo];
-    const hi = [V.iHi, V.jHi, V.kHi];
-    const minW = [-0.5 + V.iLo * V.vx, -0.5 + V.jLo * V.vx, V.kLo * V.vz];
-    const maxW = [-0.5 + V.iHi * V.vx, -0.5 + V.jHi * V.vx, V.kHi * V.vz];
-    // Clip the ray to the grid's box.
-    let t0 = 0, t1 = maxT, enterAxis = -1;
-    for (let a = 0; a < 3; a++) {
-      if (Math.abs(dir[a]) < 1e-12) {
-        if (origin[a] < minW[a] || origin[a] > maxW[a]) return null;
-        continue;
-      }
-      let ta = (minW[a] - origin[a]) / dir[a];
-      let tb = (maxW[a] - origin[a]) / dir[a];
-      if (ta > tb) [ta, tb] = [tb, ta];
-      if (ta > t0) { t0 = ta; enterAxis = a; }
-      if (tb < t1) t1 = tb;
-      if (t0 > t1) return null;
-    }
-    const p = [origin[0] + dir[0] * (t0 + 1e-9), origin[1] + dir[1] * (t0 + 1e-9), origin[2] + dir[2] * (t0 + 1e-9)];
-    const cell = [0, 0, 0], step = [0, 0, 0], tMax = [0, 0, 0], tDelta = [0, 0, 0];
-    for (let a = 0; a < 3; a++) {
-      const rel = (p[a] - minW[a]) / size[a];
-      cell[a] = Math.min(hi[a] - lo[a] - 1, Math.max(0, Math.floor(rel))) + lo[a];
-      step[a] = dir[a] > 0 ? 1 : dir[a] < 0 ? -1 : 0;
-      const boundary = minW[a] + (cell[a] - lo[a] + (step[a] > 0 ? 1 : 0)) * size[a];
-      tMax[a] = step[a] === 0 ? Infinity : t0 + (boundary - p[a]) / dir[a];
-      tDelta[a] = step[a] === 0 ? Infinity : size[a] / Math.abs(dir[a]);
-    }
-    let axis = enterAxis, t = t0;
-    for (;;) {
-      const owner = V.solid(cell[0], cell[1], cell[2]);
-      if (owner) {
-        return { t, owner, axis: axis < 0 ? 2 : axis, sign: axis < 0 ? Math.sign(dir[2]) || -1 : step[axis],
-          i: cell[0], j: cell[1], k: cell[2] };
-      }
-      axis = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
-      t = tMax[axis];
-      if (t > t1) return null;
-      cell[axis] += step[axis];
-      if (cell[axis] < lo[axis] || cell[axis] >= hi[axis]) return null;
-      tMax[axis] += tDelta[axis];
-    }
-  }
-
-  /** Ray parameter where the ray leaves voxel (i, j, k) of a hit. */
-  function voxelExit(V, hit, o, dir) {
-    const lo = [-0.5 + hit.i * V.vx, -0.5 + hit.j * V.vx, hit.k * V.vz];
-    const size = [V.vx, V.vx, V.vz];
-    let t = Infinity;
-    for (let a = 0; a < 3; a++) {
-      if (Math.abs(dir[a]) < 1e-12) continue;
-      const edge = dir[a] > 0 ? lo[a] + size[a] : lo[a];
-      t = Math.min(t, (edge - o[a]) / dir[a]);
-    }
-    return t;
-  }
-
-  // Fixed cosine-weighted hemisphere directions around +Z (Fibonacci spiral), turned to each normal. Fixed rather than
-  // random, so the AO never flickers between renders.
-  function hemisphere(n) {
-    const dirs = [];
-    for (let s = 0; s < n; s++) {
-      const r = Math.sqrt((s + 0.5) / n);
-      const a = s * 2.399963;
-      dirs.push([r * Math.cos(a), r * Math.sin(a), Math.sqrt(Math.max(0, 1 - r * r))]);
-    }
-    return dirs;
-  }
-
-  function orient(d, n) {
-    // Basis with n as its Z.
-    const t = Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
-    const bx = [t[1] * n[2] - t[2] * n[1], t[2] * n[0] - t[0] * n[2], t[0] * n[1] - t[1] * n[0]];
-    const len = Math.hypot(bx[0], bx[1], bx[2]);
-    bx[0] /= len; bx[1] /= len; bx[2] /= len;
-    const by = [n[1] * bx[2] - n[2] * bx[1], n[2] * bx[0] - n[0] * bx[2], n[0] * bx[1] - n[1] * bx[0]];
-    return [bx[0] * d[0] + by[0] * d[1] + n[0] * d[2], bx[1] * d[0] + by[1] * d[1] + n[1] * d[2],
-      bx[2] * d[0] + by[2] * d[1] + n[2] * d[2]];
-  }
-
-  // ── Render ───────────────────────────────────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Renders one piece. tex: { top, left, right } from faceTexture(); piece: { boxes, state, facing } (a cube when
-   * left out). Returns S × S RGBA arrays: color, normal (_n encoding), depth (white = near), ao (white = open), gray
-   * (light and AO without the texture's colour), plus mask (1 where the piece is).
-   */
-  function render(opts, tex, piece = CUBE) {
-    const o = merge(opts);
-    const S = o.size, H = o.blockHeight;
-    const V = buildVoxels(o, tex, piece);
-    const s = Math.SQRT2 / S;
-    const centre = [0, 0, H / 2];
-    const far = 4;
-    const n = S * S;
-    const color = new Uint8ClampedArray(n * 4), normal = new Uint8ClampedArray(n * 4);
-    const depth = new Uint8ClampedArray(n * 4), aoMap = new Uint8ClampedArray(n * 4), gray = new Uint8ClampedArray(n * 4);
-    const mask = new Uint8Array(n);
-    const faceN = new Int8Array(n);      // which visible face each pixel shows, for the pixel-art passes
-    const zbuf = new Float32Array(n).fill(-Infinity);  // dot(p, BACK): larger is nearer, for the hair pass
-    const hemi = hemisphere(Math.max(1, o.aoSamples));
-    const aoDist = o.aoDistance;
-
-    // Depth range: the grid's corners along the view direction (the same for every piece, so depth maps line up).
-    let dMin = Infinity, dMax = -Infinity;
-    for (const x of [-0.5 + V.iLo * V.vx, -0.5 + V.iHi * V.vx]) for (const y of [-0.5 + V.jLo * V.vx, -0.5 + V.jHi * V.vx]) {
-      for (const z of [V.kLo * V.vz, V.kHi * V.vz]) {
-        const d = dot([x, y, z], BACK);
-        dMin = Math.min(dMin, d); dMax = Math.max(dMax, d);
-      }
-    }
-    const depthByte = (d) => Math.round(255 * clamp01((d - dMin) / Math.max(1e-6, dMax - dMin)));
-    const shadeOf = (face) => (o.shading ? (face === FACE.TOP ? o.shade.top : face === FACE.LEFT ? o.shade.left : o.shade.right) : 1);
-    const quantAO = (ao) => (o.aoSteps > 1 && o.aoStrength > 0
-      ? 1 - Math.round((1 - ao) * (o.aoSteps - 1) / o.aoStrength) * o.aoStrength / (o.aoSteps - 1) : ao);
-
-    /** nvec: the true normal of a slope pixel (its light and _n follow it); voxel faces pass none. */
-    const put = (k, texel, face, ao, d, nvec = null) => {
-      let shade = shadeOf(face);
-      if (nvec && o.shading) {
-        // Each face's share of the light by how much the slope faces it (squared, so a slope mostly takes one face's).
-        const wt = Math.max(0, nvec[2]) ** 2, wl = Math.max(0, -nvec[1]) ** 2, wr = Math.max(0, nvec[0]) ** 2;
-        shade = (wt * o.shade.top + wl * o.shade.left + wr * o.shade.right) / (wt + wl + wr || 1);
-      }
-      color[k] = texel[0] * shade * ao;
-      color[k + 1] = texel[1] * shade * ao;
-      color[k + 2] = texel[2] * shade * ao;
-      color[k + 3] = 255;
-      // Voxel faces only ever point along the three visible axes: write the exact colours the Aura Iso Normals
-      // extension uses for them, so these maps match the hand-made ones bit for bit.
-      const enc = nvec
-        ? [Math.round((dot(nvec, RIGHT) * 0.5 + 0.5) * 255), Math.round((dot(nvec, UP) * 0.5 + 0.5) * 255), Math.round((dot(nvec, BACK) * 0.5 + 0.5) * 255)]
-        : FACE_NORMAL_RGB[face];
-      normal[k] = enc[0]; normal[k + 1] = enc[1]; normal[k + 2] = enc[2]; normal[k + 3] = 255;
-      depth[k] = depth[k + 1] = depth[k + 2] = depthByte(d); depth[k + 3] = 255;
-      aoMap[k] = aoMap[k + 1] = aoMap[k + 2] = Math.round(255 * ao); aoMap[k + 3] = 255;
-      const base = o.grayFromTexture ? (0.2126 * texel[0] + 0.7152 * texel[1] + 0.0722 * texel[2]) / 255 : 1;
-      gray[k] = gray[k + 1] = gray[k + 2] = Math.round(255 * base * shade * ao); gray[k + 3] = 255;
-    };
-
-    for (let py = 0; py < S; py++) {
-      for (let px = 0; px < S; px++) {
-        const ox = (px + 0.5 - S / 2) * s, oy = (py + 0.5 - S / 2) * s;
-        const origin = [
-          centre[0] + RIGHT[0] * ox - UP[0] * oy - FWD[0] * far,
-          centre[1] + RIGHT[1] * ox - UP[1] * oy - FWD[1] * far,
-          centre[2] + RIGHT[2] * ox - UP[2] * oy - FWD[2] * far,
-        ];
-        // March, but a voxel of a sloped part only counts where the ray really enters that part inside the voxel; if
-        // it only grazes the voxel's empty corner, carry on behind it.
-        let hit = march(V, origin, FWD, far * 2), slope = null;
-        for (let guard = 0; hit && guard < 8; guard++) {
-          const part = hit.owner === 255 ? V.part(hit.i, hit.j, hit.k) : null;
-          if (!part) break;
-          // Several sloped parts can share a voxel (the two ramps of an inside corner): the nearest entry wins.
-          const exit = voxelExit(V, hit, origin, FWD);
-          let best = null, bestPart = null;
-          for (const sp of V.slopeParts) {
-            const e = enterPart(sp, origin, FWD);
-            if (e && e.t <= exit + 1e-9 && (!best || e.t < best.t)) { best = e; bestPart = sp; }
-          }
-          if (best) {
-            if (best.con.isCut) slope = { part: bestPart, con: best.con, t: Math.max(best.t, hit.t) };
-            break;
-          }
-          const from = [origin[0] + FWD[0] * (exit + 1e-7), origin[1] + FWD[1] * (exit + 1e-7), origin[2] + FWD[2] * (exit + 1e-7)];
-          const next = march(V, from, FWD, far * 2 - exit);
-          hit = next ? { ...next, t: next.t + exit + 1e-7 } : null;
-        }
-        if (!hit) continue;
-        const tHit = slope ? slope.t : hit.t;
-        const p = [origin[0] + FWD[0] * tHit, origin[1] + FWD[1] * tHit, origin[2] + FWD[2] * tHit];
-        const nrm = [0, 0, 0];
-        nrm[hit.axis] = -hit.sign;
-        const hitDir = hit.axis * 2 + (nrm[hit.axis] > 0 ? 0 : 1);
-        let visible = DIR_FACE[hitDir] ?? FACE.TOP;
-        if (slope) {
-          const n = slope.con.n;
-          const wt = Math.max(0, n[2]), wl = Math.max(0, -n[1]), wr = Math.max(0, n[0]);
-          visible = wt >= wl && wt >= wr ? FACE.TOP : wl >= wr ? FACE.LEFT : FACE.RIGHT;
-        }
-        // The piece's own faces always show their own texture, right up to the edge. A mask voxel shows the texture of
-        // the face it carries on, at the point that face would have there (wrapped), so the tongue has no seam.
-        const zone = hit.owner !== 255 ? V.zones[hit.owner - 1] : null;
-        const ownerDir = zone ? zone.owner : hitDir;
-        let unit = [p[0] + 0.5, p[1] + 0.5, p[2] / H];
-        if (zone?.fold) {
-          // A front tongue hangs from the top's edge: unfold it back onto the top's plane, the drop becoming distance
-          // past the edge, so the top's pattern runs over the edge and down without a break.
-          let kt = hit.k;
-          while (V.solid(hit.i, hit.j, kt + 1) === hit.owner) kt++;
-          const topZ = (kt + 1) * V.vz, drop = topZ - p[2];
-          unit = zone.fold[1] < 0
-            ? [p[0] + 0.5, (hit.j + 1) * V.vx - drop, topZ / H]
-            : [hit.i * V.vx + drop, p[1] + 0.5, topZ / H];
-        }
-        let texDir = ownerDir;
-        if (!zone && (hitDir === W_LEFT || hitDir === W_RIGHT)) {
-          // Covered band of a side face: the top's texture bent over the edge, the same unfolding as a front tongue.
-          const kt = V.coverTop(hit.i, hit.j, hit.k, hitDir);
-          if (kt >= 0) {
-            const topZ = (kt + 1) * V.vz, drop = topZ - p[2];
-            texDir = W_UP;
-            unit = hitDir === W_LEFT
-              ? [p[0] + 0.5, hit.j * V.vx - drop, topZ / H]
-              : [(hit.i + 1) * V.vx + drop, p[1] + 0.5, topZ / H];
-          }
-        }
-        let [name, u, v] = V.uvAt(unit, texDir);
-        if (slope) {
-          [name, u, v] = slopeUV(slope.part, slope.con, V.tf.toLocal(unit));
-          u = u - Math.floor(u); v = v - Math.floor(v);
-        }
-        const texel = tex[name].color(u, v);
-        if (texel[3] < 8) continue;
-        const surfN = slope ? slope.con.n : nrm;
-
-        let ao = 1;
-        if (o.ao && o.aoStrength > 0) {
-          // Off a slope, start past the voxel steps that stand above it, or it would shade itself.
-          const lift = slope ? V.vx * 1.5 : 1e-4;
-          const start = [p[0] + surfN[0] * lift, p[1] + surfN[1] * lift, p[2] + surfN[2] * lift];
-          let blocked = 0;
-          for (const d of hemi) {
-            if (march(V, start, orient(d, surfN), aoDist)) blocked++;
-          }
-          ao = quantAO(1 - o.aoStrength * (blocked / hemi.length));
-        }
-        const i = py * S + px;
-        put(i * 4, texel, visible, ao, dot(p, BACK), slope ? slope.con.n : null);
-        mask[i] = 1;
-        faceN[i] = visible;
-        zbuf[i] = dot(p, BACK);
-      }
-    }
-
-    pixelArtPasses(o, S, color, mask, faceN);
-
-    // Hairs go on after the pixel-art passes: lone-pixel cleanup would eat one-pixel strands.
-    if (o.hair.enabled && Aura.blockHair) {
-      Aura.blockHair.draw({ o, V, tex, S, H, zbuf, mask, faceN, put, project, BACK, FACE, quantAO, rng });
-    }
-
-    // Pixel-space mirrors. The yaw was a world rotation applied inside buildVoxels (the 2:1 projection is not
-    // invariant under a 90° bitmap rotation); the mirrors are true pixel transforms and go at the very end, once
-    // the pixel-art passes and the hairs have finished. For the normal map, mirroring horizontally negates the
-    // "right" component (R channel) and mirroring vertically negates the "up" component (G channel), so the
-    // shading in the game stays consistent with the mirrored geometry.
-    if (o.rotation.flipX || o.rotation.flipY) {
-      const { flipX, flipY } = o.rotation;
-      const flipRGBA = (arr, negR = false, negG = false) => {
-        const out = new Uint8ClampedArray(arr.length);
-        for (let y = 0; y < S; y++) {
-          const sy = flipY ? S - 1 - y : y;
-          for (let x = 0; x < S; x++) {
-            const sx = flipX ? S - 1 - x : x;
-            const si = (sy * S + sx) * 4, di = (y * S + x) * 4;
-            out[di] = arr[si]; out[di + 1] = arr[si + 1]; out[di + 2] = arr[si + 2]; out[di + 3] = arr[si + 3];
-            if (negR && flipX) out[di] = 255 - out[di];
-            if (negG && flipY) out[di + 1] = 255 - out[di + 1];
-          }
-        }
-        return out;
-      };
-      const flipMask = (arr) => {
-        const out = new Uint8Array(arr.length);
-        for (let y = 0; y < S; y++) {
-          const sy = flipY ? S - 1 - y : y;
-          for (let x = 0; x < S; x++) {
-            const sx = flipX ? S - 1 - x : x;
-            out[y * S + x] = arr[sy * S + sx];
-          }
-        }
-        return out;
-      };
-      color.set(flipRGBA(color));
-      normal.set(flipRGBA(normal, true, true));
-      depth.set(flipRGBA(depth));
-      aoMap.set(flipRGBA(aoMap));
-      gray.set(flipRGBA(gray));
-      mask.set(flipMask(mask));
-    }
-
-    return { size: S, color, normal, depth, ao: aoMap, gray, mask, voxels: V, options: o };
-  }
-
-  // ── Pixel-art passes ─────────────────────────────────────────────────────────────────────────────────────────────
-
-  function pixelArtPasses(o, S, color, mask, faceN) {
-    const at = (x, y) => (x < 0 || y < 0 || x >= S || y >= S ? -1 : y * S + x);
-    // Rim light: top-face pixels with nothing (or another face) right above them catch the light, like the bright edge
-    // hand-drawn tiles give their top.
-    if (o.edgeLight > 0) {
-      const lit = [];
-      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-        const i = y * S + x;
-        if (faceN[i] !== FACE.TOP) continue;
-        const up = at(x, y - 1);
-        if (up < 0 || !mask[up] || faceN[up] !== FACE.TOP) lit.push(i);
-      }
-      for (const i of lit) for (let c = 0; c < 3; c++) color[i * 4 + c] = Math.min(255, color[i * 4 + c] * (1 + o.edgeLight));
-    }
-    // Inner outline: pixels on the silhouette, darkened.
-    if (o.outline > 0) {
-      const edge = [];
-      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-        const i = y * S + x;
-        if (!mask[i]) continue;
-        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const j = at(x + dx, y + dy);
-          if (j < 0 || !mask[j]) { edge.push(i); break; }
-        }
-      }
-      for (const i of edge) for (let c = 0; c < 3; c++) color[i * 4 + c] *= 1 - o.outline;
-    }
-    // Lone pixels: one pixel whose four neighbours all share another colour takes theirs.
-    if (o.cleanup) {
-      const copy = color.slice();
-      for (let y = 1; y < S - 1; y++) for (let x = 1; x < S - 1; x++) {
-        const i = y * S + x;
-        if (!mask[i]) continue;
-        const ns = [i - 1, i + 1, i - S, i + S];
-        if (!ns.every((j) => mask[j] && faceN[j] === faceN[i])) continue;
-        const same = (a, b) => copy[a * 4] === copy[b * 4] && copy[a * 4 + 1] === copy[b * 4 + 1] && copy[a * 4 + 2] === copy[b * 4 + 2];
-        if (ns.every((j) => same(j, ns[0])) && !same(i, ns[0])) {
-          for (let c = 0; c < 3; c++) color[i * 4 + c] = copy[ns[0] * 4 + c];
-        }
-      }
-    }
-  }
-
-  /** Nearest-neighbour upscale of an RGBA image, for exports bigger than the sprite. */
-  function upscale(rgba, size, factor) {
-    const W = size * factor;
-    const out = new Uint8ClampedArray(W * W * 4);
-    for (let y = 0; y < W; y++) {
-      const sy = Math.floor(y / factor);
-      for (let x = 0; x < W; x++) {
-        const si = (sy * size + Math.floor(x / factor)) * 4;
-        const di = (y * W + x) * 4;
-        out[di] = rgba[si]; out[di + 1] = rgba[si + 1]; out[di + 2] = rgba[si + 2]; out[di + 3] = rgba[si + 3];
-      }
-    }
-    return out;
-  }
-
-  Aura.blockEngine = { DEFAULTS, HAIR_DEFAULTS, MASK_DEFAULTS, COVER_DEFAULTS, BLOCK_HEIGHT, FACE, CUBE, faceTexture, render, project, upscale, merge };
-})(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));
+    for (let a = 0; a < 3; a++) if (lp[a] < b
