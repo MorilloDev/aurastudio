@@ -384,7 +384,10 @@
     const mainPal = tonePalette(spec.dark, spec.light, nTones);
     const altPal = spec.altChance > 0 ? tonePalette(scaleHex(spec.altColor, 0.55), spec.altColor, nTones) : null;
     const top = nTones - 1;
-    const crown = crownShape(k, spec.round);
+    // Seamless: the block's own outline, no rounding and nothing past it — a neighbour's sprite continues exactly there.
+    const seamless = !!spec.seamless;
+    const crown = crownShape(k, seamless ? 0 : spec.round);
+    const clip = seamless ? 1 : spec.clip;
     // Needles and fronds are mostly air: a third layer behind fills the crown the way a dense shoot does.
     const layers = Math.max(1, spec.layers | 0) + (spec.shape === "NEEDLE" || spec.shape === "PALM" ? 1 : 0);
     const shapeOf = PAINT_SHAPES[spec.shape] ?? PAINT_SHAPES.LANCE;
@@ -396,6 +399,10 @@
       out.mask[i] = 1;
       seam[i] = isSeam ? 1 : 0;
     };
+
+    // A leaf's colour for one of its pixels: fixed tones, or (seamless) tones decided by the face the pixel is on.
+    const toneColor = (tones, x, y, kind) => (tones.at ? tones.at(x + 0.5, y + 0.5, kind) : tones.pal[tones[kind]]);
+    const pixelFace = (x, y, face) => (seamless ? crown.faceOf(x + 0.5, y + 0.5) : face);
 
     /**
      * One blade from (bx, by) along (dx, dy): the shape's outline, two tones split by the midrib, and the seam behind it.
@@ -420,17 +427,17 @@
         let inLeaf = u > 0 && u < 1 && Math.abs(v) <= half;
         if (inLeaf && shape.cut && shape.cut(uc, Math.abs(v) / Math.max(1e-6, half), v)) inLeaf = false;
         if (!inLeaf && (rim <= 0 || Math.abs(v) > half + rim)) continue;
-        if (!crown.inside(x + 0.5, y + 0.5, spec.clip) && !b.free) continue;
+        if (!crown.inside(x + 0.5, y + 0.5, clip) && !b.free) continue;
         const i = y * S + x;
         // The seam only darkens what is already painted behind, on the side away from the light ("edgeShadow").
         if (!inLeaf) {
           if (!out.mask[i]) continue;
           if (spec.edgeShadow && (x + 0.5 - mx) * PAINT_LIGHT[0] + (y + 0.5 - my) * PAINT_LIGHT[1] > 0) continue;
-          put(x, y, tones.pal[tones.rim], face, fromFront, true);
+          put(x, y, toneColor(tones, x, y, "rim"), pixelFace(x, y, face), fromFront, true);
           continue;
         }
-        const t = b.single ? tones.lit : (v >= 0 ? 1 : -1) === litSide ? tones.lit : tones.shade;
-        put(x, y, tones.pal[t], face, fromFront, false);
+        const kind = b.single ? "lit" : (v >= 0 ? 1 : -1) === litSide ? "lit" : "shade";
+        put(x, y, toneColor(tones, x, y, kind), pixelFace(x, y, face), fromFront, false);
       }
     };
 
@@ -462,7 +469,15 @@
       return ang;
     };
 
-    for (let L = 0; L < layers; L++) {
+    if (seamless) {
+      paintSeamless({ spec, k, S, crown, layers, top, mainPal, altPal, shapeOf, blade });
+      // Whatever the leaves left open inside the block is the shade deep in the canopy, not sky: big sky holes would
+      // repeat with the pattern. The see-through is the pinholes below.
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        if (out.mask[y * S + x] || !crown.inside(x + 0.5, y + 0.5, 1)) continue;
+        put(x, y, mainPal[Math.max(0, top - 4 - crown.faceOf(x + 0.5, y + 0.5))], crown.faceOf(x + 0.5, y + 0.5), layers - 1, false);
+      }
+    } else for (let L = 0; L < layers; L++) {
       const fromFront = layers - 1 - L;
       // Shapes with detail in their outline (lobes, slits, a tuft's fan) get more room, or neighbours hide it.
       const unit = spec.length * k * (PAINT_SPACING[spec.shape] ?? 1);
@@ -478,14 +493,21 @@
       }
     }
 
-    if (spec.vines > 0) paintVines(spec, out, blade, rnd, uni, k, nTones, mainPal);
+    // Not on seamless blocks: strands hang outside the block, over whatever is below, so they would cut the seams.
+    if (spec.vines > 0 && !seamless) paintVines(spec, out, blade, rnd, uni, k, nTones, mainPal);
     if (spec.blossoms > 0) paintBlossoms(spec, out, put, crown, rnd, k);
 
     // Pinholes: some seam pixels left open, so the block is seen through in specks between the leaves (the
     // reference's many one- and two-pixel gaps) instead of in a few big holes.
     if (spec.pinholes > 0) {
       for (let i = 0; i < N; i++) {
-        if (seam[i] !== 1 || rnd() >= spec.pinholes) continue;
+        // Seamless: decided by the pixel's place in the repeating pattern, so a hole crossing into the next block opens
+        // there too.
+        const roll = seamless
+          ? patternHash(i % S + 0.5, Math.floor(i / S) + 0.5, k, Math.max(1, spec.period | 0), spec.phase, 0x9E37)
+          : rnd();
+        // Seamless canopies are many blocks deep on screen: half as many specks, or the mass reads as noise.
+        if (seam[i] !== 1 || roll >= spec.pinholes * (seamless ? 0.5 : 1)) continue;
         out.mask[i] = 0;
         for (const map of [out.color, out.normal, out.depth, out.ao, out.gray]) map.fill(0, i * 4, i * 4 + 4);
       }
@@ -536,6 +558,103 @@
     NEEDLE: { half: (u) => 1 - u * 0.6 },
     RIB: { half: (u) => 1 - u * 0.5 },
   };
+
+  /**
+   * Seamless leaves: a pattern that repeats with the block grid — one block over is (32, 16) or (−32, 16) pixels away on
+   * screen — so the leaves running off one sprite are the ones its neighbour starts with, and a canopy of many blocks
+   * reads as one mass. The tool uses period 1 (one sprite); "period" n with "phase" [i, j] cuts an n-block pattern into
+   * n × n sprites, kept for when the game can hand out a sprite per block position.
+   *
+   * Each leaf is laid out once in the big cell and painted at every copy that reaches the sprite, in an order (layer,
+   * then height on screen) every copy shares. Tones come from the face a pixel is on (top brightest, left, right
+   * darkest), the way a neighbour's face continues it.
+   */
+  function paintSeamless(c) {
+    const { spec, k, S, layers, top, mainPal, altPal, shapeOf, blade } = c;
+    const n = Math.max(1, spec.period | 0);
+    const [pi, pj] = spec.phase ?? [0, 0];
+    const a = [32 * k, 16 * k], b = [-32 * k, 16 * k];
+    const A = [a[0] * n, a[1] * n], B = [b[0] * n, b[1] * n];
+    // Texture point → this sprite: the sprite of phase (i, j) starts i·a + j·b into the pattern.
+    const ox = 32 * k - pi * a[0] - pj * b[0], oy = -pi * a[1] - pj * b[1];
+    const at = (s, t) => [ox + s * A[0] + t * B[0], oy + s * A[1] + t * B[1]];
+    const sideLen = Math.hypot(A[0], A[1]);
+    const unitLen = spec.length * k * (PAINT_SPACING[spec.shape] ?? 1);
+    const FACE_TONE = [top - 1, top - 2, top - 3];
+    const clamp = (t) => Math.max(0, Math.min(top, t));
+
+    // The leaves of the big cell for one layer: position in cell units (s, t), and everything random about the leaf.
+    const domain = (seed, fromFront) => {
+      const r = mulberry(seed >>> 0 || 1);
+      const spacing = Math.max(2 * k, unitLen * spec.spacing * (fromFront === 0 ? 1 : spec.backSpacing));
+      const m = Math.max(1, Math.round(sideLen / spacing));
+      const leaves = [];
+      for (let i = 0; i < m; i++) for (let j = 0; j < m; j++) {
+        const skip = r() < (fromFront === 0 ? spec.holes : spec.backHoles);
+        const sx = (i + 0.5 + (r() - 0.5) * 0.7) / m, tx = (j + 0.5 + (r() - 0.5) * 0.7) / m;
+        let ang = r() * Math.PI * 2;
+        if (spec.hang > 0) ang += Math.atan2(Math.sin(Math.PI / 2 - ang), Math.cos(Math.PI / 2 - ang)) * spec.hang;
+        const len = spec.length * k * (1 + (r() * 2 - 1) * spec.lengthVar) * (fromFront ? 1.1 : 1);
+        const roll = r(), alt = r(), hl = r();
+        if (skip) continue;
+        leaves.push({ id: i * m + j, s: sx, t: tx, ang, len, roll, fromFront, hl: hl < spec.highlight,
+          pal: altPal && alt < spec.altChance ? altPal : mainPal });
+      }
+      return leaves;
+    };
+
+    const copies = [];
+    for (let L = 0; L < layers; L++) {
+      const fromFront = layers - 1 - L;
+      for (const leaf of domain(spec.seed * 7919 + L * 104729, fromFront)) {
+        const reach = leaf.len * 1.4 + 2 * k;
+        for (let i = -2; i <= 2; i++) for (let j = -2; j <= 2; j++) {
+          const [x, y] = at(leaf.s + i, leaf.t + j);
+          if (x < -reach || y < -reach || x > S + reach || y > S + reach) continue;
+          copies.push({ leaf, x, y, L });
+        }
+      }
+    }
+    copies.sort((p, q) => p.L - q.L || p.y - q.y || p.leaf.id - q.leaf.id);
+
+    for (const cp of copies) {
+      const { leaf } = cp;
+      const shift = leaf.roll < spec.darker ? -1 : leaf.roll > 1 - spec.lighter ? 1 : 0;
+      const tones = {
+        at: (x, y, kind) => {
+          const face = c.crown.faceOf(x, y);
+          const base = FACE_TONE[face] + shift - leaf.fromFront;
+          const lit = base + (face === 0 && leaf.fromFront === 0 && leaf.hl ? 1 : 0);
+          const t = kind === "lit" ? lit : kind === "shade" ? base - 1 : base - 1 - Math.max(1, spec.edgeTones | 0);
+          return leaf.pal[clamp(t)];
+        },
+      };
+      // The cluster's own randomness (a tuft's needles, acacia leaflets) comes from the leaf, so every copy is alike.
+      const lr = mulberry(((leaf.id + 1) * 2654435761 + leaf.fromFront * 97) >>> 0);
+      paintAnchor({ blade, uni: (lo, hi) => lo + (hi - lo) * lr(), rnd: lr, ax: cp.x, ay: cp.y, ang: leaf.ang,
+        len: leaf.len, wid: leaf.len * spec.width * 0.5, shape: shapeOf, kind: spec.shape, tones,
+        face: c.crown.faceOf(cp.x, cp.y), fromFront: leaf.fromFront, k });
+    }
+  }
+
+  // 0..1 from a pixel's place in the big repeating pattern, so the same spot gets the same number in whichever sprite
+  // shows it.
+  function patternHash(x, y, k, n, phase, salt) {
+    const [pi, pj] = phase ?? [0, 0];
+    const X = x - 32 * k, Y = y;
+    const s = (X / (32 * k) + Y / (16 * k)) / 2 + pi, t = (Y / (16 * k) - X / (32 * k)) / 2 + pj;
+    const M = Math.round(32 * k) * n;
+    const ws = ((Math.round(s * 32 * k) % M) + M) % M, wt = ((Math.round(t * 32 * k) % M) + M) % M;
+    return hash3(salt, ws, wt);
+  }
+
+  function hash3(a, b, c) {
+    let h = 2166136261 ^ (a | 0);
+    h = Math.imul(h ^ (b | 0), 16777619);
+    h = Math.imul(h ^ (c | 0), 16777619);
+    h ^= h >>> 15; h = Math.imul(h, 0x2C1B3C6D); h ^= h >>> 12;
+    return (h >>> 0) / 4294967296;
+  }
 
   /** One anchor: a single leaf, or the cluster its kind is made of (a needle tuft, a palm frond, tiny leaflets). */
   function paintAnchor(a) {
@@ -633,11 +752,25 @@
       for (const e of edges) hx = Math.max(hx, (e.nx * dx + e.ny * dy) / e.h);
       return hx + (Math.hypot(dx, dy) / (32 * k) - hx) * round;
     };
-    return {
-      cx, cy, norm,
-      inside: (x, y, clip) => norm(x, y) <= clip,
-      faceOf: (x, y) => (y < (32 - Math.abs(x / k - 32) / 2) * k ? 0 : x < cx ? 1 : 2),
+    const faceOf = (x, y) => (y < (32 - Math.abs(x / k - 32) / 2) * k ? 0 : x < cx ? 1 : 2);
+    // The three faces as polygons, for how far a point is from the edges of the face it is on: every visible region of
+    // a block ends on one of those edges.
+    const faces = [
+      [[0, 16], [32, 0], [64, 16], [32, 32]],
+      [[0, 16], [32, 32], [32, 64], [0, 48]],
+      [[32, 32], [64, 16], [64, 48], [32, 64]],
+    ].map((poly) => poly.map(([x, y]) => [x * k, y * k]));
+    const faceDist = (x, y) => {
+      const poly = faces[faceOf(x, y)];
+      let d = Infinity;
+      for (let i = 0; i < poly.length; i++) {
+        const [ax, ay] = poly[i], [bx, by] = poly[(i + 1) % poly.length];
+        const ex = bx - ax, ey = by - ay, len = Math.hypot(ex, ey);
+        d = Math.min(d, Math.abs((x - ax) * ey - (y - ay) * ex) / len);
+      }
+      return d;
     };
+    return { cx, cy, norm, faceOf, faceDist, inside: (x, y, clip) => norm(x, y) <= clip };
   }
 
   // Vines, willow strands, mangrove roots: thin strands hanging from the crown's underside, with small leaves.
