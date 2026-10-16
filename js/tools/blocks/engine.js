@@ -1,381 +1,922 @@
 "use strict";
 
-// Block generator engine: builds a piece (cube, slab, stair, fence…) out of voxels from the textures of its faces and
-// renders it with the game's camera into a sprite, with its normal map, depth, ambient occlusion and a grayscale pass.
-// No DOM, no canvas: plain arrays in, plain arrays out, so the same code runs in the page, in a worker or under Node.
-// Needs shapes.js (Aura.blockShapes); hair.js (Aura.blockHair) is optional and draws the fringe strands.
+// Bloques: builds tile sprites (cube, slab, stair, fence…) from face textures of an atlas or a loose texture, with
+// procedural ragged edges painted with the face's own texture, hairs, the face light of the Blender materials, ambient
+// occlusion, depth and a grayscale pass, rendered with the game's camera — and every variant the tile's "art" map needs
+// (states × front / back) in one go. The heavy parts are engine.js / shapes.js / hair.js; this file is the panel, the
+// picker, the previews and saving.
 (function (Aura) {
-  const Shapes = Aura.blockShapes;
+  const { h } = Aura.dom;
+  const { section, slider, select, checkbox, segmented, numberPair, detailSwitch } = Aura.controls;
+  const { decodePng, encodePng } = Aura.png;
+  const { downloadBlob, stripExt } = Aura.fs;
+  const { prefs } = Aura.storage;
+  const { listSheets } = Aura.sheetFiles;
+  const Cells = Aura.sheetCells;
+  const E = Aura.blockEngine;
+  const Sh = Aura.blockShapes;
+  const Tint = Aura.tint;
+  const TP = Aura.tintPanel;
+  const { ContextView } = Aura.contextView;
 
-  // ── Camera ───────────────────────────────────────────────────────────────────────────────────────────────────────
-  // Blender camera rotation (60°, 0°, 45°), orthographic. These are its right / up / forward axes in world space; the
-  // normal map stores a normal as (n·right, n·up, n·back), which is what NormalMapLoader decodes (top = #80EEBF…).
-  //
-  // The free rotation the tool offers is a *camera orbit*: the piece stays axis-aligned in world space (the voxel
-  // grid and the ray marcher do not care about the camera), and the four basis vectors below are rotated by the
-  // inverse of the requested rotation. A point q of the piece therefore appears in the sprite at (q · RIGHT', q · UP'),
-  // which is the same as (R q · RIGHT, R q · UP): rotating the camera by R⁻¹ is the same as rotating the piece by R.
-  // The ORDER of the Euler angles is Rz · Ry · Rx (pitch, then yaw, then roll), right-handed around the world axes.
-  const RIGHT0 = [Math.SQRT1_2, Math.SQRT1_2, 0];
-  const UP0 = [-0.3535534, 0.3535534, 0.8660254];
-  const FWD0 = [-0.6123724, 0.6123724, -0.5];
-  const BACK0 = [-FWD0[0], -FWD0[1], -FWD0[2]];
-  const BASE_CAMERA = { RIGHT: RIGHT0, UP: UP0, FWD: FWD0, BACK: BACK0, identity: true };
+  const SLOTS = [["top", "Arriba", "#5fd3b0"], ["left", "Izquierda", "#7fb2ff"], ["right", "Derecha", "#e27bd8"]];
+  const VIEWS = [["color", "Color"], ["tinted", "Bioma"], ["normal", "Normales"], ["depth", "Profundidad"], ["ao", "AO"], ["gray", "Grises"]];
+  const MAPS = [["color", ""], ["normal", "_n"], ["depth", "_depth"], ["ao", "_ao"], ["gray", "_gray"]];
+  const PREFS_KEY = "blocks:settings";
 
-  // √(2/3): the block height that makes a 1 × 1 block fill a square sprite (32 px diamond over 32 px sides at 64).
-  const BLOCK_HEIGHT = 0.8164966;
+  const PIECE_DEFAULTS = {
+    shape: "cube",
+    params: { ...Sh.PARAM_DEFAULTS },
+    states: { default: true, inverted: true, vertical: true, horizontal: true },
+    back: true,
+    combos: false,
+    frontSide: "left",
+  };
+  const mergePiece = (p = {}) => ({
+    ...PIECE_DEFAULTS, ...p,
+    params: { ...PIECE_DEFAULTS.params, ...(p.params || {}) },
+    states: { ...PIECE_DEFAULTS.states, ...(p.states || {}) },
+  });
 
-  // The faces the camera can see. A voxel side pointing -X, +Y or down never faces this camera.
-  const FACE = { TOP: 1, LEFT: 2, RIGHT: 3 };
+  const SECTION_KEYS = {
+    rot: ["rotation"],
+    mask: ["mask", "autoFit", "chips", "seed"],
+    cover: ["cover"],
+    hair: ["hair"],
+    light: ["shading", "shade", "ao", "aoDistance", "aoStrength", "aoSteps", "aoSamples"],
+    pixel: ["edgeLight", "outline", "cleanup", "grayFromTexture"],
+  };
 
-  // #80EEBF, #2553CE, #DA53CE — see NormalMapLoader.FaceTop / FaceLeft / FaceRight in the game.
-  const FACE_NORMAL_RGB = { 1: [128, 238, 191], 2: [37, 83, 206], 3: [218, 83, 206] };
+  const wrap180 = (d) => ((d + 180) % 360 + 360) % 360 - 180;
 
-  // World direction indices (Shapes.DIRS): 0 +X, 1 -X, 2 +Y, 3 -Y, 4 +Z (up), 5 -Z.
-  const DIRS = Shapes.DIRS;
-  const W_RIGHT = 0, W_LEFT = 3, W_UP = 4;
-  const VISIBLE_DIRS = [W_UP, W_LEFT, W_RIGHT];
-  const DIR_FACE = { [W_UP]: FACE.TOP, [W_LEFT]: FACE.LEFT, [W_RIGHT]: FACE.RIGHT };
+  function blocksTool() {
+    return new BlocksTool();
+  }
 
-  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-  const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
-  const deg2rad = (d) => (d * Math.PI) / 180;
-
-  /** Small deterministic random generator (mulberry32), so a seed always gives the same chips, lips and hairs. */
-  function rng(seed) {
-    let a = (seed >>> 0) || 1;
-    return () => {
-      a = (a + 0x6d2b79f5) | 0;
-      let t = Math.imul(a ^ (a >>> 15), 1 | a);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  class BlocksTool {
+    id = "blocks";
+    title = "Bloques";
+    project = null;
+    sheets = [];
+    images = new Map();
+    slots = {
+      top: { key: null, cx: 0, cy: 0, rot: 0, flip: false },
+      left: { key: null, cx: 0, cy: 0, rot: 0, flip: false },
+      right: { key: null, cx: 0, cy: 0, rot: 0, flip: false },
     };
-  }
+    activeSlot = "all";
+    view = "color";
+    result = null;
+    variantList = [];
+    variantResults = new Map();
+    previewId = null;
+    previewFacing = "auto";
+    orbit = null;
+    #pending = 0;
 
-  /** Camera basis after rotating the *piece* by rotation {x, y, z} (degrees). Identity when all angles are 0. */
-  function cameraBasis(rot) {
-    if (!rot || (!rot.x && !rot.y && !rot.z)) return BASE_CAMERA;
-    const cx = Math.cos(deg2rad(rot.x)), sx = Math.sin(deg2rad(rot.x));
-    const cy = Math.cos(deg2rad(rot.y)), sy = Math.sin(deg2rad(rot.y));
-    const cz = Math.cos(deg2rad(rot.z)), sz = Math.sin(deg2rad(rot.z));
-    // R = Rz · Ry · Rx (rows are the images of the basis vectors).
-    const R = [
-      [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
-      [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
-      [-sy, cy * sx, cy * cx],
-    ];
-    // Each basis vector b of the sprite becomes Rᵀ b: (R q) · b = q · (Rᵀ b).
-    const applyT = (b) => [
-      R[0][0] * b[0] + R[1][0] * b[1] + R[2][0] * b[2],
-      R[0][1] * b[0] + R[1][1] * b[1] + R[2][1] * b[2],
-      R[0][2] * b[0] + R[1][2] * b[1] + R[2][2] * b[2],
-    ];
-    return { RIGHT: applyT(RIGHT0), UP: applyT(UP0), FWD: applyT(FWD0), BACK: applyT(BACK0), identity: false };
-  }
+    // ---------------------------------------------------------------------------------------------------------------
+    // Setup
 
-  // ── Textures ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
-  /**
-   * One face's picture: a rectangle of an RGBA image (an atlas cell or a whole loose texture), plus how it is laid on
-   * the face. Face coordinates are 0..1 (u to the right as seen from outside, v up), after the face's rotation
-   * (0/90/180/270) and mirror.
-   */
-  function faceTexture(img, rect, rotate = 0, flip = false) {
-    const { x, y, w, h } = rect;
-    return {
-      img, rect, w, h,
-      texel(u, v) {
-        let a = flip ? 1 - u : u;
-        let b = v;
-        for (let r = 0; r < ((rotate / 90) & 3); r++) [a, b] = [b, 1 - a];
-        const tx = Math.min(w - 1, Math.max(0, Math.floor(a * w)));
-        const ty = Math.min(h - 1, Math.max(0, Math.floor((1 - b) * h)));
-        return ((y + ty) * img.w + (x + tx)) * 4;
-      },
-      color(u, v) {
-        const i = this.texel(u, v);
-        return [img.rgba[i], img.rgba[i + 1], img.rgba[i + 2], img.rgba[i + 3]];
-      },
-    };
-  }
-
-  /**
-   * Which texture and where on it, for a point of the piece seen through one of its faces. lp: point in the texture
-   * frame (unit cube), ld: that face's direction in the same frame. Caps (up / down) take the top texture, the front
-   * and back take the left one, the two sides the right one; on the sides v always runs up the piece, so a slab's side
-   * shows the lower half of the side texture, like Minecraft.
-   */
-  function localUV(lp, ld) {
-    switch (ld) {
-      case 2: return ["top", lp[0], lp[2]];
-      case 3: return ["top", lp[0], 1 - lp[2]];
-      case 5: return ["left", lp[0], lp[1]];
-      case 4: return ["left", 1 - lp[0], lp[1]];
-      case 0: return ["right", lp[2], lp[1]];
-      default: return ["right", 1 - lp[2], lp[1]];
+    mount(host, studio) {
+      this.studio = studio;
+      const saved = prefs.get(PREFS_KEY, null);
+      this.o = E.merge(saved?.o ?? {});
+      this.piece = mergePiece(saved?.piece);
+      this.cellSize = saved?.cellSize ?? 64;
+      this.exportScale = saved?.exportScale ?? 4;
+      this.tint = Tint.merge(saved?.tint);
+      this.biomes = [Tint.DEFAULT_TINT];
+      this.#loadBiomes();
+      host.appendChild(this.#buildLayout());
+      this.ctx = new ContextView(this.viewEl, { biomes: this.biomes });
+      this.#showContext(this.contextChk.get());
+      new ResizeObserver(() => { this.#drawPicker(); this.#drawPreview(); }).observe(this.root);
+      this.#bindOrbit();
+      this.#renderList();
+      this.#schedule();
     }
-  }
 
-  // ── Defaults ─────────────────────────────────────────────────────────────────────────────────────────────────────
+    activate() { this.#drawPicker(); this.#drawPreview(); }
+    deactivate() {}
+    isDirty() { return false; }
 
-  const HAIR_DEFAULTS = {
-    enabled: false,
-    edges: { backLeft: true, backRight: true, frontTop: true, corner: false, bottomLeft: true, bottomRight: true },
-    density: 0.35,              // strands per sprite pixel of edge
-    length: 4,                  // sprite pixels
-    lengthVar: 0.6,             // 0 = all the same, 1 = from nothing to full length
-    lean: 0.35,                 // 0 = straight up (or down at the bottom), 1 = straight out of the face
-    spread: 0.35,               // random turn of each strand
-    droop: 0,                   // strands bend down toward the tip
-    width: 1,                   // pixels at the root (tapers to 1)
-    tipShade: 0,                // tip darker (< 0) or lighter (> 0); 0 keeps the texture's own colours
-    seed: 3,
-  };
-
-  const MASK_DEFAULTS = {
-    enabled: true,
-    zones: { backLeft: true, backRight: true, frontLeft: false, frontRight: false, bottomLeft: true, bottomRight: true },
-    length: 3,
-    density: 0.55,
-    variation: 0.7,
-    style: "spikes",
-    width: 1,
-    seed: 7,
-  };
-
-  const COVER_DEFAULTS = {
-    enabled: false,
-    left: true, right: true,
-    depth: 5,
-    ragged: 5,
-    style: "waves",
-    width: 2,
-    density: 0.75,
-    variation: 0.6,
-    thickness: 0,
-    seed: 11,
-  };
-
-  const DEFAULTS = {
-    size: 64,
-    res: 32,
-    blockHeight: BLOCK_HEIGHT,
-    rotation: { x: 0, y: 0, z: 0 },   // free camera orbit, in degrees
-    mask: MASK_DEFAULTS,
-    cover: COVER_DEFAULTS,
-    autoFit: true,
-    texMode: "auto",
-    uvMode: "world",
-    chips: 0,
-    seed: 1,
-    shading: true,
-    shade: { top: 1, left: 0.75, right: 0.55 },
-    ao: true,
-    aoDistance: 0.25,
-    aoStrength: 0.6,
-    aoSamples: 16,
-    aoSteps: 4,
-    grayFromTexture: false,
-    edgeLight: 0.12,
-    outline: 0,
-    cleanup: true,
-    hair: HAIR_DEFAULTS,
-  };
-
-  function merge(opts = {}) {
-    const o = { ...DEFAULTS, ...opts };
-    o.shade = { ...DEFAULTS.shade, ...(opts.shade || {}) };
-    o.mask = { ...MASK_DEFAULTS, ...(opts.mask || {}) };
-    o.mask.zones = { ...MASK_DEFAULTS.zones, ...(opts.mask?.zones || {}) };
-    o.cover = { ...COVER_DEFAULTS, ...(opts.cover || {}) };
-    o.hair = { ...HAIR_DEFAULTS, ...(opts.hair || {}) };
-    o.hair.edges = { ...HAIR_DEFAULTS.edges, ...(opts.hair?.edges || {}) };
-    o.rotation = { ...DEFAULTS.rotation, ...(opts.rotation || {}) };
-    return o;
-  }
-
-  const CUBE = { boxes: [{ min: [0, 0, 0], max: [1, 1, 1] }], state: "default", facing: "front" };
-
-  const wrap01 = (x) => (x >= 0 && x <= 1 ? Math.min(x, 1 - 1e-6) : x - Math.floor(x));
-
-  // ── Edge mask profiles ───────────────────────────────────────────────────────────────────────────────────────────
-
-  function hash(a, b, c, d) {
-    let h = Math.imul(a | 0, 374761393) ^ Math.imul(b | 0, 668265263) ^ Math.imul(c | 0, 2147483647) ^ Math.imul(d | 0, 1103515245);
-    h = Math.imul(h ^ (h >>> 13), 1274126177);
-    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-  }
-
-  function profile(m, zone, line, t) {
-    const L = Math.max(0, Math.round(m.length));
-    if (!L) return 0;
-    const w = Math.max(1, Math.round(m.width));
-    if (m.style === "waves") {
-      const x = t / (w * 3), x0 = Math.floor(x), f = x - x0, s = f * f * (3 - 2 * f);
-      const n = hash(zone, line, x0, m.seed) * (1 - s) + hash(zone, line, x0 + 1, m.seed) * s;
-      const v = clamp01((n - (1 - m.density)) / Math.max(0.05, m.density));
-      return Math.round(L * Math.pow(v, 0.8));
+    onProject(project) {
+      this.project = project;
+      this.sheets = listSheets(project);
+      this.#renderList();
+      this.#fillTargets();
+      this.#loadBiomes();
     }
-    const group = Math.floor(t / (m.style === "blocks" ? w * 2 : w));
-    if (hash(zone, line, group, m.seed) >= m.density) return 0;
-    const k = 1 - m.variation * hash(zone, line, group, m.seed + 911);
-    return Math.max(1, Math.round(L * k));
-  }
 
-  // ── Voxels ───────────────────────────────────────────────────────────────────────────────────────────────────────
+    async #loadBiomes() {
+      this.biomes = await Tint.listBiomes(this.project);
+      this.ctx?.setBiomes(this.biomes);
+      if (this.panelScroll) this.#rebuildPanel();
+    }
 
-  /**
-   * The piece as a voxel grid. Cell voxels are i, j, k in 0..res-1 (x, y, z, z up); the edge masks spill past the cell
-   * by up to their length on every side. Grid values: 0 empty, 255 the piece itself (coloured by whichever of its
-   * faces is seen), 1..254 a mask voxel, whose record in V.ext says which texture it carries on.
-   * `basis` is used only by spriteFits, which projects a candidate voxel with the current camera.
-   */
-  function buildVoxels(o, tex, piece, basis) {
-    const R = o.res;
-    const m = o.mask;
-    const pad = m.enabled ? Math.max(1, Math.round(m.length)) + 1 : 1;
-    const iLo = -pad, iHi = R + pad, jLo = -pad, jHi = R + pad, kLo = -pad, kHi = R + pad;
-    const nx = iHi - iLo, ny = jHi - jLo, nz = kHi - kLo;
-    const grid = new Uint8Array(nx * ny * nz);
-    const idx = (i, j, k) => ((k - kLo) * ny + (j - jLo)) * nx + (i - iLo);
-    const inside = (i, j, k) => i >= iLo && i < iHi && j >= jLo && j < jHi && k >= kLo && k < kHi;
-    const vx = 1 / R, vz = o.blockHeight / R;
+    #save() {
+      prefs.set(PREFS_KEY, { o: this.o, piece: this.piece, cellSize: this.cellSize, exportScale: this.exportScale, tint: this.tint });
+    }
 
-    const follow = o.texMode === "follow" || (o.texMode === "auto" && piece.state === "horizontal");
-    const tf = Shapes.transform(piece.state, piece.facing, follow);
-    const worldBoxes = Shapes.boxesToWorld(piece.boxes, tf);
+    // ---------------------------------------------------------------------------------------------------------------
+    // Layout
 
-    const base = new Uint8Array(R * R * R);
-    const partOf = new Uint8Array(R * R * R);
-    const bIdx = (i, j, k) => (k * R + j) * R + i;
-    const inCell = (i, j, k) => i >= 0 && i < R && j >= 0 && j < R && k >= 0 && k < R;
-    const parts = piece.boxes.map((b, pi) => slopePart(b, tf, o.blockHeight));
-    piece.boxes.forEach((b, pi) => {
-      const lo = worldBoxes[pi].min.map((v) => Math.round(v * R)), hi = worldBoxes[pi].max.map((v) => Math.round(v * R));
-      const sloped = !!b.cuts?.length;
-      for (let k = lo[2]; k < hi[2]; k++) for (let j = lo[1]; j < hi[1]; j++) for (let i = lo[0]; i < hi[0]; i++) {
-        if (!inCell(i, j, k)) continue;
-        if (sloped && !touchesPart(b, tf, i, j, k, R)) continue;
-        const n = bIdx(i, j, k);
-        if (!base[n] || !sloped) partOf[n] = pi + 1;
-        base[n] = 1;
+    #buildLayout() {
+      this.fileInput = h("input", { type: "file", accept: ".png,image/png", hidden: true, onchange: (e) => this.#openLoose(e.target.files) });
+      this.filterInput = h("input", { type: "search", placeholder: "Filtrar hojas…", oninput: () => this.#renderList() });
+      this.listEl = h("div", { class: "bk-items scroll" });
+      this.slotSeg = segmented({
+        label: "Cara a asignar", value: "all",
+        options: [["all", "Todas"], ...SLOTS.map(([k, t]) => [k, t])],
+        onChange: (v) => { this.activeSlot = v; this.#updateSlotControls(); },
+      });
+      this.cellInput = h("input", { type: "number", min: 0, max: 1024, value: this.cellSize, title: "0 = la imagen entera es una cara",
+        onchange: () => { this.cellSize = Math.max(0, Number(this.cellInput.value) || 0); this.#save(); this.#drawPicker(); this.#schedule(); } });
+      this.rotSel = select({ label: "Girar", value: "0", options: [["0", "0°"], ["90", "90°"], ["180", "180°"], ["270", "270°"]],
+        onChange: (v) => this.#forSlots((s) => { s.rot = Number(v); }) });
+      this.flipChk = checkbox({ label: "Espejo", value: false, onChange: (v) => this.#forSlots((s) => { s.flip = v; }) });
+      this.pickerCanvas = h("canvas", { class: "bk-picker", onclick: (e) => this.#pickCell(e) });
+      this.slotInfo = h("div", { class: "bk-slotinfo" });
+      const left = h("div", { class: "bk-list" },
+        h("div", { class: "head" },
+          h("div", { class: "row" }, h("button", { class: "grow", onclick: () => this.fileInput.click() }, "Abrir textura suelta…"), this.fileInput),
+          this.filterInput),
+        this.listEl,
+        h("div", { class: "bk-pick" },
+          h("div", { class: "field" }, h("label", null, "Celda (px)"), this.cellInput),
+          this.slotSeg.el,
+          h("div", { class: "bk-picker-wrap scroll" }, this.pickerCanvas),
+          this.slotInfo,
+          h("div", { class: "pair2" }, this.rotSel.el, this.flipChk.el)));
+
+      this.viewSeg = segmented({ label: "Vista", value: this.view, options: VIEWS, onChange: (v) => { this.view = v; this.#drawPreview(); this.#drawStrip(); } });
+      this.facingSeg = segmented({
+        label: "Mirar", value: this.previewFacing,
+        options: [["auto", "Auto", "La orientación de la variante elegida"], ...Object.entries(Sh.FACING_LABEL)],
+        onChange: (v) => { this.previewFacing = v; this.#render(false); },
+      });
+      this.guideChk = checkbox({ label: "Guías", value: true, onChange: () => this.#drawPreview() });
+      this.contextChk = checkbox({ label: "Contexto", value: prefs.get("blocks:context", false), title: "3 × 3 en el mundo: bioma, luz del día",
+        onChange: (v) => { prefs.set("blocks:context", v); this.#showContext(v); } });
+      this.previewCanvas = h("canvas", { class: "bk-preview", title: "Arrastra para girar la pieza · Shift + arrastrar (o botón derecho) para el alabeo" });
+      this.previewLabel = h("div", { class: "bk-preview-label" });
+      this.strip = h("div", { class: "bk-strip" });
+      this.varStrip = h("div", { class: "bk-strip bk-varstrip" });
+      const stage = h("div", { class: "bk-stage" },
+        h("div", { class: "bk-toolbar" }, this.viewSeg.el, this.facingSeg.el, h("span", { class: "grow" }), this.contextChk.el, this.guideChk.el),
+        this.viewEl = h("div", { class: "bk-view" }, this.previewCanvas, this.previewLabel),
+        this.strip,
+        this.varStrip);
+
+      this.root = h("div", { class: "bk" }, left, stage, this.#buildPanel());
+      return this.root;
+    }
+
+    #get(path) { return path.split(".").reduce((o, k) => o[k], this.o); }
+    #set(path, v) {
+      const keys = path.split(".");
+      const last = keys.pop();
+      keys.reduce((o, k) => o[k], this.o)[last] = v;
+      this.#save();
+      this.#schedule();
+    }
+    #slider(label, path, min, max, step, title = "") {
+      const def = path.split(".").reduce((o, k) => o[k], E.DEFAULTS);
+      return slider({ label, min, max, step, value: this.#get(path), defaultValue: def, title,
+        onInput: (v) => this.#set(path, v) }).el;
+    }
+    #check(label, path, title = "") {
+      return checkbox({ label, value: this.#get(path), title, onChange: (v) => this.#set(path, v) }).el;
+    }
+    #choice(label, path, options) {
+      return h("div", { class: "field" }, h("label", null, label),
+        segmented({ label, value: this.#get(path), options, onChange: (v) => this.#set(path, v) }).el);
+    }
+
+    #setPiece(fn, rebuild = false) {
+      fn(this.piece);
+      this.#save();
+      if (rebuild) this.#rebuildPanel();
+      this.#schedule();
+    }
+    #pieceSlider(label, key, min, max, title = "") {
+      return slider({ label, min, max, step: 1, value: this.piece.params[key], defaultValue: Sh.PARAM_DEFAULTS[key], unit: "/16", title,
+        onInput: (v) => this.#setPiece((p) => { p.params[key] = v; }) }).el;
+    }
+    #pieceCheck(label, get, put, title = "") {
+      return checkbox({ label, value: get(), title, onChange: (v) => this.#setPiece(() => put(v)) }).el;
+    }
+
+    #sectionReset(run) {
+      return h("span", { class: "bk-reset", role: "button", tabindex: 0, title: "Restablecer esta sección",
+        onclick: (e) => { e.stopPropagation(); run(); },
+        onkeydown: (e) => { if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); run(); } } }, "↺");
+    }
+    #resetKeys(keys) {
+      const d = E.merge({});
+      for (const k of keys) this.o[k] = structuredClone(d[k]);
+      this.#save();
+      this.#rebuildPanel();
+      this.#schedule();
+    }
+
+    #buildPanel() {
+      const def = Sh.SHAPES[this.piece.shape] ?? Sh.SHAPES.cube;
+
+      const shapeSel = select({ label: "Forma", value: this.piece.shape,
+        options: Object.entries(Sh.SHAPES).map(([k, s]) => [k, s.label]),
+        onChange: (v) => { this.#resetPreview(); this.#setPiece((p) => { p.shape = v; }, true); } });
+      const params = [];
+      if (this.piece.shape === "layer") params.push(this.#pieceSlider("Altura", "layer", 1, 15, "Altura de la capa en dieciseisavos (4 = un cuarto)"));
+      if (this.piece.shape === "small") {
+        params.push(this.#pieceSlider("Ancho", "small", 2, 16), this.#pieceSlider("Alto", "smallHeight", 1, 16));
       }
-    });
-    const isBase = (i, j, k) => inCell(i, j, k) && base[bIdx(i, j, k)] === 1;
-    const isSloped = (i, j, k) => inCell(i, j, k) && !!parts[partOf[bIdx(i, j, k)] - 1];
-    for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
-      if (base[bIdx(i, j, k)]) grid[idx(i, j, k)] = 255;
+      if (this.piece.shape === "pillar") params.push(this.#pieceSlider("Grosor", "pillar", 2, 16));
+      if (["panel", "slopePanel", "diagonalWall"].includes(this.piece.shape)) params.push(this.#pieceSlider("Grosor", "panel", 1, 8));
+      if (this.piece.shape === "custom") {
+        const area = h("textarea", { rows: 6, spellcheck: false }, this.piece.params.custom);
+        params.push(
+          h("p", { class: "note" }, "Cajas como en el ", h("b", null, "\"collision\""), " del tile: min/max en 0..1 (o en dieciseisavos), y hacia arriba, mirando al frente. ",
+            "Para inclinar una caja añade ", h("b", null, "\"cuts\": [{ \"n\": [0, 1, -1], \"d\": 0 }]"), " (sólido donde n·p ≤ d; ese ejemplo es una rampa)."),
+          area,
+          h("button", { onclick: () => {
+            try {
+              Sh.parseCustom(area.value);
+              this.#setPiece((p) => { p.params.custom = area.value; });
+            } catch (err) {
+              this.studio.toast(err.message, { kind: "warn" });
+            }
+          } }, "Aplicar cajas"));
+      }
+      const shape = section({ id: "bk-shape", title: "Forma",
+        extra: this.#sectionReset(() => {
+          this.piece = mergePiece();
+          this.o.texMode = E.DEFAULTS.texMode;
+          this.o.uvMode = E.DEFAULTS.uvMode;
+          this.#resetPreview();
+          this.#save(); this.#rebuildPanel(); this.#schedule();
+        }) },
+        shapeSel.el, ...params,
+        this.#slider("Resolución", "res", 16, 64, 16, "Cubitos por lado del bloque: 32 = uno cada 2 px de un sprite de 64; 64 = uno por pixel (bordes y formas más finos)"),
+        this.#choice("Texturas", "texMode", [["auto", "Auto"], ["follow", "Giran"], ["world", "Fijas"]]),
+        this.#choice("Ajuste", "uvMode", [["world", "Mundo"], ["fit", "Estirar"]]),
+        h("p", { class: "note" }, h("b", null, "Auto:"), " la textura gira con la pieza solo en «horizontal» (troncos tumbados). ",
+          h("b", null, "Mundo:"), " el lado de una losa muestra media textura, como Minecraft; ", h("b", null, "Estirar"), " la aplasta entera."));
+
+      const variantControls = [];
+      if (def.connects) {
+        variantControls.push(
+          h("p", { class: "note" }, "Poste y brazo por separado, para que el juego los combine según los vecinos."),
+          this.#pieceCheck("Brazo también hacia atrás", () => this.piece.back, (v) => { this.piece.back = v; }),
+          this.#pieceCheck("Las 16 uniones ya montadas", () => this.piece.combos, (v) => { this.piece.combos = v; }));
+      } else {
+        variantControls.push(h("div", { class: "bk-zones" }, def.states.map((st) =>
+          this.#pieceCheck(Sh.STATE_LABEL[st], () => this.piece.states[st] ?? st === "default", (v) => { this.piece.states[st] = v; },
+            { default: "", inverted: "Losa arriba / escalera boca abajo", vertical: "Losa de lado", horizontal: "Tumbado (tronco)" }[st]))));
+        variantControls.push(this.#pieceCheck("Generar también «back»", () => this.piece.back, (v) => { this.piece.back = v; },
+          "El juego dibuja las otras dos orientaciones espejando front y back"));
+      }
+      variantControls.push(select({ label: "Front mira a", value: this.piece.frontSide,
+        options: [["left", "Cara izquierda (−Y)"], ["right", "Cara derecha (+X)"]],
+        onChange: (v) => this.#setPiece((p) => { p.frontSide = v; }) }).el);
+      const variants = section({ id: "bk-variants", title: "Variantes" }, ...variantControls);
+
+      // Free 3D rotation: a camera orbit around the piece, so the tile can be previewed (and exported) at any angle.
+      // Sliders go degree by degree; the preview canvas takes a drag.
+      const rotation = section({ id: "bk-rot", title: "Rotación 3D",
+        extra: this.#sectionReset(() => {
+          this.o.rotation = { ...E.DEFAULTS.rotation };
+          this.#save(); this.#rebuildPanel(); this.#schedule();
+        }) },
+        h("p", { class: "note" }, "Gira la cámara alrededor de la pieza, no el tile: al exportar, el sprite queda tal y como se ve aquí. ",
+          "Arrastra sobre el preview para orbitar; ", h("b", null, "Shift + arrastrar"), " (o botón derecho) para el alabeo."),
+        this.#slider("Inclinación X", "rotation.x", -180, 180, 1, "Giro sobre el eje X del mundo: la pieza cabecea hacia delante y hacia atrás"),
+        this.#slider("Giro Y", "rotation.y", -180, 180, 1, "Giro sobre el eje Y: la pieza gira a izquierda y derecha"),
+        this.#slider("Alabeo Z", "rotation.z", -180, 180, 1, "Giro sobre el eje Z: el sprite se inclina en pantalla"));
+
+      const maskSection = section({ id: "bk-mask", title: "Bordes procedurales", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.mask)) },
+        this.#check("Bordes irregulares", "mask.enabled", "La textura sigue sin cortes en las lenguas que salen del borde"),
+        h("p", { class: "note" }, "Atrás = las esquinas de arriba que marcaste; delante = cuelga sobre los lados; abajo = bajo los lados. ",
+          "Se aplican a los bordes de cualquier forma (escalera, losa, valla…) y nunca pasan de los lados del sprite."),
+        h("div", { class: "bk-zones" },
+          this.#check("Atrás izq.", "mask.zones.backLeft"), this.#check("Atrás der.", "mask.zones.backRight"),
+          this.#check("Delante izq.", "mask.zones.frontLeft"), this.#check("Delante der.", "mask.zones.frontRight"),
+          this.#check("Abajo izq.", "mask.zones.bottomLeft"), this.#check("Abajo der.", "mask.zones.bottomRight")),
+        this.#choice("Forma", "mask.style", [["spikes", "Fibras"], ["waves", "Ondas"], ["blocks", "Dientes"]]),
+        this.#slider("Largo", "mask.length", 0, 10, 1, "En cubitos (con resolución 64, un cubito ≈ un pixel)"),
+        this.#slider("Densidad", "mask.density", 0, 1, 0.01, "Cuánto del borde sale"),
+        this.#slider("Variación", "mask.variation", 0, 1, 0.01),
+        this.#slider("Ancho", "mask.width", 1, 6, 1, "Cubitos por lengua (fibras / dientes) o por onda"),
+        h("div", { class: "row" }, this.#slider("Semilla bordes", "mask.seed", 1, 9999, 1),
+          h("button", { onclick: () => { this.o.mask.seed = 1 + Math.floor(Math.random() * 9999); this.#save(); this.#rebuildPanel(); this.#schedule(); } }, "Otra")),
+        h("div", { class: "bk-sep" }),
+        this.#check("Ajustar dentro del sprite", "autoFit"),
+        this.#slider("Desgaste aristas", "chips", 0, 1, 0.01),
+        this.#slider("Semilla desgaste", "seed", 1, 9999, 1));
+
+      const cover = section({ id: "bk-cover", title: "Cobertura", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.cover)) },
+        this.#check("La textura de arriba baja por los lados", "cover.enabled", "Nieve sobre tierra, césped sobre un acantilado…"),
+        h("p", { class: "note" }, "La textura de arriba se dobla sobre el borde y baja por los lados hasta una línea irregular, sin corte con la cara de arriba. ",
+          "En escaleras y losas baja desde cada borde de arriba."),
+        h("div", { class: "bk-zones" }, this.#check("Lado izq.", "cover.left"), this.#check("Lado der.", "cover.right")),
+        this.#slider("Baja", "cover.depth", 0, 40, 1, "Cubitos desde el borde de arriba (con resolución 64, 2 cubitos ≈ 1 px de alto)"),
+        this.#slider("Irregular", "cover.ragged", 0, 30, 1, "Cuánto más baja en las partes irregulares"),
+        this.#choice("Forma", "cover.style", [["waves", "Ondas"], ["spikes", "Goteo"], ["blocks", "Dientes"]]),
+        this.#slider("Ancho", "cover.width", 1, 8, 1),
+        this.#slider("Densidad", "cover.density", 0, 1, 0.01),
+        this.#slider("Variación", "cover.variation", 0, 1, 0.01),
+        this.#slider("Grosor", "cover.thickness", 0, 3, 1, "0 = pintada; 1–3 = capa que sobresale (nieve gruesa)"),
+        h("div", { class: "row" }, this.#slider("Semilla", "cover.seed", 1, 9999, 1),
+          h("button", { onclick: () => { this.o.cover.seed = 1 + Math.floor(Math.random() * 9999); this.#save(); this.#rebuildPanel(); this.#schedule(); } }, "Otra")));
+
+      const hair = section({ id: "bk-hair", title: "Pelitos", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.hair)) },
+        this.#check("Pelitos en los bordes", "hair.enabled", "Hebras de 1 px: fibras de corteza, hierba, raíces"),
+        h("p", { class: "note" }, "Usan la misma textura que la cara de la que salen, así no desentonan. Nunca pasan de los lados del sprite."),
+        h("div", { class: "bk-zones" },
+          this.#check("Atrás izq.", "hair.edges.backLeft"), this.#check("Atrás der.", "hair.edges.backRight"),
+          this.#check("Delante arriba", "hair.edges.frontTop"), this.#check("Esquina", "hair.edges.corner"),
+          this.#check("Abajo izq.", "hair.edges.bottomLeft"), this.#check("Abajo der.", "hair.edges.bottomRight")),
+        this.#slider("Densidad", "hair.density", 0.05, 1.5, 0.01, "Hebras por pixel de borde"),
+        this.#slider("Largo", "hair.length", 1, 16, 0.5, "En pixeles del sprite"),
+        this.#slider("Variación", "hair.lengthVar", 0, 1, 0.01),
+        this.#slider("Hacia fuera", "hair.lean", 0, 1, 0.01, "0 = rectas (arriba o colgando), 1 = salen de la cara"),
+        this.#slider("Desorden", "hair.spread", 0, 1, 0.01),
+        this.#slider("Caída", "hair.droop", 0, 2, 0.01, "Se doblan hacia abajo en la punta"),
+        this.#slider("Grosor raíz", "hair.width", 1, 3, 1),
+        this.#slider("Punta", "hair.tipShade", -0.8, 0.8, 0.01, "Negativo = punta más oscura, positivo = más clara"),
+        h("div", { class: "row" }, this.#slider("Semilla", "hair.seed", 1, 9999, 1),
+          h("button", { onclick: () => { this.o.hair.seed = 1 + Math.floor(Math.random() * 9999); this.#save(); this.#rebuildPanel(); this.#schedule(); } }, "Otra")));
+
+      const light = section({ id: "bk-light", title: "Luz", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.light)) },
+        this.#check("Luz por caras (como los materiales)", "shading"),
+        this.#slider("Arriba", "shade.top", 0, 1.5, 0.01),
+        this.#slider("Izquierda", "shade.left", 0, 1.5, 0.01),
+        this.#slider("Derecha", "shade.right", 0, 1.5, 0.01),
+        this.#check("Oclusión ambiental (AO)", "ao"),
+        this.#slider("Distancia AO", "aoDistance", 0.02, 1, 0.01, "En bloques"),
+        this.#slider("Fuerza AO", "aoStrength", 0, 1, 0.01),
+        this.#slider("Escalones AO", "aoSteps", 0, 8, 1, "0 = suave; pocos escalones se leen mejor en pixel art"),
+        this.#slider("Muestras AO", "aoSamples", 4, 64, 1));
+
+      const pixel = section({ id: "bk-pixel", title: "Pixel art", extra: this.#sectionReset(() => this.#resetKeys(SECTION_KEYS.pixel)) },
+        this.#slider("Luz en aristas", "edgeLight", 0, 0.6, 0.01),
+        this.#slider("Contorno", "outline", 0, 0.8, 0.01),
+        this.#check("Quitar pixeles sueltos", "cleanup"),
+        this.#check("Grises con el brillo de la textura", "grayFromTexture"));
+
+      this.sizeSel = select({ label: "Tamaño sprite", value: String(this.o.size),
+        options: [["32", "32 px"], ["48", "48 px"], ["64", "64 px"], ["96", "96 px"], ["128", "128 px"]],
+        onChange: (v) => this.#set("size", Number(v)) });
+      this.targetSel = select({ label: "Hoja destino", value: "", options: [["", "— abre la carpeta —"]] });
+      this.targetCell = numberPair({ label: "Celda X / Y", values: [0, 0], min: 0, max: 4096, titles: ["Columna", "Fila"] });
+      this.saveN = checkbox({ label: "Guardar también el _n", value: true });
+      this.scaleSel = select({ label: "Escala descarga", value: String(this.exportScale),
+        options: [["1", "×1"], ["2", "×2"], ["4", "×4"], ["8", "×8"]],
+        onChange: (v) => { this.exportScale = Number(v); this.#save(); } });
+      this.mapChecks = MAPS.map(([k]) => checkbox({ label: { color: "Color", normal: "Normales", depth: "Profundidad", ao: "AO", gray: "Grises" }[k], value: k === "color" || k === "normal" }));
+      this.snippetEl = h("textarea", { class: "bk-snippet", rows: 5, readonly: true, spellcheck: false,
+        placeholder: "Aquí sale el \"art\" para el JSON del tile al guardar las variantes." });
+      const output = section({ id: "bk-out", title: "Salida" },
+        this.sizeSel.el,
+        this.targetSel.el, this.targetCell.el, this.saveN.el,
+        h("button", { class: "primary", onclick: () => this.#saveVariantsToAtlas(),
+          title: "Una celda por variante, seguidas desde la celda X / Y" }, "Guardar variantes en el atlas"),
+        h("button", { onclick: () => this.#saveToAtlas(), title: "Solo la vista previa, en la celda X / Y" }, "Guardar solo la vista previa"),
+        h("button", { onclick: () => this.#sendToAtlas(), title: "Abre la pestaña Atlas para elegir las celdas viendo la hoja; allí mismo creas su tile" }, "Enviar al Atlas →"),
+        this.snippetEl,
+        h("button", { onclick: () => this.#copySnippet() }, "Copiar \"art\""),
+        h("div", { class: "bk-sep" }),
+        h("div", { class: "bk-maps" }, this.mapChecks.map((c) => c.el)),
+        this.scaleSel.el,
+        h("button", { onclick: () => this.#download() }, "Descargar vista previa"),
+        h("button", { onclick: () => this.#downloadVariants() }, "Descargar tira de variantes"));
+
+      this.tintUi = TP.tintSection({ id: "bk-tint", state: this.tint, biomes: this.biomes,
+        onChange: () => { this.#save(); this.#schedule(); } });
+      this.panelScroll = h("div", { class: "scroll" }, shape.el, variants.el, rotation.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
+      for (const sec of [rotation, maskSection, cover, hair, light, pixel]) sec.el.classList.add("adv");
+      const detail = h("span");
+      this.panel = h("div", { class: "bk-panel" },
+        h("div", { class: "bk-panel-head" }, h("span", null, "Ajustes"), detail,
+          h("button", { title: "Volver todo a los valores por defecto", onclick: () => {
+            this.o = E.merge({});
+            this.piece = mergePiece();
+            this.#resetPreview();
+            this.#save(); this.#rebuildPanel(); this.#schedule();
+          } }, "↺ Todo")),
+        this.panelScroll);
+      detail.replaceWith(detailSwitch(this.panel));
+      return this.panel;
     }
 
-    let fitLo = [0, 0, 0], fitHi = [1, 1, 1];
-    if (o.uvMode === "fit") {
-      fitLo = [1, 1, 1]; fitHi = [0, 0, 0];
-      for (const b of worldBoxes) {
-        for (const p of [b.min, b.max]) {
-          const l = tf.texLocal(p);
-          for (let a = 0; a < 3; a++) { fitLo[a] = Math.min(fitLo[a], l[a]); fitHi[a] = Math.max(fitHi[a], l[a]); }
+    #rebuildPanel() {
+      const top = this.panelScroll?.scrollTop ?? 0;
+      const fresh = this.#buildPanel();
+      this.root.replaceChild(fresh, this.root.children[2]);
+      this.panelScroll.scrollTop = top;
+      this.#fillTargets();
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Sources
+
+    #renderList() {
+      const q = this.filterInput.value.trim().toLowerCase();
+      this.listEl.replaceChildren();
+      const loose = [...this.images.values()].filter((i) => !i.sheet);
+      for (const img of loose) this.listEl.appendChild(this.#listItem(img.key, img.name, "suelta"));
+      for (const s of this.sheets) {
+        if (q && !s.id.toLowerCase().includes(q) && !s.path.toLowerCase().includes(q)) continue;
+        this.listEl.appendChild(this.#listItem(s.key, s.id, s.path, s));
+      }
+      if (!this.listEl.children.length) {
+        this.listEl.appendChild(h("div", { class: "empty-state" }, "Abre la carpeta del proyecto para ver sus atlas, o abre una textura suelta."));
+      }
+    }
+
+    #listItem(key, title, sub, sheet = null) {
+      const used = SLOTS.filter(([k]) => this.slots[k].key === key).map(([, , c]) => h("span", { class: "swatch", style: { background: c } }));
+      return h("div", { class: ["bk-sheet", this.pickerKey === key && "active"], onclick: () => this.#selectSource(key, sheet) },
+        h("div", { class: "id" }, title, ...used), h("div", { class: "path" }, sub));
+    }
+
+    async #selectSource(key, sheet) {
+      try {
+        if (!this.images.has(key) && sheet) {
+          const blob = await sheet.entry.handle.getFile();
+          const img = await decodePng(blob);
+          this.images.set(key, { key, name: sheet.id, ...img, sheet });
         }
+        this.pickerKey = key;
+        if (!SLOTS.some(([k]) => this.slots[k].key)) for (const [k] of SLOTS) Object.assign(this.slots[k], { key, cx: 0, cy: 0 });
+        if (sheet && !this.targetSel.get()) this.targetSel.set(key);
+        this.#renderList();
+        this.#drawPicker();
+        this.#updateSlotControls();
+        this.#schedule();
+      } catch (err) {
+        this.studio.toast("No pude abrir la imagen.", { kind: "bad", detail: err.message });
       }
     }
-    const uvAt = (up, wd) => {
-      let lp = tf.texLocal(up);
-      if (o.uvMode === "fit") lp = lp.map((v, a) => (v - fitLo[a]) / Math.max(1e-6, fitHi[a] - fitLo[a]));
-      const [name, u, v] = localUV(lp, tf.texDir(wd));
-      return [name, wrap01(u), wrap01(v)];
-    };
 
-    const spriteFits = (i, j, k) => {
-      if (!o.autoFit) return true;
-      const S = o.size, H = o.blockHeight;
-      for (const dx of [0, 1]) for (const dy of [0, 1]) for (const dz of [0, 1]) {
-        const [px, py] = project([-0.5 + (i + dx) * vx, -0.5 + (j + dy) * vx, (k + dz) * vz], S, H, basis);
-        if (px < -1e-6 || px > S + 1e-6 || py < -1e-6 || py > S + 1e-6) return false;
+    async #openLoose(files) {
+      const file = files?.[0];
+      if (!file) return;
+      const img = await decodePng(file);
+      const key = "loose:" + file.name;
+      this.images.set(key, { key, name: stripExt(file.name), ...img, sheet: null });
+      const targets = this.activeSlot === "all" ? SLOTS.map(([k]) => k) : [this.activeSlot];
+      for (const k of targets) Object.assign(this.slots[k], { key, cx: 0, cy: 0 });
+      const tiles = (cs) => cs > 0 && img.w % cs === 0 && img.h % cs === 0 && cs < Math.max(img.w, img.h);
+      const guess = img.w === img.h && img.w <= 256 ? 0
+        : tiles(this.cellSize) ? this.cellSize
+        : [128, 64, 32, 16].find(tiles) ?? 0;
+      if (guess !== this.cellSize) {
+        this.cellSize = guess;
+        this.cellInput.value = guess;
+        this.#save();
       }
-      return true;
-    };
-
-    const random = rng(o.seed);
-    const solidNow = (i, j, k) => (inside(i, j, k) ? grid[idx(i, j, k)] : 0);
-
-    if (o.chips > 0) {
-      const chip = [];
-      for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
-        if (!base[bIdx(i, j, k)] || isSloped(i, j, k)) continue;
-        let open = 0;
-        for (let wd = 0; wd < 5; wd++) {
-          const d = DIRS[wd];
-          if (!isBase(i + d[0], j + d[1], k + d[2])) open++;
-        }
-        if (open >= 2 && random() < o.chips) chip.push(idx(i, j, k));
-      }
-      for (const c of chip) grid[c] = 0;
+      this.fileInput.value = "";
+      await this.#selectSource(key, null);
     }
 
-    const ZONES = [
-      { key: "backLeft", open: [4, 1], owner: W_UP, step: [-1, 0, 0], along: 1 },
-      { key: "backRight", open: [4, 2], owner: W_UP, step: [0, 1, 0], along: 0 },
-      { key: "frontLeft", open: [4, 3], owner: W_UP, fold: [0, -1, 0], along: 0 },
-      { key: "frontRight", open: [4, 0], owner: W_UP, fold: [1, 0, 0], along: 1 },
-      { key: "bottomLeft", open: [3, 5], owner: W_LEFT, step: [0, 0, -1], along: 0 },
-      { key: "bottomRight", open: [0, 5], owner: W_RIGHT, step: [0, 0, -1], along: 1 },
-    ];
-    if (m.enabled && m.length > 0) {
-      ZONES.forEach((z, zi) => {
-        if (!m.zones[z.key]) return;
-        for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
-          if (!isBase(i, j, k) || !solidNow(i, j, k)) continue;
-          if (z.open.includes(W_UP) && isSloped(i, j, k)) continue;
-          if (z.open.some((wd) => isBase(i + DIRS[wd][0], j + DIRS[wd][1], k + DIRS[wd][2]))) continue;
-          const cell = [i, j, k];
-          const line = z.along === 0 ? j * 4096 + k : i * 4096 + k;
-          const len = profile(m, zi + 1, line, cell[z.along]);
-          for (let s = 0; s < len; s++) {
-            const a = z.fold ? i + z.fold[0] : i + z.step[0] * (s + 1);
-            const b = z.fold ? j + z.fold[1] : j + z.step[1] * (s + 1);
-            const c = z.fold ? k - s : k + z.step[2] * (s + 1);
-            if (!inside(a, b, c) || isBase(a, b, c) || !spriteFits(a, b, c)) break;
-            if (!grid[idx(a, b, c)]) grid[idx(a, b, c)] = zi + 1;
-          }
-        }
+    #cellRect(img, cx, cy) {
+      const cs = this.cellSize;
+      if (!cs || cs >= Math.max(img.w, img.h)) return { x: 0, y: 0, w: img.w, h: img.h };
+      const x = Math.min(img.w - cs, Math.max(0, cx * cs)), y = Math.min(img.h - cs, Math.max(0, cy * cs));
+      return { x, y, w: Math.min(cs, img.w), h: Math.min(cs, img.h) };
+    }
+
+    #pickCell(e) {
+      const img = this.images.get(this.pickerKey);
+      if (!img) return;
+      const r = this.pickerCanvas.getBoundingClientRect();
+      const scale = this.pickerCanvas.width / r.width / this.pickerScale;
+      const x = (e.clientX - r.left) * scale, y = (e.clientY - r.top) * scale;
+      const cx = this.cellSize ? Math.floor(x / this.cellSize) : 0, cy = this.cellSize ? Math.floor(y / this.cellSize) : 0;
+      const targets = this.activeSlot === "all" ? SLOTS.map(([k]) => k) : [this.activeSlot];
+      for (const k of targets) Object.assign(this.slots[k], { key: img.key, cx, cy });
+      this.#renderList();
+      this.#drawPicker();
+      this.#updateSlotControls();
+      this.#schedule();
+    }
+
+    #forSlots(fn) {
+      const targets = this.activeSlot === "all" ? SLOTS.map(([k]) => k) : [this.activeSlot];
+      for (const k of targets) fn(this.slots[k]);
+      this.#schedule();
+    }
+
+    #updateSlotControls() {
+      const s = this.slots[this.activeSlot === "all" ? "top" : this.activeSlot];
+      this.rotSel.set(String(s.rot));
+      this.flipChk.set(s.flip);
+      this.slotInfo.replaceChildren(...SLOTS.map(([k, t, c]) => {
+        const sl = this.slots[k];
+        const img = sl.key ? this.images.get(sl.key) : null;
+        return h("div", { class: "row" }, h("span", { class: "swatch", style: { background: c } }),
+          h("span", { class: "grow" }, t), h("span", { class: "muted mono" }, img ? `${img.name} [${sl.cx}, ${sl.cy}]` : "—"));
+      }));
+    }
+
+    #drawPicker() {
+      const img = this.images.get(this.pickerKey);
+      const c = this.pickerCanvas;
+      if (!img) { c.width = c.height = 0; return; }
+      const avail = Math.max(120, c.parentElement.clientWidth - 2);
+      const scale = Math.max(1, Math.floor(avail / img.w)) || 1;
+      const fit = Math.min(scale, avail / img.w);
+      this.pickerScale = fit;
+      c.width = Math.round(img.w * fit);
+      c.height = Math.round(img.h * fit);
+      const ctx = c.getContext("2d");
+      ctx.imageSmoothingEnabled = false;
+      const tmp = new OffscreenCanvas(img.w, img.h);
+      tmp.getContext("2d").putImageData(new ImageData(img.rgba, img.w, img.h), 0, 0);
+      ctx.clearRect(0, 0, c.width, c.height);
+      ctx.drawImage(tmp, 0, 0, c.width, c.height);
+      const cs = this.cellSize;
+      if (cs > 0 && cs < Math.max(img.w, img.h)) {
+        ctx.strokeStyle = "rgba(255,255,255,.18)";
+        ctx.lineWidth = 1;
+        for (let x = cs; x < img.w; x += cs) { ctx.beginPath(); ctx.moveTo(x * fit + 0.5, 0); ctx.lineTo(x * fit + 0.5, c.height); ctx.stroke(); }
+        for (let y = cs; y < img.h; y += cs) { ctx.beginPath(); ctx.moveTo(0, y * fit + 0.5); ctx.lineTo(c.width, y * fit + 0.5); ctx.stroke(); }
+      }
+      SLOTS.forEach(([k, t, colour], n) => {
+        const sl = this.slots[k];
+        if (sl.key !== img.key) return;
+        const r = this.#cellRect(img, sl.cx, sl.cy);
+        ctx.strokeStyle = colour;
+        ctx.lineWidth = 2;
+        const inset = 1 + n * 2;
+        ctx.strokeRect(r.x * fit + inset, r.y * fit + inset, r.w * fit - inset * 2, r.h * fit - inset * 2);
+        ctx.fillStyle = colour;
+        ctx.font = "bold 11px sans-serif";
+        ctx.fillText(t[0], r.x * fit + 4 + n * 10, r.y * fit + 13);
       });
     }
 
-    const cv = o.cover;
-    const coverRagged = { ...cv, length: cv.ragged };
-    const coverTop = (i, j, k, wd) => {
-      if (!cv.enabled || (wd === W_LEFT ? !cv.left : wd === W_RIGHT ? !cv.right : true)) return -1;
-      const d = DIRS[wd];
-      let kk = k;
-      while (isBase(i, j, kk + 1) && !isBase(i + d[0], j + d[1], kk + 1)) kk++;
-      if (isBase(i, j, kk + 1) || isSloped(i, j, kk)) return -1;
-      const t = wd === W_LEFT ? i : j, line = wd === W_LEFT ? j : i;
-      const reach = Math.round(cv.depth) + profile(coverRagged, wd === W_LEFT ? 21 : 22, line, t);
-      return kk - k < reach ? kk : -1;
-    };
-    if (cv.enabled && cv.thickness > 0) {
-      for (const [wd, zone] of [[W_LEFT, 3], [W_RIGHT, 4]]) {
-        const d = DIRS[wd];
-        for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
-          if (!isBase(i, j, k) || !solidNow(i, j, k) || isBase(i + d[0], j + d[1], k)) continue;
-          if (coverTop(i, j, k, wd) < 0) continue;
-          for (let s = 1; s <= Math.round(cv.thickness); s++) {
-            const a = i + d[0] * s, b = j + d[1] * s;
-            if (!inside(a, b, k) || !spriteFits(a, b, k)) break;
-            if (!grid[idx(a, b, k)]) grid[idx(a, b, k)] = zone;
-          }
+    // ---------------------------------------------------------------------------------------------------------------
+    // 3D orbit (drag on the preview canvas)
+
+    #bindOrbit() {
+      const c = this.previewCanvas;
+      c.addEventListener("pointerdown", (e) => this.#orbitStart(e));
+      c.addEventListener("pointermove", (e) => this.#orbitMove(e));
+      c.addEventListener("pointerup", (e) => this.#orbitEnd(e));
+      c.addEventListener("pointercancel", (e) => this.#orbitEnd(e));
+      c.addEventListener("contextmenu", (e) => e.preventDefault());
+    }
+
+    #orbitStart(e) {
+      if (e.button !== 0 && e.button !== 2) return;
+      e.preventDefault();
+      c: try { this.previewCanvas.setPointerCapture(e.pointerId); } catch {}
+      this.orbit = {
+        x: e.clientX, y: e.clientY,
+        axis: e.shiftKey || e.button === 2 ? "z" : "xy",
+        rot: { ...this.o.rotation },
+      };
+    }
+
+    #orbitMove(e) {
+      if (!this.orbit) return;
+      const dx = e.clientX - this.orbit.x, dy = e.clientY - this.orbit.y;
+      const r = this.o.rotation;
+      if (this.orbit.axis === "z") r.z = wrap180(this.orbit.rot.z + dx * 0.5);
+      else {
+        r.y = wrap180(this.orbit.rot.y + dx * 0.5);
+        r.x = wrap180(this.orbit.rot.x - dy * 0.5);
+      }
+      this.#save();
+      this.#schedule(false);
+    }
+
+    #orbitEnd(e) {
+      if (!this.orbit) return;
+      this.orbit = null;
+      try { this.previewCanvas.releasePointerCapture(e.pointerId); } catch {}
+      this.#schedule(true);
+      if (this.panelScroll) this.#rebuildPanel();   // refresh the X / Y / Z numbers in the panel
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Render
+
+    /** Queue a render. `full` also refreshes every variant thumbnail, a few per frame; the drag on the preview uses
+     *  the quick path so it stays responsive. */
+    #schedule(full = true) {
+      const ticket = ++this.#pending;
+      setTimeout(() => { if (ticket === this.#pending) this.#render(full); }, 30);
+    }
+
+    #textures() {
+      const tex = {};
+      for (const [k] of SLOTS) {
+        const sl = this.slots[k];
+        const img = sl.key ? this.images.get(sl.key) : null;
+        if (!img) return null;
+        tex[k] = E.faceTexture(img, this.#cellRect(img, sl.cx, sl.cy), sl.rot, sl.flip);
+      }
+      return tex;
+    }
+
+    #variants() {
+      try {
+        const list = Sh.variants(this.piece);
+        if (this.piece.frontSide === "right") {
+          const turn = { front: "right", back: "left", right: "back", left: "front" };
+          for (const v of list) v.facing = turn[v.facing];
         }
+        return list;
+      } catch (err) {
+        this.studio.setStatus(err.message, "warn");
+        return [];
       }
     }
 
-    return {
-      R, grid, nx, ny, nz, iLo, jLo, kLo, iHi, jHi, kHi, vx, vz, tf, uvAt, isBase, zones: ZONES, coverTop,
-      part: (i, j, k) => (inCell(i, j, k) ? parts[partOf[bIdx(i, j, k)] - 1] ?? null : null),
-      slopeParts: parts.filter(Boolean), isSloped,
-      solid: solidNow,
-    };
+    #resetPreview() {
+      this.previewId = null;
+      this.previewFacing = "auto";
+      this.facingSeg?.set("auto");
+    }
+
+    #previewPiece() {
+      const v = this.variantList.find((x) => x.id === this.previewId) ?? this.variantList[0];
+      if (!v) return null;
+      this.previewId = v.id;
+      return { ...v, facing: this.previewFacing === "auto" ? v.facing : this.previewFacing };
+    }
+
+    #render(all) {
+      const tex = this.#textures();
+      this.variantList = this.#variants();
+      const piece = tex && this.#previewPiece();
+      if (!piece) { this.result = null; this.#drawPreview(); this.#drawStrip(); this.#drawVariantStrip(); return; }
+      const t0 = performance.now();
+      try {
+        this.result = this.#renderPiece(tex, piece);
+      } catch (err) {
+        this.studio.toast("No pude generar la pieza.", { kind: "bad", detail: err.message });
+        return;
+      }
+      this.studio.slot?.("bk-time", Math.round(performance.now() - t0) + " ms", "Tiempo de generación");
+      this.tintUi?.setStats(this.tint.enabled ? Tint.analyze(this.result.color) : null);
+      this.#updateContext();
+      this.previewLabel.textContent = `${piece.label} · ${Sh.FACING_LABEL[piece.facing]}`;
+      this.#drawPreview();
+      this.#drawStrip();
+      if (all) this.#renderVariants(tex);
+      else this.#drawVariantStrip();
+    }
+
+    #renderVariants(tex) {
+      const ticket = this.#pending;
+      this.variantResults = new Map();
+      this.#drawVariantStrip();
+      const list = this.variantList;
+      let n = 0;
+      const next = () => {
+        if (ticket !== this.#pending || n >= list.length) return;
+        const v = list[n++];
+        try {
+          this.variantResults.set(v.id, this.#renderPiece(tex, v));
+        } catch {
+          return;
+        }
+        this.#drawVariantThumb(v);
+        setTimeout(next, 0);
+      };
+      setTimeout(next, 0);
+    }
+
+    #showContext(on) {
+      this.previewCanvas.hidden = on;
+      this.previewLabel.hidden = on;
+      this.ctx?.show(on);
+      if (on) this.#updateContext();
+    }
+
+    #updateContext() {
+      if (!this.ctx?.visible || !this.result) return;
+      this.ctx.setContent({ kind: "block", size: this.result.size, variants: [{ parts: [this.result.color] }], tinted: this.tint.enabled, sways: false });
+    }
+
+    #renderPiece(tex, piece) {
+      const r = E.render(this.o, tex, piece);
+      if (this.tint.enabled) r.color = Tint.toTinted(r.color, TP.resolve(this.tint, this.biomes));
+      r.tinted = this.tint.enabled ? Tint.applyTint(r.color, TP.previewRgb(this.tint, this.biomes)) : r.color;
+      return r;
+    }
+
+    #allVariantResults() {
+      const tex = this.#textures();
+      if (!tex) return [];
+      return this.variantList.map((v) => {
+        if (!this.variantResults.has(v.id)) this.variantResults.set(v.id, this.#renderPiece(tex, v));
+        return { variant: v, result: this.variantResults.get(v.id) };
+      });
+    }
+
+    #imageCanvas(rgba, size) {
+      const c = new OffscreenCanvas(size, size);
+      c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(rgba), size, size), 0, 0);
+      return c;
+    }
+
+    #drawPreview() {
+      const c = this.previewCanvas;
+      const box = c.parentElement;
+      if (!box) return;
+      c.width = box.clientWidth;
+      c.height = box.clientHeight;
+      const ctx = c.getContext("2d");
+      ctx.clearRect(0, 0, c.width, c.height);
+      if (!this.result) {
+        ctx.fillStyle = "#98a0aa";
+        ctx.font = "14px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Elige una hoja o una textura y haz clic en una celda.", c.width / 2, c.height / 2);
+        return;
+      }
+      const S = this.result.size;
+      const zoom = Math.max(1, Math.floor(Math.min(c.width, c.height) * 0.9 / S));
+      const ox = Math.floor((c.width - S * zoom) / 2), oy = Math.floor((c.height - S * zoom) / 2);
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        ctx.fillStyle = (x >> 2 ^ y >> 2) & 1 ? "#2f3338" : "#383d43";
+        ctx.fillRect(ox + x * zoom, oy + y * zoom, zoom, zoom);
+      }
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(this.#imageCanvas(this.result[this.view], S), ox, oy, S * zoom, S * zoom);
+      if (this.guideChk.get()) {
+        ctx.strokeStyle = "rgba(255,255,255,.35)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(ox - 0.5, oy - 0.5, S * zoom + 1, S * zoom + 1);
+        const q = S * zoom / 4;
+        ctx.beginPath();
+        ctx.moveTo(ox + S * zoom / 2, oy);
+        ctx.lineTo(ox + S * zoom, oy + q); ctx.lineTo(ox + S * zoom, oy + 3 * q);
+        ctx.lineTo(ox + S * zoom / 2, oy + 4 * q); ctx.lineTo(ox, oy + 3 * q); ctx.lineTo(ox, oy + q); ctx.closePath();
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    #drawStrip() {
+      if (!this.result) { this.strip.replaceChildren(); return; }
+      const S = this.result.size;
+      this.strip.replaceChildren(...VIEWS.map(([k, t]) => {
+        const c = h("canvas", { width: S, height: S, title: t, class: k === this.view ? "on" : "",
+          onclick: () => { this.view = k; this.viewSeg.set(k); this.#drawPreview(); this.#drawStrip(); } });
+        c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(this.result[k]), S, S), 0, 0);
+        return h("div", { class: "bk-thumb" }, c, h("span", null, t));
+      }));
+    }
+
+    #drawVariantStrip() {
+      this.variantThumbs = new Map();
+      if (!this.result) { this.varStrip.replaceChildren(); return; }
+      const S = this.result.size;
+      this.varStrip.replaceChildren(h("div", { class: "bk-strip-title" }, `Variantes (${this.variantList.length})`),
+        ...this.variantList.map((v) => {
+          const c = h("canvas", { width: S, height: S, title: v.label, class: v.id === this.previewId ? "on" : "",
+            onclick: () => { this.previewId = v.id; this.previewFacing = "auto"; this.facingSeg.set("auto"); this.#render(false); } });
+          this.variantThumbs.set(v.id, c);
+          return h("div", { class: "bk-thumb" }, c, h("span", null, v.label));
+        }));
+      for (const v of this.variantList) if (this.variantResults.has(v.id)) this.#drawVariantThumb(v);
+    }
+
+    #drawVariantThumb(v) {
+      const c = this.variantThumbs?.get(v.id);
+      const r = this.variantResults.get(v.id);
+      if (!c || !r) return;
+      if (c.width !== r.size) { c.width = c.height = r.size; }
+      c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(r[this.view]), r.size, r.size), 0, 0);
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Output
+
+    #fillTargets() {
+      if (!this.targetSel) return;
+      const current = this.targetSel.get();
+      const options = this.sheets.length ? this.sheets.map((s) => [s.key, s.id]) : [["", "— abre la carpeta —"]];
+      this.targetSel.input.replaceChildren(...options.map(([v, t]) => h("option", { value: v }, t)));
+      if (options.some(([v]) => v === current)) this.targetSel.set(current);
+    }
+
+    #baseName() {
+      const top = this.slots.top.key ? this.images.get(this.slots.top.key) : null;
+      return (top?.name ?? "bloque") + `_${this.piece.shape}_${this.slots.top.cx}_${this.slots.top.cy}`;
+    }
+
+    async #download() {
+      if (!this.result) return;
+      const S = this.result.size, k = this.exportScale;
+      let n = 0;
+      for (let i = 0; i < MAPS.length; i++) {
+        if (!this.mapChecks[i].get()) continue;
+        const [key, suffix] = MAPS[i];
+        const rgba = k > 1 ? E.upscale(this.result[key], S, k) : this.result[key];
+        downloadBlob(await encodePng(S * k, S * k, new Uint8ClampedArray(rgba)), `${this.#baseName()}_${this.previewId}${suffix}${k > 1 ? "@" + k + "x" : ""}.png`);
+        n++;
+      }
+      this.studio.setStatus(n ? `Descargados ${n} PNG.` : "Marca qué mapas descargar.", n ? "ok" : "warn");
+    }
+
+    async #downloadVariants() {
+      const all = this.#allVariantResults();
+      if (!all.length) return;
+      const k = this.exportScale;
+      let n = 0;
+      for (let m = 0; m < MAPS.length; m++) {
+        if (!this.mapChecks[m].get()) continue;
+        const [key, suffix] = MAPS[m];
+        downloadBlob(await Cells.strip(all.map((a) => a.result), key, k), `${this.#baseName()}_variantes${suffix}${k > 1 ? "@" + k + "x" : ""}.png`);
+        n++;
+      }
+      this.studio.setStatus(n ? `Descargadas ${n} tiras con ${all.length} variantes: ${all.map((a) => a.variant.id).join(", ")}.` : "Marca qué mapas descargar.", n ? "ok" : "warn");
+    }
+
+    #targetSheet() {
+      const sheet = this.sheets.find((s) => s.key === this.targetSel.get());
+      if (!this.project || !sheet) {
+        this.studio.toast("Abre la carpeta del proyecto y elige la hoja destino.", { kind: "warn" });
+        return null;
+      }
+      return sheet;
+    }
+
+    async #saveToAtlas() {
+      if (!this.result) return;
+      const sheet = this.#targetSheet();
+      if (!sheet) return;
+      try {
+        await this.studio.busy(this.#writeCells(sheet, [{ cell: this.targetCell.get(), result: this.result }]));
+      } catch (err) {
+        this.studio.toast("No pude guardar.", { kind: "bad", detail: err.message });
+      }
+    }
+
+    async #saveVariantsToAtlas() {
+      if (!this.result) return;
+      const sheet = this.#targetSheet();
+      if (!sheet) return;
+      try {
+        await this.studio.busy((async () => {
+          const all = this.#allVariantResults();
+          const S = all[0].result.size;
+          const sheetImg = await decodePng(await sheet.entry.handle.getFile());
+          const cells = Cells.layoutCells(this.targetCell.get(), all.length, Math.floor(sheetImg.w / S));
+          const items = all.map(({ variant, result }, i) => ({ variant, result, cell: cells[i] }));
+          await this.#writeCells(sheet, items, sheetImg);
+          this.snippetEl.value = Sh.artSnippet(this.piece.shape, items);
+          this.#copySnippet(true);
+        })());
+      } catch (err) {
+        this.studio.toast("No pude guardar.", { kind: "bad", detail: err.message });
+      }
+    }
+
+    #sendToAtlas() {
+      const all = this.#allVariantResults();
+      if (!all.length) { this.studio.toast("Elige antes las texturas de las caras.", { kind: "warn" }); return; }
+      const def = Sh.SHAPES[this.piece.shape] ?? Sh.SHAPES.cube;
+      const artText = (cells) => Sh.artSnippet(this.piece.shape, all.map((a, i) => ({ variant: a.variant, cell: cells[i] })));
+      this.studio.pendingPlacement = {
+        label: def.label, name: "", kind: "block", size: all[0].result.size, sheetKey: this.targetSel.get() || null,
+        items: all.map(({ variant, result }) => ({ color: result.color, normal: result.normal, label: variant.label })),
+        buildTile: def.connects ? null : (cells) => ({
+          ...(this.tint.enabled ? { tags: ["biome_tinted"] } : {}),
+          ...JSON.parse("{" + artText(cells) + "}"),
+        }),
+        snippet: artText,
+        why: def.connects ? "Vallas y muros aún no son un tile del juego: aquí tienes sus celdas." : undefined,
+      };
+      this.studio.activate("atlas");
+    }
+
+    async #copySnippet(quiet = false) {
+      if (!this.snippetEl.value) { if (!quiet) this.studio.toast("Guarda las variantes primero.", { kind: "warn" }); return; }
+      try {
+        await navigator.clipboard.writeText(this.snippetEl.value);
+        if (!quiet) this.studio.toast("\"art\" copiado.", { kind: "ok" });
+      } catch {
+        this.snippetEl.select();
+      }
+    }
+
+    async #writeCells(sheet, items, sheetImg = null) {
+      const ctx = { project: this.project, studio: this.studio };
+      const done = await Cells.writeCells(ctx, sheet, items, { saveN: this.saveN.get(), sheetImg });
+      this.images.delete(sheet.key);
+      if (this.pickerKey === sheet.key) await this.#selectSource(sheet.key, sheet);
+      Cells.announce(ctx, sheet, items, done);
+    }
   }
 
-  // ── Slopes ───────────────────────────────────────────────────────────────────────────────────────────────────────
-
-  function inPart(b, lp, eps = 1e-6) {
-    for (let a = 0; a < 3; a++) if (lp[a] < b
+  Aura.blocksTool = { blocksTool };
+})(window.Aura ??= {});
