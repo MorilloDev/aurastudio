@@ -5,7 +5,7 @@
 .cr-host { position: absolute; inset: 0; display: none; }
 .cr-host.active { display: block; }
 
-/* Barra de orientación: yaw + espejos, dentro de la barra de modos. */
+/* Orientation bar (yaw + mirrors), inline in the mode bar. */
 .cr-rot { display: flex; align-items: center; gap: 2px; }
 .cr-rbtn { min-height: 24px; padding: 0 6px; font-size: 13px; line-height: 1; }
 .cr-rbtn.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
