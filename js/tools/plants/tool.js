@@ -65,7 +65,11 @@
       const saved = prefs.get(PREFS_KEY, null);
       this.type = G.TYPES[saved?.type] ? saved.type : "GRASS";
       this.byType = saved?.byType ?? {};
-      this.r = R.merge(saved?.render ?? {});
+      // Light and pixel-art options per plant type: a flat gray leaf style must not turn the grass flat too. A type
+      // seen for the first time starts from the shared ones.
+      this.rDefault = R.merge(saved?.render ?? {});
+      this.rByType = {};
+      for (const [k, v] of Object.entries(saved?.renderByType ?? {})) this.rByType[k] = R.merge(v);
       this.variants = { ...VARIANT_DEFAULTS, ...(saved?.variants ?? {}) };
       this.exportScale = saved?.exportScale ?? 4;
       this.tint = Tint.merge(saved?.tint);
@@ -95,6 +99,10 @@
       if (this.panelScroll) this.#rebuildPanel();
     }
 
+    /** This type's render options (light, maps, pixel art). */
+    get r() { return (this.rByType[this.type] ??= R.merge(structuredClone(this.rDefault))); }
+    set r(v) { this.rByType[this.type] = v; }
+
     /** This type's options: its defaults with whatever was changed on top. */
     get o() {
       let saved = this.byType[this.type];
@@ -105,13 +113,14 @@
         const base = G.defaults(this.type);
         const pr = presets?.find((x) => t.presetParam && x.key === base[t.presetParam]) ?? presets?.[0];
         saved = pr ? { ...structuredClone(pr.values), variety: pr.key } : {};
+        if (pr?.render && !this.rByType[this.type]) this.r = R.merge({ ...structuredClone(this.rDefault), ...structuredClone(pr.render) });
       }
       this.byType[this.type] = { ...G.defaults(this.type), ...saved };
       return this.byType[this.type];
     }
 
     #save() {
-      prefs.set(PREFS_KEY, { type: this.type, byType: this.byType, render: this.r, variants: this.variants, exportScale: this.exportScale, tint: this.tint });
+      prefs.set(PREFS_KEY, { type: this.type, byType: this.byType, render: this.rDefault, renderByType: this.rByType, variants: this.variants, exportScale: this.exportScale, tint: this.tint });
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -196,6 +205,11 @@
     #applyPreset(key) {
       const pr = G.PRESETS[this.type]?.find((x) => x.key === key);
       if (!pr) return false;
+      // A variety with a look of its own ("render", the flat leaves) brings its light and pixel-art settings; leaving it
+      // for one without gives those settings back.
+      const prev = G.PRESETS[this.type].find((x) => x.key === this.o.variety);
+      if (pr.render) this.r = R.merge({ ...this.r, ...structuredClone(pr.render) });
+      else if (prev?.render) for (const k of Object.keys(prev.render)) this.r[k] = structuredClone(this.rDefault[k]);
       Object.assign(this.o, structuredClone(pr.values), { variety: key });
       this.#save();
       this.#rebuildPanel();
@@ -251,7 +265,8 @@
         const known = presets.find((pr) => pr.key === current);
         const cards = h("div", { class: "pl-cards" }, presets.map((pr) => {
           const c = h("canvas", { width: THUMB, height: THUMB });
-          this.#queueThumb(`${this.type}|${pr.key}`, c, () => ({ ...G.defaults(this.type), ...structuredClone(pr.values) }));
+          this.#queueThumb(`${this.type}|${pr.key}`, c, () => ({ ...G.defaults(this.type), ...structuredClone(pr.values) }),
+            pr.render ? { ...this.rDefault, ...pr.render } : this.rDefault);
           return h("button", { class: ["pl-card", pr.key === current && "on"], title: pr.label, onclick: () => this.#applyPreset(pr.key) },
             c, h("span", null, pr.label));
         }));
@@ -300,12 +315,16 @@
 
       const pixel = section({ id: "pl-pixel", title: "Pixel art",
         extra: this.#sectionReset(() => {
-          for (const k of ["supersample", "coverage", "lightSteps", "outline", "grayFromColor"]) this.r[k] = R.DEFAULTS[k];
+          for (const k of ["supersample", "coverage", "lightSteps", "toneSteps", "innerEdges", "innerEdgeGap", "monochrome", "outline", "grayFromColor"]) this.r[k] = R.DEFAULTS[k];
           this.#save(); this.#rebuildPanel(); this.#schedule();
         }) },
         this.#rSlider("Muestreo", "supersample", 1, 4, 1, "Muestras por lado de cada pixel: más = bordes más fieles"),
         this.#rSlider("Cobertura mínima", "coverage", 1, 9, 1, "Muestras que necesita un pixel para pintarse (1 = no se pierde nada fino)"),
         this.#rSlider("Pasos de luz", "lightSteps", 0, 8, 1, "0 = suave; pocos pasos = sombreado por bandas"),
+        this.#rSlider("Tonos", "toneSteps", 0, 10, 1, "0 = sin cambios; n = el sprite queda en n tonos planos repartidos entre su pixel más oscuro y el más claro (una hoja, un tono)"),
+        this.#rSlider("Borde entre hojas", "innerEdges", 0, 0.6, 0.01, "Oscurece una línea fina donde una hoja tapa a otra, para que se lean por separado"),
+        this.#rSlider("Salto del borde", "innerEdgeGap", 0.01, 0.2, 0.005, "Cuánto más cerca tiene que estar la hoja de delante para marcar la línea, en bloques"),
+        this.#rCheck("Gris (para biome_tinted)", "monochrome", "El color sale en grises con su propio brillo: el juego lo tiñe con el color del bioma"),
         this.#rSlider("Contorno", "outline", 0, 0.8, 0.01),
         this.#rCheck("Grises con el color", "grayFromColor"));
 
@@ -370,10 +389,10 @@
     #thumbJobs = [];
     #thumbTimer = 0;
 
-    #queueThumb(key, canvas, optsFn) {
+    #queueThumb(key, canvas, optsFn, render = null) {
       const cached = key && thumbCache.get(key);
       if (cached) { paintThumb(canvas, cached); return; }
-      this.#thumbJobs.push({ key, canvas, optsFn });
+      this.#thumbJobs.push({ key, canvas, optsFn, render });
       if (!this.#thumbTimer) this.#thumbTimer = setTimeout(() => this.#runThumbs(), 120);
     }
 
@@ -383,7 +402,7 @@
       if (!job) return;
       if (job.canvas.isConnected) {
         try {
-          const img = this.#thumbImage(job.optsFn());
+          const img = this.#thumbImage(job.optsFn(), job.render);
           if (job.key) thumbCache.set(job.key, img);
           paintThumb(job.canvas, img);
         } catch {
@@ -394,10 +413,10 @@
     }
 
     // Small and cheap: no AO, no supersampling; the parts of a tall plant stacked.
-    #thumbImage(opts) {
+    #thumbImage(opts, render = null) {
       const mesh = G.build(this.type, opts);
       const ground = (opts.groundZ ?? 0) * Aura.blockEngine.BLOCK_HEIGHT;
-      const parts = R.renderParts(mesh, R.merge({ ...this.r, size: THUMB, ao: false, supersample: 2 }), ground, mesh.cells);
+      const parts = R.renderParts(mesh, R.merge({ ...(render ?? this.r), size: THUMB, ao: false, supersample: 2 }), ground, mesh.cells);
       return stack(parts);
     }
 
