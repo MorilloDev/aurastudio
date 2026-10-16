@@ -1309,6 +1309,7 @@
         h("div", { class: "at-sub" }, "Arte ", h("span", { class: "faint" }, "(x, y en celdas del archivo)")),
         artRows.length ? artRows : h("p", { class: "note" }, "Sin arte."),
         this.#addArtRow(tile, doc),
+        this.#partsBlock(tile, doc),
         h("div", { class: "at-sub" }, "JSON"),
         raw, rawErr,
         h("div", { class: "row" },
@@ -1347,6 +1348,130 @@
         });
       }
       return h("div", { class: "field" }, h("label", null, f.label), input);
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Parts: one tile that fills several cells of the world (a tall plant, a bed). The game reads only "default" art on a
+    // part (front and back), and takes the tile's own coord from the anchor — the part at offset 0, 0, 0 — so the anchor
+    // is always kept and its offsets are fixed.
+
+    #partsBlock(tile, doc) {
+      const parts = Array.isArray(tile.parts) ? tile.parts : null;
+      if (!parts) {
+        return h("div", { class: "at-parts" },
+          h("div", { class: "at-sub" }, "Partes"),
+          h("button", { onclick: () => this.#toMultipart(tile), title: "Mueve el arte por defecto a una parte ancla (0, 0, 0) para añadirle más partes" },
+            "Convertir en multipart"));
+      }
+
+      const isAnchor = (p) => (p.offsetX | 0) === 0 && (p.offsetY | 0) === 0 && (p.offsetZ | 0) === 0;
+      const rows = parts.map((part, i) => {
+        if (!part || typeof part !== "object") return null;
+        const anchor = isAnchor(part);
+        const axis = (key) => {
+          const input = h("input", { type: "number", step: 1, value: part[key] | 0, disabled: anchor, title: key });
+          input.onchange = () => this.#setPartOffset(tile, i, key, Number(input.value) | 0);
+          return input;
+        };
+        const remove = h("button", { class: "icon danger", disabled: anchor, title: anchor ? "El ancla no se quita" : "Quitar esta parte",
+          onclick: () => this.#removePart(tile, i) }, "✕");
+        return h("div", { class: "at-part" }, h("span", { class: "lbl" }, anchor ? "ancla" : `parte ${i}`),
+          axis("offsetX"), axis("offsetY"), axis("offsetZ"), remove);
+      });
+
+      // The new part defaults to the cell above the highest one: the common case is a plant or a door growing upward.
+      const top = Math.max(0, ...parts.filter((p) => p && typeof p === "object").map((p) => p.offsetY | 0));
+      const nx = h("input", { type: "number", step: 1, value: 0, title: "offsetX" });
+      const ny = h("input", { type: "number", step: 1, value: top + 1, title: "offsetY (niveles hacia arriba)" });
+      const nz = h("input", { type: "number", step: 1, value: 0, title: "offsetZ" });
+      const add = h("button", { class: "icon", title: "Añadir parte (usa la celda seleccionada en la hoja; si no hay, copia la del ancla)",
+        onclick: () => this.#addPart(tile, doc, Number(nx.value) | 0, Number(ny.value) | 0, Number(nz.value) | 0) }, "+");
+
+      return h("div", { class: "at-parts" },
+        h("div", { class: "at-sub" }, "Partes ", h("span", { class: "faint" }, "(X, Y nivel, Z)")),
+        rows,
+        h("div", { class: "at-part new" }, h("span", { class: "lbl" }, "nueva"), nx, ny, nz, add),
+        h("p", { class: "note" }, "La celda de cada parte se elige arriba, en Arte, con ⌖."),
+        parts.length <= 1
+          ? h("button", { onclick: () => this.#toSinglePart(tile), title: "Devuelve el arte del ancla al tile y quita \"parts\"" }, "Volver a una sola pieza")
+          : null);
+    }
+
+    #toMultipart(tile) {
+      const art = tile.art && typeof tile.art === "object" && !Array.isArray(tile.art) ? tile.art : null;
+      const def = art?.default;
+      if (!def) { this.studio.toast("El tile necesita arte por defecto antes de tener partes.", { kind: "warn" }); return; }
+
+      // Other states (inverted, wall…) don't exist on parts: they stay on the tile, where they were.
+      const rest = Object.fromEntries(Object.entries(art).filter(([k]) => k !== "default"));
+      const anchor = { offsetX: 0, offsetY: 0, offsetZ: 0, art: { default: structuredClone(def) } };
+      const next = this.#withKeyAt(tile, "art", [
+        ...(Object.keys(rest).length ? [["art", rest]] : []),
+        ["parts", [anchor]],
+      ]);
+      if (Object.keys(rest).length) this.studio.toast("Los estados que no son «por defecto» se quedan en el tile: las partes solo usan el arte por defecto.", { kind: "warn" });
+      this.#replaceTile(tile, next, `${T.tileLabel(tile)}: a multipart`);
+    }
+
+    #toSinglePart(tile) {
+      const anchor = tile.parts?.find((p) => p && (p.offsetX | 0) === 0 && (p.offsetY | 0) === 0 && (p.offsetZ | 0) === 0);
+      const def = anchor?.art?.default;
+      if (!def) { this.studio.toast("El ancla no tiene arte por defecto.", { kind: "warn" }); return; }
+      const rest = tile.art && typeof tile.art === "object" && !Array.isArray(tile.art) ? tile.art : {};
+      const art = { default: structuredClone(def), ...Object.fromEntries(Object.entries(rest).filter(([k]) => k !== "default")) };
+      this.#replaceTile(tile, this.#withKeyAt(tile, "parts", [["art", art]]), `${T.tileLabel(tile)}: a una pieza`);
+    }
+
+    #addPart(tile, doc, x, y, z) {
+      const parts = tile.parts;
+      if (parts.some((p) => p && (p.offsetX | 0) === x && (p.offsetY | 0) === y && (p.offsetZ | 0) === z)) {
+        this.studio.toast(`Ya hay una parte en (${x}, ${y}, ${z}).`, { kind: "warn" });
+        return;
+      }
+
+      let front = parts.find((p) => p && !(p.offsetX | 0) && !(p.offsetY | 0) && !(p.offsetZ | 0))?.art?.default?.front;
+      const cell = this.#selectedCells()[0];
+      if (cell) {
+        const [tw, th] = T.docCell(doc);
+        const coord = [(cell[0] * this.grid.w) / tw, (cell[1] * this.grid.h) / th];
+        if (!coord.every(Number.isInteger)) { this.studio.toast("Esa celda no cae en la cuadrícula del archivo.", { kind: "warn" }); return; }
+        front = coord;
+      }
+      if (!front) { this.studio.toast("Selecciona la celda de la parte en la hoja.", { kind: "warn" }); return; }
+
+      const part = { offsetX: x, offsetY: y, offsetZ: z, art: { default: { front: [...front] } } };
+      this.#setField(tile, "parts", [...parts.map((p) => structuredClone(p)), part]);
+      if (!cell) this.studio.toast("Parte añadida con la celda del ancla: elige la suya en Arte con ⌖.");
+    }
+
+    #setPartOffset(tile, index, key, value) {
+      const parts = tile.parts.map((p) => structuredClone(p));
+      const p = parts[index];
+      const probe = { offsetX: p.offsetX | 0, offsetY: p.offsetY | 0, offsetZ: p.offsetZ | 0, [key]: value };
+      const clash = parts.some((o, i) => i !== index && o && (o.offsetX | 0) === probe.offsetX && (o.offsetY | 0) === probe.offsetY && (o.offsetZ | 0) === probe.offsetZ);
+      if (clash || (probe.offsetX === 0 && probe.offsetY === 0 && probe.offsetZ === 0)) {
+        this.studio.toast(clash ? "Ya hay una parte en ese sitio." : "(0, 0, 0) es el ancla.", { kind: "warn" });
+        this.#renderPanel();
+        return;
+      }
+      p[key] = value;
+      this.#setField(tile, "parts", parts);
+    }
+
+    #removePart(tile, index) {
+      this.#setField(tile, "parts", tile.parts.filter((_, i) => i !== index).map((p) => structuredClone(p)));
+    }
+
+    // The tile's entries with `key` swapped for `entries` in the same spot, so the JSON keeps the order a person wrote.
+    #withKeyAt(tile, key, entries) {
+      const out = [];
+      let placed = false;
+      for (const [k, v] of Object.entries(tile)) {
+        if (k === key) { out.push(...entries); placed = true; }
+        else if (v !== undefined && !entries.some(([e]) => e === k)) out.push([k, v]);
+      }
+      if (!placed) out.push(...entries);
+      return Object.fromEntries(out);
     }
 
     // Adds a state the tile has no art for yet, on the selected cell.
