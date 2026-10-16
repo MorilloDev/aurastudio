@@ -248,11 +248,16 @@
     // tones run from the species' base colour (darkest) to its tip colour (lightest), so every species paints too.
     if (p.leafForm === "PAINTED") {
       mb.painted = {
-        seed: p.seed, length: p.paintLength, lengthVar: 0.25, width: p.paintWidth, point: p.paintPoint,
-        spacing: p.paintSpacing, backSpacing: 1.1, jitter: p.paintJitter, layers: p.paintLayers, holes: p.paintHoles,
-        backHoles: p.paintBackHoles, round: p.paintRound, fill: p.paintFill, clip: p.paintClip, darker: p.paintDarker,
-        lighter: p.paintLighter, highlight: p.paintHighlight, light: p.leafTipColor, dark: p.leafColor, tones: p.paintTones,
-        edge: p.paintEdge, edgeTones: 1, edgeShadow: p.paintEdgeShadow, pinholes: p.paintPinholes,
+        seed: p.seed, shape: p.leafShape, length: Math.max(3, Math.min(32, p.leafSize * 62 * p.paintScale)), lengthVar: p.leafSizeVar * 0.8,
+        width: p.leafWidth, point: p.paintPoint, spacing: p.paintSpacing, backSpacing: 1.1, jitter: p.paintJitter,
+        hang: p.leafHang, layers: p.paintLayers, holes: p.paintHoles + Math.max(0, p.blockHoles - 0.15) * 0.8,
+        backHoles: p.paintBackHoles, pinholes: p.paintPinholes, round: p.paintRound, fill: p.paintFill, clip: p.paintClip,
+        darker: p.paintDarker, lighter: p.paintLighter, highlight: p.paintHighlight,
+        edge: p.paintEdge, edgeTones: 1, edgeShadow: p.paintEdgeShadow,
+        light: p.leafTipColor, dark: p.leafColor, tones: p.paintTones,
+        altChance: p.leafAltChance, altColor: p.leafAltColor,
+        blossoms: p.blossomCount, blossomColor: p.blossomColor, blossomCenter: p.blossomCenterColor,
+        vines: p.vineCount, vineLength: p.vineLength, vineColor: p.vineColor,
       };
       return;
     }
@@ -346,7 +351,7 @@
         ["leafForm", "Forma", [["PAINTED", "Bloque pintado (2D)"], ["BLOCK", "Bloque de hojas (3D)"], ["GROUND", "En el suelo"], ["PILE", "Montón"]], "PAINTED", null, null, null,
           "Pintado: hojas enteras de frente, en capas, como un bloque dibujado a mano (se ajusta en «Pintado»). Bloque 3D: hojas modeladas. Suelo: hojarasca. Montón: un montículo"],
         ["leafSpecies", "Especie", SPECIES, "AURA"],
-        ["leafShape", "Hoja", [["LOBED", "Lobulada"], ["OVAL", "Ovalada"], ["ROUND", "Redonda"], ["LANCE", "Lanceolada"], ["NARROW", "Estrecha"],
+        ["leafShape", "Hoja", [["LOBED", "Lobulada"], ["OVAL", "Ovalada"], ["ROUND", "Redonda"], ["LANCE", "Lanceolada"], ["NARROW", "Estrecha"], ["SERRATED", "Dentada (abedul)"],
           ["HEART", "Corazón"], ["SPLIT", "Partida (monstera)"], ["TINY", "Diminuta"], ["NEEDLE", "Agujas"], ["PALM", "Fronda"]], "LOBED"],
         ["leafCount", "Cantidad", "int", 240, 5, 1500, 1],
         ["leafSize", "Tamaño", "num", 0.16, 0.02, 0.6, 0.005, "Largo de una hoja, en bloques"],
@@ -376,10 +381,9 @@
         ["vineColor", "Color colgante", "color", L(0.1, 0.3, 0.05)],
       ],
       "Pintado": [
-        ["paintLength", "Largo de hoja", "num", 10, 4, 24, 0.5, "En pixeles de un sprite de 64"],
-        ["paintWidth", "Ancho de hoja", "num", 0.55, 0.2, 1, 0.01, "Respecto al largo"],
+        ["paintScale", "Escala de hoja", "num", 1.35, 0.5, 3, 0.05, "Multiplica «Tamaño»: a 64 px una hoja necesita unos 9–14 px para que se lea su forma"],
         ["paintPoint", "Punta", "num", 1.4, 0.5, 3, 0.05, "Más = hojas más afiladas"],
-        ["paintSpacing", "Separación", "num", 5.2, 3, 14, 0.25, "Entre hojas, en pixeles: menos = más hojas"],
+        ["paintSpacing", "Separación", "num", 0.52, 0.25, 1.5, 0.01, "Entre hojas, respecto a su largo: menos = más hojas. El largo y el ancho son «Tamaño» y «Ancho» de Hojas (tamaño × 62 = pixeles)"],
         ["paintJitter", "Desorden", "num", 70, 0, 180, 1, "Grados que se aparta cada hoja de apuntar hacia fuera"],
         ["paintLayers", "Capas", "int", 2, 1, 4, 1, "Las de atrás van un tono más oscuras y se ven entre las de delante"],
         ["paintEdge", "Borde entre hojas", "num", 1, 0, 3, 0.5, "Pixeles de la línea oscura que separa cada hoja de la de detrás: lo que deja ver su forma"],
@@ -404,9 +408,9 @@
   }, (mb, p, r) => genLeaves(mb, p, r), [
     // Dalvin's hand-made leaf block, measured: whole pointed leaves facing the camera in two layers, two tones each,
     // six grays from 99 to 185, lighter on top and darker down the right. Painted (no mesh); gray for biome_tinted.
-    { key: "AURA", label: "Aura (pintado, gris)", values: { leafForm: "PAINTED", paintLength: 10, paintWidth: 0.55, paintPoint: 1.4, paintSpacing: 5.2, paintJitter: 70, paintLayers: 2, paintEdge: 1, paintEdgeShadow: true, paintPinholes: 0.25, paintHoles: 0.06, paintBackHoles: 0.08, paintRound: 0.6, paintFill: 0.93, paintClip: 1.3, paintDarker: 0.25, paintLighter: 0.1, paintHighlight: 0.35, paintTones: 6, leafColor: "#636363", leafTipColor: "#b9b9b9", leafAltChance: 0 } },
+    { key: "AURA", label: "Aura (pintado, gris)", values: { leafForm: "PAINTED", leafShape: "LANCE", leafSize: 0.161, paintScale: 1, leafSizeVar: 0.3, leafWidth: 0.55, leafHang: 0, paintPoint: 1.4, paintSpacing: 0.52, paintJitter: 70, paintLayers: 2, paintEdge: 1, paintEdgeShadow: true, paintPinholes: 0.25, paintHoles: 0.06, paintBackHoles: 0.08, paintRound: 0.6, paintFill: 0.93, paintClip: 1.3, paintDarker: 0.25, paintLighter: 0.1, paintHighlight: 0.35, paintTones: 6, leafColor: "#636363", leafTipColor: "#b9b9b9", leafAltChance: 0, blockHoles: 0.15, blossomCount: 0, vineCount: 0 } },
     { key: "OAK", label: "Roble", values: { leafShape: "LOBED", leafSize: 0.16, leafWidth: 0.6, leafCount: 240, leafCurl: 0.3, leafHang: 0, leafColor: L(0.08, 0.25, 0.04), leafTipColor: L(0.25, 0.5, 0.1), leafAltChance: 0, blockRound: 0.25, blockHoles: 0.15, blockCore: 0, coreColor: L(0.02, 0.08, 0.015), blossomCount: 0, vineCount: 0 } },
-    { key: "BIRCH", label: "Abedul", values: { leafShape: "OVAL", leafSize: 0.11, leafWidth: 0.7, leafCount: 320, leafCurl: 0.2, leafHang: 0, leafColor: L(0.18, 0.4, 0.07), leafTipColor: L(0.55, 0.75, 0.2), leafAltChance: 0, blockRound: 0.3, blockHoles: 0.22, blockCore: 0, coreColor: L(0.05, 0.12, 0.02), blossomCount: 0, vineCount: 0 } },
+    { key: "BIRCH", label: "Abedul", values: { leafShape: "SERRATED", leafSize: 0.11, leafWidth: 0.7, leafCount: 320, leafCurl: 0.2, leafHang: 0, leafColor: L(0.18, 0.4, 0.07), leafTipColor: L(0.55, 0.75, 0.2), leafAltChance: 0, blockRound: 0.3, blockHoles: 0.22, blockCore: 0, coreColor: L(0.05, 0.12, 0.02), blossomCount: 0, vineCount: 0 } },
     { key: "PINE", label: "Pino", values: { leafShape: "NEEDLE", leafSize: 0.2, leafCount: 110, leafHang: 0.1, leafColor: L(0.03, 0.15, 0.05), leafTipColor: L(0.08, 0.3, 0.1), leafAltChance: 0, blockRound: 0.35, blockHoles: 0.18, blockCore: 0, coreColor: L(0.01, 0.05, 0.02), blossomCount: 0, vineCount: 0 } },
     { key: "SPRUCE", label: "Abeto", values: { leafShape: "NEEDLE", leafSize: 0.16, leafCount: 140, leafHang: 0.25, leafColor: L(0.02, 0.1, 0.06), leafTipColor: L(0.05, 0.22, 0.13), leafAltChance: 0, blockRound: 0.1, blockHoles: 0.08, blockCore: 0, coreColor: L(0.01, 0.04, 0.025), blossomCount: 0, vineCount: 0 } },
     { key: "JUNGLE", label: "Jungla", values: { leafShape: "HEART", leafSize: 0.22, leafWidth: 0.75, leafCount: 150, leafCurl: 0.35, leafHang: 0.15, veinStrength: 0.2, leafColor: L(0.02, 0.3, 0.03), leafTipColor: L(0.15, 0.65, 0.08), leafAltChance: 0, blockRound: 0.15, blockHoles: 0.1, blockCore: 0, coreColor: L(0.01, 0.08, 0.01), blossomCount: 0, vineCount: 6, vineColor: L(0.08, 0.28, 0.04) } },
