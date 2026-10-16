@@ -43,6 +43,11 @@
 .at-art input { min-height: 26px; padding: 2px 5px; }
 .at-art button { min-height: 26px; width: 30px; }
 .at-art.off .lbl { color: var(--faint); }
+.at-part { display: grid; grid-template-columns: 1fr 44px 44px 44px 30px; gap: 4px; align-items: center; margin-bottom: 4px; }
+.at-part .lbl { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.at-part input { min-height: 26px; padding: 2px 5px; }
+.at-part button { min-height: 26px; width: 30px; }
+.at-part.new .lbl { color: var(--muted); }
 .at-raw { width: 100%; min-height: 120px; }
 .at-json { margin: 6px 0; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); font: 11.5px/1.45 var(--mono); max-height: 200px; overflow: auto; white-space: pre; }
 .at-json:empty { display: none; }
