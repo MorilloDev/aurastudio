@@ -69,7 +69,6 @@
     variantResults = new Map();   // variant id -> render result
     previewId = null;
     previewFacing = "auto";
-    rotation = { yaw: 0, flipX: false, flipY: false };   // pushed down by the Crear mode bar
     #pending = 0;
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -95,17 +94,6 @@
 
     activate() { this.#drawPicker(); this.#drawPreview(); }
     deactivate() {}
-
-    /** Orientation pushed down by the Crear bar: yaw is a world rotation inside buildVoxels, the mirrors are pixel
-     *  transforms applied to the sprite at the end of the render, so one object is enough for preview and export. */
-    setRotation(r) {
-      const next = { yaw: ((r?.yaw | 0) % 360 + 360) % 360, flipX: !!r?.flipX, flipY: !!r?.flipY };
-      const cur = this.rotation;
-      if (cur && cur.yaw === next.yaw && cur.flipX === next.flipX && cur.flipY === next.flipY) return;
-      this.rotation = next;
-      this.#schedule();
-    }
-
     isDirty() { return false; }
 
     onProject(project) {
@@ -673,7 +661,7 @@
 
     // biome_tinted: the saved colour is the grey art; "tinted" shows it under the preview biome, as the game draws it.
     #renderPiece(tex, piece) {
-      const r = E.render({ ...this.o, rotation: this.rotation }, tex, piece);
+      const r = E.render(this.o, tex, piece);
       if (this.tint.enabled) r.color = Tint.toTinted(r.color, TP.resolve(this.tint, this.biomes));
       r.tinted = this.tint.enabled ? Tint.applyTint(r.color, TP.previewRgb(this.tint, this.biomes)) : r.color;
       return r;
