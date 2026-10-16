@@ -8,7 +8,7 @@
 // "Front" is the side that faces the camera's left face (world -Y). The game draws the other two facings by mirroring
 // front and back, so those two are what gets saved; the side facings are only previewed.
 (function (Aura) {
-  // ── Directions ───────────────────────────────────────────────────────────────────────────────────────────────────
+  // ── Directions ───────────────────────────────────────────────────────────────────────────────────
   // Index → unit vector. World: x, y (depth), z (up). Local: x, y (up), z (depth).
   const DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
   const dirIndex = (v) => DIRS.findIndex((d) => d[0] === v[0] && d[1] === v[1] && d[2] === v[2]);
@@ -41,13 +41,25 @@
   };
   const FACING_LABEL = { front: "Frente", right: "Derecha", back: "Atrás", left: "Izquierda" };
 
+  // ── Yaw ──────────────────────────────────────────────────────────────────────────────────────────
+  // The extra spin the mode bar pushes down. It is applied in world space, on top of the facing, so the
+  // generators only have to know that a rotation of a whole number of 90° might come in.
+  const normYaw = (y) => (((Math.round((y || 0) / 90) * 90) % 360) + 360) % 360;
+  function yawMatrix(deg) {
+    const rad = (normYaw(deg) * Math.PI) / 180;
+    const c = Math.round(Math.cos(rad)), s = Math.round(Math.sin(rad));
+    return [[c, -s, 0], [s, c, 0], [0, 0, 1]];
+  }
+
   /**
    * Local → world mapping of one variant. toWorld / toLocal take unit coordinates (0..1 on every axis);
    * dirToLocal turns a world direction index into the local one, for picking a voxel face's texture.
    * texFollow false keeps textures fixed to the world (top texture always on top) whatever the state or facing.
+   * yaw is an extra spin about the world's up axis, applied on top of the facing.
    */
-  function transform(state, facing, texFollow = true) {
-    const M = mul(FACING[facing] ?? I, mul(BASE, STATE[state] ?? I));
+  function transform(state, facing, texFollow = true, yaw = 0) {
+    const Y = yawMatrix(yaw);
+    const M = mul(Y, mul(FACING[facing] ?? I, mul(BASE, STATE[state] ?? I)));
     const Mi = transpose(M);
     // Texture frame: the piece's own frame, or the plain front-facing one when textures stay put.
     const T = texFollow ? M : BASE;
@@ -70,7 +82,7 @@
     });
   }
 
-  // ── Presets ──────────────────────────────────────────────────────────────────────────────────────────────────────
+  // ── Presets ──────────────────────────────────────────────────────────────────────────────────────
   // Sizes in sixteenths of the block, like Minecraft's model editor, then divided down.
   const box = (x0, y0, z0, x1, y1, z1) => ({ min: [x0 / 16, y0 / 16, z0 / 16], max: [x1 / 16, y1 / 16, z1 / 16] });
 
@@ -289,6 +301,6 @@
 
   Aura.blockShapes = {
     SHAPES, PARAM_DEFAULTS, STATE_LABEL, FACING_LABEL, DIRS,
-    transform, boxesToWorld, variants, artSnippet, parseCustom, turnLocal,
+    transform, boxesToWorld, variants, artSnippet, parseCustom, turnLocal, yawMatrix,
   };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));
