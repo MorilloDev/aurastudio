@@ -325,6 +325,30 @@
     }
   }
 
+  // Sugar cane: a tight clump of thin, jointed canes, straight and pale, with long narrow leaves arching out of the
+  // joints — more of them low on the cane, and a small tuft at each tip.
+  function genSugarCane(mb, p, r, pos) {
+    const cv = p.colorVariation;
+    const c0 = jitterColor(r, p.baseColorL, cv), c1 = jitterColor(r, p.tipColorL, cv), lc = jitterColor(r, p.stemLeafColorL, cv);
+    for (let c = 0; c < p.caneCount; c++) {
+      const a = r.uniform(0, 2 * Math.PI), d = [Math.cos(a), Math.sin(a), 0];
+      const start = V.add(pos, V.mul(d, r.uniform(0, p.caneSpread)));
+      const h = Math.max(0.1, vary(r, p.caneHeight, p.heightVariation));
+      const path = segmentedStem(mb, p, start, d, h, r.uniform(0, 4) + p.inclination, p.caneRadius, p.caneNodes, c0, c1, 0.02 + p.wilt * 0.2);
+      for (let i = 3; i < path.length - 1; i += 3) {
+        const t = i / (path.length - 1);
+        if (r.random() > p.caneLeafChance * (1.2 - t * 0.6)) continue;
+        const la = r.uniform(0, 2 * Math.PI), size = p.stemLeafSize * r.uniform(0.75, 1.2) * (1.1 - t * 0.4);
+        mb.leaf(path[i], [Math.cos(la), Math.sin(la), 0], size, size * 0.09, [V.mul(lc, 0.85), lc], { lift: 0.45, droop: 0.65, fold: 0.3, shape: "LANCE" });
+      }
+      const tip = path[path.length - 1];
+      for (let k = 0; k < p.caneTipLeaves; k++) {
+        const la = r.uniform(0, 2 * Math.PI), size = p.stemLeafSize * r.uniform(0.5, 0.8);
+        mb.leaf(tip, [Math.cos(la), Math.sin(la), 0], size, size * 0.09, [V.mul(lc, 0.85), lc], { lift: 0.8, droop: 0.4, fold: 0.3, shape: "LANCE" });
+      }
+    }
+  }
+
   // ── Water ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
   function genSeaweed(mb, p, r, pos) {
@@ -647,6 +671,24 @@
     { key: "GREEN", label: "Verde", values: { baseColor: L(0.35, 0.55, 0.18), tipColor: L(0.5, 0.7, 0.25) } },
     { key: "GOLDEN", label: "Dorado", values: { baseColor: L(0.7, 0.55, 0.12), tipColor: L(0.85, 0.75, 0.3) } },
     { key: "BLACK", label: "Negro", values: { baseColor: L(0.06, 0.05, 0.04), tipColor: L(0.15, 0.13, 0.1) } },
+  ]);
+
+  G.register("SUGAR_CANE", {
+    category: "herbs", label: "Caña de azúcar",
+    params: { "Caña": [
+      ["caneCount", "Cañas", "int", 4, 1, 10, 1], ["caneHeight", "Altura", "num", 1.5, 0.2, 2.2, 0.01],
+      ["heightVariation", "Var. altura", "num", 0.15, 0, 1, 0.01], ["caneSpread", "Separación", "num", 0.12, 0, 0.4, 0.005],
+      ["caneRadius", "Radio", "num", 0.028, 0.005, 0.1, 0.001], ["caneNodes", "Nudos", "int", 8, 1, 16, 1],
+      ["stemNodeDark", "Oscuridad nudos", "num", 0.18, 0, 0.8, 0.01],
+      ["caneLeafChance", "Hojas en nudos", "num", 0.7, 0, 1, 0.01, "Probabilidad de una hoja en cada nudo; más abajo, más"],
+      ["caneTipLeaves", "Hojas en la punta", "int", 2, 0, 6, 1],
+      ["stemLeafSize", "Largo hoja", "num", 0.4, 0.05, 0.8, 0.005], ["stemLeafColor", "Color hoja", "color", L(0.25, 0.55, 0.15)],
+    ] },
+    defaults: { count: 1, inclination: 2, baseColor: L(0.35, 0.6, 0.2), tipColor: L(0.55, 0.75, 0.3), multipart: true, cells: 2, fillCells: true },
+  }, genSugarCane, [
+    { key: "GREEN", label: "Verde", values: { baseColor: L(0.35, 0.6, 0.2), tipColor: L(0.55, 0.75, 0.3), stemLeafColor: L(0.25, 0.55, 0.15) } },
+    { key: "PURPLE", label: "Morada", values: { baseColor: L(0.25, 0.08, 0.15), tipColor: L(0.45, 0.2, 0.3), stemLeafColor: L(0.22, 0.45, 0.12) } },
+    { key: "DRY", label: "Seca", values: { baseColor: L(0.55, 0.45, 0.15), tipColor: L(0.75, 0.65, 0.3), stemLeafColor: L(0.55, 0.45, 0.18) } },
   ]);
 
   G.register("SEAWEED", {
