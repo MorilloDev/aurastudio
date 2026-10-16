@@ -135,6 +135,7 @@
     size: 64,                   // sprite width and height, px; a full block always fills it
     res: 32,                    // voxels per block edge: 32 = one voxel per 2 px of a 64 px sprite, 64 = one per pixel
     blockHeight: BLOCK_HEIGHT,
+    rotation: { yaw: 0, flipX: false, flipY: false },  // world yaw + pixel mirrors, applied at the very end
     mask: MASK_DEFAULTS,
     cover: COVER_DEFAULTS,
     autoFit: true,              // shorten tongues and hairs that would leave the sprite
@@ -164,6 +165,7 @@
     o.cover = { ...COVER_DEFAULTS, ...(opts.cover || {}) };
     o.hair = { ...HAIR_DEFAULTS, ...(opts.hair || {}) };
     o.hair.edges = { ...HAIR_DEFAULTS.edges, ...(opts.hair?.edges || {}) };
+    o.rotation = { ...DEFAULTS.rotation, ...(opts.rotation || {}) };
     return o;
   }
 
@@ -218,7 +220,9 @@
     const vx = 1 / R, vz = o.blockHeight / R;
 
     const follow = o.texMode === "follow" || (o.texMode === "auto" && piece.state === "horizontal");
-    const tf = Shapes.transform(piece.state, piece.facing, follow);
+    // The yaw the mode bar pushes down is a world rotation: it feeds the transform that turns local boxes into world
+    // boxes, so every downstream pass (voxels, masks, cover, hairs, slopes) works on the already-rotated piece.
+    const tf = Shapes.transform(piece.state, piece.facing, follow, o.rotation?.yaw ?? 0);
     const worldBoxes = Shapes.boxesToWorld(piece.boxes, tf);
 
     // The piece itself. partOf remembers which part (1-based) a voxel belongs to, for the slopes.
@@ -723,6 +727,47 @@
     if (o.hair.enabled && Aura.blockHair) {
       Aura.blockHair.draw({ o, V, tex, S, H, zbuf, mask, faceN, put, project, BACK, FACE, quantAO, rng });
     }
+
+    // Pixel-space mirrors. The yaw was a world rotation applied inside buildVoxels (the 2:1 projection is not
+    // invariant under a 90° bitmap rotation); the mirrors are true pixel transforms and go at the very end, once
+    // the pixel-art passes and the hairs have finished. For the normal map, mirroring horizontally negates the
+    // "right" component (R channel) and mirroring vertically negates the "up" component (G channel), so the
+    // shading in the game stays consistent with the mirrored geometry.
+    if (o.rotation.flipX || o.rotation.flipY) {
+      const { flipX, flipY } = o.rotation;
+      const flipRGBA = (arr, negR = false, negG = false) => {
+        const out = new Uint8ClampedArray(arr.length);
+        for (let y = 0; y < S; y++) {
+          const sy = flipY ? S - 1 - y : y;
+          for (let x = 0; x < S; x++) {
+            const sx = flipX ? S - 1 - x : x;
+            const si = (sy * S + sx) * 4, di = (y * S + x) * 4;
+            out[di] = arr[si]; out[di + 1] = arr[si + 1]; out[di + 2] = arr[si + 2]; out[di + 3] = arr[si + 3];
+            if (negR && flipX) out[di] = 255 - out[di];
+            if (negG && flipY) out[di + 1] = 255 - out[di + 1];
+          }
+        }
+        return out;
+      };
+      const flipMask = (arr) => {
+        const out = new Uint8Array(arr.length);
+        for (let y = 0; y < S; y++) {
+          const sy = flipY ? S - 1 - y : y;
+          for (let x = 0; x < S; x++) {
+            const sx = flipX ? S - 1 - x : x;
+            out[y * S + x] = arr[sy * S + sx];
+          }
+        }
+        return out;
+      };
+      color.set(flipRGBA(color));
+      normal.set(flipRGBA(normal, true, true));
+      depth.set(flipRGBA(depth));
+      aoMap.set(flipRGBA(aoMap));
+      gray.set(flipRGBA(gray));
+      mask.set(flipMask(mask));
+    }
+
     return { size: S, color, normal, depth, ao: aoMap, gray, mask, voxels: V, options: o };
   }
 
