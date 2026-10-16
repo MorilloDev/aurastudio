@@ -359,143 +359,343 @@
   /**
    * A leaf block painted straight into the sprite, the way a hand-drawn one is made: whole leaves facing the camera,
    * laid in layers from the back, each one a flat shape cut in two tones along its midrib — instead of 3D leaves seen
-   * edge-on, which at 64 px turn into slivers and noise. The crown is the block's outline (top diamond, two sides)
-   * rounded off, and each leaf takes the light of the face it sits on, as the game lights a block: top brightest, left
-   * next, right darkest (normal map), with the tones falling off from the top down. Back layers sit a tone lower,
-   * which is what shows between the front leaves.
+   * edge-on, which at 64 px turn into slivers and noise. Every species keeps its real leaf: lobed oak, toothed birch,
+   * needle tufts, palm fronds, split monstera… (PAINT_SHAPES, and the clustered kinds in paintAnchor).
    *
-   * spec: { seed, length, width, lengthVar, spacing, jitter, round, layers, holes, highlight, light, dark, tones }
-   * (lengths in pixels of a 64 px sprite; scaled to opts.size).
+   * What makes the leaves read, measured on Dalvin's hand-made block: each leaf casts a 1 px seam one tone darker on the
+   * side away from the light, and some seam pixels stay open as pinholes. The crown is the block's outline rounded
+   * off; the tone falls off from the top down and toward the right; back layers sit a tone lower.
+   *
+   * spec (lengths in pixels of a 64 px sprite, scaled to opts.size): { seed, shape, length, lengthVar, width, point,
+   * spacing (× length), backSpacing, jitter, hang, layers, holes, backHoles, pinholes, round, fill, clip, darker,
+   * lighter, highlight, edge, edgeTones, edgeShadow, light, dark, tones, altChance, altColor, blossoms, blossomColor,
+   * blossomCenter, vines, vineLength, vineColor }
    */
   function paintLeaves(spec, opts) {
     const S = opts.size, k = S / 64, N = S * S;
-    const color = new Uint8ClampedArray(N * 4), normal = new Uint8ClampedArray(N * 4);
-    const depth = new Uint8ClampedArray(N * 4), aoMap = new Uint8ClampedArray(N * 4), gray = new Uint8ClampedArray(N * 4);
-    const mask = new Uint8Array(N);
+    const out = {
+      size: S, color: new Uint8ClampedArray(N * 4), normal: new Uint8ClampedArray(N * 4), depth: new Uint8ClampedArray(N * 4),
+      ao: new Uint8ClampedArray(N * 4), gray: new Uint8ClampedArray(N * 4), mask: new Uint8Array(N),
+    };
     const seam = new Uint8Array(N);
     const rnd = mulberry(spec.seed >>> 0 || 1);
     const uni = (a, b) => a + (b - a) * rnd();
+    const nTones = Math.max(3, spec.tones | 0);
+    const mainPal = tonePalette(spec.dark, spec.light, nTones);
+    const altPal = spec.altChance > 0 ? tonePalette(scaleHex(spec.altColor, 0.55), spec.altColor, nTones) : null;
+    const top = nTones - 1;
+    const crown = crownShape(k, spec.round);
+    // Needles and fronds are mostly air: a third layer behind fills the crown the way a dense shoot does.
+    const layers = Math.max(1, spec.layers | 0) + (spec.shape === "NEEDLE" || spec.shape === "PALM" ? 1 : 0);
+    const shapeOf = PAINT_SHAPES[spec.shape] ?? PAINT_SHAPES.LANCE;
 
-    const palette = tonePalette(spec.dark, spec.light, Math.max(3, spec.tones | 0));
-    const top = palette.length - 1;
+    // One pixel of a leaf (or of its seam). face: 0 top, 1 left, 2 right — the normal map's cube face.
+    const put = (x, y, rgb, face, fromFront, isSeam) => {
+      const i = y * S + x, kk = i * 4;
+      writePixel(out, kk, rgb, PAINT_FACE_N[face], Math.round(255 * (1 - fromFront / layers)), 255 - fromFront * 40);
+      out.mask[i] = 1;
+      seam[i] = isSeam ? 1 : 0;
+    };
 
-    // The block outline in sprite pixels: top diamond (0,16)-(32,0)-(64,16)-(32,32), sides down to y 48 / 64.
-    const C = [32 * k, 32 * k];
+    /**
+     * One blade from (bx, by) along (dx, dy): the shape's outline, two tones split by the midrib, and the seam behind it.
+     * half(u) gives the half width (in units of wid) at u = 0 (stalk) … 1 (tip); cut(u, |v|/half) opens notches.
+     */
+    const blade = (b) => {
+      const { bx, by, dx, dy, len, wid, shape, tones, face, fromFront } = b;
+      const px = -dy, py = dx;
+      const rim = Math.max(0, spec.edge) * k;
+      const mx = bx + dx * len * 0.5, my = by + dy * len * 0.5;
+      const reach = len + wid + rim + 1;
+      const x0 = Math.max(0, Math.floor(mx - reach)), x1 = Math.min(S - 1, Math.ceil(mx + reach));
+      const y0 = Math.max(0, Math.floor(my - reach)), y1 = Math.min(S - 1, Math.ceil(my + reach));
+      const litSide = px * PAINT_LIGHT[0] + py * PAINT_LIGHT[1] > 0 ? 1 : -1;
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const qx = x + 0.5 - bx, qy = y + 0.5 - by;
+        const along = qx * dx + qy * dy, v = qx * px + qy * py;
+        if (along <= -rim || along >= len + rim) continue;
+        const u = along / len, uc = Math.min(1, Math.max(0, u));
+        // Never thinner than a pixel's half, so needles and ribs stay drawn at any size.
+        const half = Math.max(b.minHalf ?? 0, wid * shape.half(uc, spec.point));
+        let inLeaf = u > 0 && u < 1 && Math.abs(v) <= half;
+        if (inLeaf && shape.cut && shape.cut(uc, Math.abs(v) / Math.max(1e-6, half), v)) inLeaf = false;
+        if (!inLeaf && (rim <= 0 || Math.abs(v) > half + rim)) continue;
+        if (!crown.inside(x + 0.5, y + 0.5, spec.clip) && !b.free) continue;
+        const i = y * S + x;
+        // The seam only darkens what is already painted behind, on the side away from the light ("edgeShadow").
+        if (!inLeaf) {
+          if (!out.mask[i]) continue;
+          if (spec.edgeShadow && (x + 0.5 - mx) * PAINT_LIGHT[0] + (y + 0.5 - my) * PAINT_LIGHT[1] > 0) continue;
+          put(x, y, tones.pal[tones.rim], face, fromFront, true);
+          continue;
+        }
+        const t = b.single ? tones.lit : (v >= 0 ? 1 : -1) === litSide ? tones.lit : tones.shade;
+        put(x, y, tones.pal[t], face, fromFront, false);
+      }
+    };
+
+    // The leaf's tones from where it sits on the crown — bright over the top, darker down and to the right, the hand-
+    // made block's measured falloff — plus its layer and a random shift so neighbours differ.
+    const tonesAt = (ax, ay, fromFront, pal, face) => {
+      const sm = (a, b, t) => { const q = Math.min(1, Math.max(0, (t - a) / (b - a))); return q * q * (3 - 2 * q); };
+      const lightness = 1 - 0.8 * sm(0.22, 0.7, ay / S) - 0.6 * Math.max(0, ax / S - 0.5) * 2;
+      let base = top - 2 + Math.round(Math.max(0, lightness) - 0.05) - fromFront;
+      const roll = rnd();
+      if (roll < spec.darker) base -= 1; else if (roll > 1 - spec.lighter) base += 1;
+      const clamp = (t) => Math.max(0, Math.min(top, t));
+      const lit = clamp(base + (face === 0 && fromFront === 0 && rnd() < spec.highlight ? 1 : 0));
+      const shade = clamp(base - 1);
+      return { pal, lit, shade, rim: clamp(shade - Math.max(1, spec.edgeTones | 0)) };
+    };
+
+    // Where a leaf at (ax, ay) points: out of the crown (the top's leaves out of the top's own centre, so the top reads
+    // as a star of tips), turned by "jitter", then pulled down by "hang" (willow).
+    const angleAt = (ax, ay, face) => {
+      const cx = crown.cx, cy = face === 0 ? 16 * k : 30 * k;
+      let ang = Math.hypot(ax - cx, ay - cy) < 2 * k ? uni(0, Math.PI * 2) : Math.atan2(ay - cy, ax - cx);
+      ang += uni(-1, 1) * spec.jitter * Math.PI / 180;
+      if (spec.hang > 0) {
+        const down = Math.PI / 2;
+        let d = Math.atan2(Math.sin(down - ang), Math.cos(down - ang));
+        ang += d * spec.hang;
+      }
+      return ang;
+    };
+
+    for (let L = 0; L < layers; L++) {
+      const fromFront = layers - 1 - L;
+      // Shapes with detail in their outline (lobes, slits, a tuft's fan) get more room, or neighbours hide it.
+      const unit = spec.length * k * (PAINT_SPACING[spec.shape] ?? 1);
+      const spacing = Math.max(2 * k, unit * spec.spacing * (fromFront === 0 ? 1 : spec.backSpacing));
+      for (const [ax, ay] of scatter(spacing, S, crown, spec.fill, rnd, fromFront === 0 ? spec.holes : spec.backHoles)) {
+        const face = crown.faceOf(ax, ay);
+        const pal = altPal && rnd() < spec.altChance ? altPal : mainPal;
+        const tones = tonesAt(ax, ay, fromFront, pal, face);
+        const ang = angleAt(ax, ay, face);
+        const len = spec.length * k * (1 + uni(-spec.lengthVar, spec.lengthVar)) * (fromFront ? 1.1 : 1);
+        paintAnchor({ blade, uni, rnd, ax, ay, ang, len, wid: len * spec.width * 0.5, shape: shapeOf, kind: spec.shape,
+          tones, face, fromFront, k });
+      }
+    }
+
+    if (spec.vines > 0) paintVines(spec, out, blade, rnd, uni, k, nTones, mainPal);
+    if (spec.blossoms > 0) paintBlossoms(spec, out, put, crown, rnd, k);
+
+    // Pinholes: some seam pixels left open, so the block is seen through in specks between the leaves (the
+    // reference's many one- and two-pixel gaps) instead of in a few big holes.
+    if (spec.pinholes > 0) {
+      for (let i = 0; i < N; i++) {
+        if (seam[i] !== 1 || rnd() >= spec.pinholes) continue;
+        out.mask[i] = 0;
+        for (const map of [out.color, out.normal, out.depth, out.ao, out.gray]) map.fill(0, i * 4, i * 4 + 4);
+      }
+    }
+    return out;
+  }
+
+  // Room around each leaf, × its length × "spacing", per shape.
+  const PAINT_SPACING = { TINY: 2.2, NEEDLE: 1.15, LOBED: 1.2, SPLIT: 1.25, HEART: 1.1, SERRATED: 1.1, PALM: 0.8 };
+
+  // Screen direction the light comes from (up and a little left), and the normal of each cube face for the normal map.
+  const PAINT_LIGHT = [-0.55, -0.83];
+  const PAINT_FACE_N = [[0, 0, 1], [0, -1, 0], [1, 0, 0]];
+
+  /**
+   * Leaf outlines, as half widths along the blade: u 0 = stalk, 1 = tip. cut(u, w, v) opens notches (w = |v| / half).
+   * Drawn from what the real leaves look like, kept to what still reads at 6–15 px.
+   */
+  const PAINT_SHAPES = {
+    // Willow-like and the hand-made reference: widest before the middle, pointed at both ends.
+    LANCE: { half: (u, point) => Math.pow(Math.sin(Math.PI * Math.pow(u, 0.75)), point) },
+    NARROW: { half: (u, point) => Math.pow(Math.sin(Math.PI * Math.pow(u, 0.7)), point * 1.2) },
+    // Cherry, mangrove: an egg shape, round at the stalk, a short point at the tip.
+    OVAL: { half: (u) => Math.pow(Math.sin(Math.PI * Math.pow(u, 0.85)), 0.6) * (u > 0.85 ? 1 - (u - 0.85) * 3 : 1) },
+    ROUND: { half: (u) => Math.sqrt(Math.max(0, Math.sin(Math.PI * u))) },
+    // Birch: a triangle-ish egg, widest near the stalk, long point, toothed edge.
+    SERRATED: {
+      half: (u) => Math.pow(Math.sin(Math.PI * Math.pow(u, 0.5)), 0.85) * (1 - 0.18 * ((u * 7) % 1)),
+    },
+    // Oak: wider toward the tip, with three or four round lobes a side and deep sinuses between them.
+    LOBED: {
+      half: (u) => {
+        const env = Math.pow(Math.sin(Math.PI * Math.pow(u, 1.15)), 0.6);
+        return u < 0.12 ? env * 0.4 : env * (0.35 + 0.65 * Math.abs(Math.sin(Math.PI * 3.5 * (u - 0.12) / 0.88)));
+      },
+    },
+    // Jungle: a heart, widest near the stalk, with the notch there.
+    HEART: {
+      half: (u) => Math.pow(Math.sin(Math.PI * Math.pow(u, 0.5)), 0.7),
+      cut: (u, w) => u < 0.14 && w < 0.35,
+    },
+    // Monstera: the heart with slits cut in from the edge.
+    SPLIT: {
+      half: (u) => Math.pow(Math.sin(Math.PI * Math.pow(u, 0.55)), 0.65),
+      cut: (u, w) => (u < 0.12 && w < 0.3) || (w > 0.25 && u > 0.2 && u < 0.9 && (u * 5) % 1 < 0.3),
+    },
+    // Sub-shapes of the clustered kinds.
+    NEEDLE: { half: (u) => 1 - u * 0.6 },
+    RIB: { half: (u) => 1 - u * 0.5 },
+  };
+
+  /** One anchor: a single leaf, or the cluster its kind is made of (a needle tuft, a palm frond, tiny leaflets). */
+  function paintAnchor(a) {
+    const { blade, uni, rnd, ax, ay, ang, len, wid, shape, kind, tones, face, fromFront, k } = a;
+    const one = (x, y, angle, l, w, sh, extra = {}) => {
+      const dx = Math.cos(angle), dy = Math.sin(angle);
+      blade({ bx: x - dx * l * 0.3, by: y - dy * l * 0.3, dx, dy, len: l, wid: w, shape: sh, tones, face, fromFront, ...extra });
+    };
+
+    if (kind === "NEEDLE") {
+      // A tuft: needles fanned from one point, each a single tone, alternating, so the tuft reads as strands.
+      const n = 7 + Math.floor(rnd() * 3), spread = 0.85;
+      for (let i = 0; i < n; i++) {
+        const t = n === 1 ? 0 : i / (n - 1) - 0.5;
+        const angle = ang + t * spread * 2 + uni(-0.1, 0.1);
+        const nt = { ...tones, lit: i % 2 ? tones.lit : tones.shade };
+        const dx = Math.cos(angle), dy = Math.sin(angle);
+        blade({ bx: ax, by: ay, dx, dy, len: len * uni(0.7, 1), wid: 0.5 * k, minHalf: 0.5 * k, shape: PAINT_SHAPES.NEEDLE,
+          tones: nt, face, fromFront, single: true });
+      }
+      return;
+    }
+
+    if (kind === "PALM") {
+      // A frond: a drooping rib with narrow leaflets in pairs, swept toward the tip.
+      const droop = 0.35;
+      const rib = [];
+      const steps = 8;
+      let x = ax, y = ay, angle = ang;
+      for (let s = 0; s <= steps; s++) {
+        rib.push([x, y, angle]);
+        x += Math.cos(angle) * len / steps;
+        y += Math.sin(angle) * len / steps;
+        angle += Math.atan2(Math.sin(Math.PI / 2 - angle), Math.cos(Math.PI / 2 - angle)) * droop / steps;
+      }
+      for (let s = 1; s < steps; s++) {
+        const [px, py, pa] = rib[s];
+        const leaflet = len * 0.42 * (1 - s / steps * 0.5);
+        for (const side of [-1, 1]) one(px, py, pa + side * 0.9, leaflet, leaflet * 0.18, PAINT_SHAPES.LANCE);
+      }
+      for (let s = 0; s < steps; s++) {
+        const [px, py, pa] = rib[s];
+        const dx = Math.cos(pa), dy = Math.sin(pa);
+        blade({ bx: px, by: py, dx, dy, len: len / steps + 0.5, wid: 0.5 * k, minHalf: 0.5 * k, shape: PAINT_SHAPES.RIB,
+          tones: { ...tones, lit: tones.shade }, face, fromFront, single: true });
+      }
+      return;
+    }
+
+    if (kind === "TINY") {
+      // Acacia: a few small round leaflets close together.
+      const n = 3 + Math.floor(rnd() * 3);
+      for (let i = 0; i < n; i++) {
+        const r = len * uni(0.2, 0.9), t = uni(0, Math.PI * 2);
+        one(ax + Math.cos(t) * r, ay + Math.sin(t) * r, ang + uni(-1, 1), len * uni(0.7, 1), len * 0.4, PAINT_SHAPES.ROUND);
+      }
+      return;
+    }
+
+    one(ax, ay, ang, len, wid, shape);
+  }
+
+  // A jittered triangular grid of anchors inside the crown, top rows first so lower leaves are drawn over upper ones.
+  function scatter(spacing, S, crown, fill, rnd, holes) {
+    const pts = [];
+    const rowStep = spacing * 0.866;
+    const ox = rnd() * spacing, oy = rnd() * spacing;
+    for (let gy = -spacing, row = 0; gy < S + spacing; gy += rowStep, row++) {
+      for (let gx = -spacing + (row & 1) * spacing / 2; gx < S + spacing; gx += spacing) {
+        const x = gx + ox + (rnd() - 0.5) * 0.7 * spacing, y = gy + oy + (rnd() - 0.5) * 0.7 * spacing;
+        if (crown.norm(x, y) > fill) continue;
+        if (rnd() < holes) continue;
+        pts.push([x, y]);
+      }
+    }
+    return pts.sort((a, b) => a[1] - b[1]);
+  }
+
+  // The block's outline in sprite pixels — top diamond (0,16)-(32,0)-(64,16)-(32,32), sides down to y 48 / 64 —
+  // blended toward a circle by "round". norm is 1 on the outline, less inside.
+  function crownShape(k, round) {
+    const cx = 32 * k, cy = 32 * k;
     const hex = [[0, 16], [32, 0], [64, 16], [64, 48], [32, 64], [0, 48]].map(([x, y]) => [x * k, y * k]);
     const edges = hex.map((a, i) => {
       const b = hex[(i + 1) % hex.length];
       let nx = b[1] - a[1], ny = a[0] - b[0];
       const len = Math.hypot(nx, ny);
       nx /= len; ny /= len;
-      if (nx * (C[0] - a[0]) + ny * (C[1] - a[1]) > 0) { nx = -nx; ny = -ny; }
-      return { nx, ny, h: nx * (a[0] - C[0]) + ny * (a[1] - C[1]) };
+      if (nx * (cx - a[0]) + ny * (cy - a[1]) > 0) { nx = -nx; ny = -ny; }
+      return { nx, ny, h: nx * (a[0] - cx) + ny * (a[1] - cy) };
     });
-    // 1 on the outline, less inside: the hexagon's own measure blended toward a circle by "round".
-    const outlineNorm = (x, y) => {
-      const dx = x - C[0], dy = y - C[1];
+    const norm = (x, y) => {
+      const dx = x - cx, dy = y - cy;
       let hx = 0;
       for (const e of edges) hx = Math.max(hx, (e.nx * dx + e.ny * dy) / e.h);
-      return hx + (Math.hypot(dx, dy) / (32 * k) - hx) * spec.round;
+      return hx + (Math.hypot(dx, dy) / (32 * k) - hx) * round;
     };
-    // Which face of the block a point is on: 0 top, 1 left, 2 right.
-    const faceOf = (x, y) => (y < (32 - Math.abs(x / k - 32) / 2) * k ? 0 : x < C[0] ? 1 : 2);
-    const FACE_N = [[0, 0, 1], [0, -1, 0], [1, 0, 0]];
-    const LIGHT = [-0.55, -0.83];   // screen direction the light comes from: up and a little left
+    return {
+      cx, cy, norm,
+      inside: (x, y, clip) => norm(x, y) <= clip,
+      faceOf: (x, y) => (y < (32 - Math.abs(x / k - 32) / 2) * k ? 0 : x < cx ? 1 : 2),
+    };
+  }
 
-    // Layers back to front: denser and darker at the back so no hole goes all the way through.
-    const layers = Math.max(1, spec.layers | 0);
-    for (let L = 0; L < layers; L++) {
-      const fromFront = layers - 1 - L;
-      const spacing = spec.spacing * k * (fromFront === 0 ? 1 : spec.backSpacing);
-      const leaves = [];
-      const ox = uni(0, spacing), oy = uni(0, spacing);
-      for (let gy = -spacing; gy < S + spacing; gy += spacing * 0.866) {
-        const row = Math.round(gy / (spacing * 0.866));
-        for (let gx = -spacing + (row & 1) * spacing / 2; gx < S + spacing; gx += spacing) {
-          const x = gx + ox + uni(-0.35, 0.35) * spacing, y = gy + oy + uni(-0.35, 0.35) * spacing;
-          if (outlineNorm(x, y) > spec.fill) continue;
-          if (rnd() < (fromFront === 0 ? spec.holes : spec.backHoles)) continue;
-          leaves.push([x, y]);
-        }
-      }
-      leaves.sort((a, b) => a[1] - b[1]);
-
-      for (const [ax, ay] of leaves) {
-        const face = faceOf(ax, ay);
-        // Pointing out of the crown, the top face's leaves out of its own centre, so the top reads as a star of tips.
-        const cx = C[0], cy = face === 0 ? 16 * k : 30 * k;
-        let ang = Math.hypot(ax - cx, ay - cy) < 2 * k ? uni(0, Math.PI * 2) : Math.atan2(ay - cy, ax - cx);
-        ang += uni(-1, 1) * spec.jitter * Math.PI / 180;
-        const dx = Math.cos(ang), dy = Math.sin(ang), px = -dy, py = dx;
-        const len = spec.length * k * (1 + uni(-spec.lengthVar, spec.lengthVar)) * (fromFront ? 1.1 : 1);
-        const wid = len * spec.width * 0.5;
-        const bx = ax - dx * len * 0.3, by = ay - dy * len * 0.3;
-
-        // Light over the crown: bright over its upper part, darker down the sides and a little more on the right —
-        // the hand-made block's measured falloff, which is smoother than three flat cube faces.
-        const yv = ay / S, xv = ax / S;
-        const sm = (a, b, t) => { const q = Math.min(1, Math.max(0, (t - a) / (b - a))); return q * q * (3 - 2 * q); };
-        const lightness = 1 - 0.8 * sm(0.22, 0.7, yv) - 0.6 * Math.max(0, xv - 0.5) * 2;
-        let base = top - 2 + Math.round(Math.max(0, lightness) - 0.05) - fromFront;
-        const roll = rnd();
-        if (roll < spec.darker) base -= 1; else if (roll > 1 - spec.lighter) base += 1;
-        // The half turned to the light keeps the leaf's tone, the other drops one; the brightest top leaves get a
-        // highlight on their lit half.
-        const litSide = px * LIGHT[0] + py * LIGHT[1] > 0 ? 1 : -1;
-        const lit = Math.min(top, base + (face === 0 && fromFront === 0 && rnd() < spec.highlight ? 1 : 0));
-        const toneLit = Math.max(0, Math.min(top, lit)), toneShade = Math.max(0, Math.min(top, base - 1));
-        const dv = Math.round(255 * (1 - fromFront / Math.max(1, layers)));
-
-        // A rim one tone (or more) under the leaf's shaded half, drawn around it over whatever lies behind: what keeps
-        // neighbouring leaves apart, as the dark seams between the leaves of a hand-drawn block do.
-        const rim = Math.max(0, spec.edge) * k;
-        const toneRim = Math.max(0, toneShade - Math.max(1, spec.edgeTones | 0));
-        const reach = len + rim + 1;
-        const mx = bx + dx * len * 0.5, my = by + dy * len * 0.5;
-        const x0 = Math.max(0, Math.floor(bx - reach)), x1 = Math.min(S - 1, Math.ceil(bx + reach));
-        const y0 = Math.max(0, Math.floor(by - reach)), y1 = Math.min(S - 1, Math.ceil(by + reach));
-        for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-          const qx = x + 0.5 - bx, qy = y + 0.5 - by;
-          const along = qx * dx + qy * dy, u = along / len, v = qx * px + qy * py;
-          if (along <= -rim || along >= len + rim) continue;
-          // Lance: widest a little before the middle, pointed at both ends.
-          const uc = Math.min(1, Math.max(0, u));
-          const half = wid * Math.pow(Math.sin(Math.PI * Math.pow(uc, 0.75)), spec.point);
-          const inLeaf = u > 0 && u < 1 && Math.abs(v) <= half;
-          if (!inLeaf && (rim <= 0 || Math.abs(v) > half + rim)) continue;
-          if (outlineNorm(x + 0.5, y + 0.5) > spec.clip) continue;
-          const i = y * S + x, kk = i * 4;
-          // The rim never eats into the silhouette: it only darkens what is already painted behind it.
-          if (!inLeaf && !mask[i]) continue;
-          // "edgeShadow": the rim only on the side away from the light, like the leaf's own shadow on the one behind.
-          if (!inLeaf && spec.edgeShadow && (x + 0.5 - mx) * LIGHT[0] + (y + 0.5 - my) * LIGHT[1] > 0) continue;
-          const tone = !inLeaf ? toneRim : (v >= 0 ? 1 : -1) === litSide ? toneLit : toneShade;
-          const c = palette[tone];
-          color[kk] = c[0]; color[kk + 1] = c[1]; color[kk + 2] = c[2]; color[kk + 3] = 255;
-          const g = Math.round(0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]);
-          gray[kk] = gray[kk + 1] = gray[kk + 2] = g; gray[kk + 3] = 255;
-          const n = FACE_N[face];
-          normal[kk] = Math.round((dot(n, RIGHT) * 0.5 + 0.5) * 255);
-          normal[kk + 1] = Math.round((dot(n, UP) * 0.5 + 0.5) * 255);
-          normal[kk + 2] = Math.round((dot(n, BACK) * 0.5 + 0.5) * 255);
-          normal[kk + 3] = 255;
-          depth[kk] = depth[kk + 1] = depth[kk + 2] = dv; depth[kk + 3] = 255;
-          aoMap[kk] = aoMap[kk + 1] = aoMap[kk + 2] = 255 - fromFront * 40; aoMap[kk + 3] = 255;
-          mask[i] = 1;
-          seam[i] = inLeaf ? 0 : 1;
-        }
+  // Vines, willow strands, mangrove roots: thin strands hanging from the crown's underside, with small leaves.
+  function paintVines(spec, out, blade, rnd, uni, k, nTones, mainPal) {
+    const S = out.size;
+    const pal = tonePalette(scaleHex(spec.vineColor, 0.6), scaleHex(spec.vineColor, 1.35), nTones);
+    const tones = { pal, lit: nTones - 2, shade: nTones - 3, rim: Math.max(0, nTones - 5) };
+    const leafTones = { pal: mainPal, lit: nTones - 3, shade: nTones - 4, rim: Math.max(0, nTones - 5) };
+    for (let i = 0; i < spec.vines; i++) {
+      const x = Math.floor(uni(10, 54) * k);
+      // From inside the crown: the lowest painted pixel of the column, a few pixels up.
+      let y = S - 1;
+      while (y > 0 && !out.mask[y * S + x]) y--;
+      y = Math.max(0, y - Math.floor(uni(2, 8) * k));
+      const len = spec.vineLength * 24 * k * uni(0.5, 1);
+      blade({ bx: x + 0.5, by: y, dx: uni(-0.08, 0.08), dy: 1, len, wid: 0.5 * k, minHalf: 0.5 * k, shape: PAINT_SHAPES.RIB,
+        tones, face: 1, fromFront: 0, single: true, free: true });
+      for (let s = 3 * k, side = 1; s < len; s += uni(2.5, 4) * k, side = -side) {
+        const a = Math.PI / 2 + side * 0.9;
+        const l = spec.length * k * 0.5;
+        blade({ bx: x + 0.5, by: y + s, dx: Math.cos(a), dy: Math.sin(a), len: l, wid: l * 0.3, shape: PAINT_SHAPES.LANCE,
+          tones: leafTones, face: 1, fromFront: 0, free: true });
       }
     }
-    // Pinholes: a few seam pixels left open, so the block is seen through in specks between the leaves (the
-    // reference's many one- and two-pixel gaps) instead of in a few big holes.
-    if (spec.pinholes > 0) {
-      for (let i = 0; i < N; i++) {
-        if (!seam[i] || rnd() >= spec.pinholes) continue;
-        mask[i] = 0;
-        for (const map of [color, normal, depth, aoMap, gray]) map.fill(0, i * 4, i * 4 + 4);
+  }
+
+  // Blossoms: small five-pixel flowers over the front leaves, more of them toward the top.
+  function paintBlossoms(spec, out, put, crown, rnd, k) {
+    const S = out.size;
+    const petal = hexRgb(spec.blossomColor), centre = hexRgb(spec.blossomCenter);
+    const shade = petal.map((c) => Math.round(c * 0.8));
+    const count = Math.round(spec.blossoms * 0.6);
+    for (let i = 0; i < count; i++) {
+      const x = Math.floor(rnd() * S), y = Math.floor(Math.pow(rnd(), 1.4) * S);
+      if (crown.norm(x, y) > 0.9 || !out.mask[y * S + x]) continue;
+      const face = crown.faceOf(x, y);
+      const r = Math.max(1, Math.round(k));
+      for (const [dx, dy, c] of [[0, -r, petal], [-r, 0, petal], [r, 0, shade], [0, r, shade], [0, 0, centre]]) {
+        const X = x + dx, Y = y + dy;
+        if (X >= 0 && Y >= 0 && X < S && Y < S) put(X, Y, c, face, 0, false);
       }
     }
-    return { size: S, color, normal, depth, ao: aoMap, gray, mask };
+  }
+
+  function writePixel(out, kk, rgb, n, depth, ao) {
+    out.color[kk] = rgb[0]; out.color[kk + 1] = rgb[1]; out.color[kk + 2] = rgb[2]; out.color[kk + 3] = 255;
+    const g = Math.round(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]);
+    out.gray[kk] = out.gray[kk + 1] = out.gray[kk + 2] = g; out.gray[kk + 3] = 255;
+    out.normal[kk] = Math.round((dot(n, RIGHT) * 0.5 + 0.5) * 255);
+    out.normal[kk + 1] = Math.round((dot(n, UP) * 0.5 + 0.5) * 255);
+    out.normal[kk + 2] = Math.round((dot(n, BACK) * 0.5 + 0.5) * 255);
+    out.normal[kk + 3] = 255;
+    out.depth[kk] = out.depth[kk + 1] = out.depth[kk + 2] = depth; out.depth[kk + 3] = 255;
+    out.ao[kk] = out.ao[kk + 1] = out.ao[kk + 2] = ao; out.ao[kk + 3] = 255;
+  }
+
+  function scaleHex(hex, f) {
+    return "#" + hexRgb(hex).map((c) => Math.max(0, Math.min(255, Math.round(c * f))).toString(16).padStart(2, "0")).join("");
   }
 
   // n tones from dark to light in sRGB, eased toward both ends — six of them land on the hand-made reference's own
