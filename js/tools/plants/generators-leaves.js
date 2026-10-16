@@ -248,7 +248,8 @@
     // tones run from the species' base colour (darkest) to its tip colour (lightest), so every species paints too.
     if (p.leafForm === "PAINTED") {
       mb.painted = {
-        seed: p.seed, shape: p.leafShape, length: Math.max(3, Math.min(32, p.leafSize * 62 * p.paintScale)), lengthVar: p.leafSizeVar * 0.8,
+        // Seamless: the pattern repeats every block (period 1), so one sprite joins its neighbours on every side.
+        seed: p.seed, seamless: p.paintSeamless, period: 1, phase: [0, 0], shape: p.leafShape, length: Math.max(3, Math.min(32, p.leafSize * 62 * p.paintScale)), lengthVar: p.leafSizeVar * 0.8,
         width: p.leafWidth, point: p.paintPoint, spacing: p.paintSpacing, backSpacing: 1.1, jitter: p.paintJitter,
         hang: p.leafHang, layers: p.paintLayers, holes: p.paintHoles + Math.max(0, p.blockHoles - 0.15) * 0.8,
         backHoles: p.paintBackHoles, pinholes: p.paintPinholes, round: p.paintRound, fill: p.paintFill, clip: p.paintClip,
@@ -381,6 +382,7 @@
         ["vineColor", "Color colgante", "color", L(0.1, 0.3, 0.05)],
       ],
       "Pintado": [
+        ["paintSeamless", "Sin costuras", "bool", true, null, null, null, "El dibujo sigue en el bloque de al lado: una copa de muchos bloques se ve como una sola masa. Apagado: cada bloque es una bola redonda"],
         ["paintScale", "Escala de hoja", "num", 1.35, 0.5, 3, 0.05, "Multiplica «Tamaño»: a 64 px una hoja necesita unos 9–14 px para que se lea su forma"],
         ["paintPoint", "Punta", "num", 1.4, 0.5, 3, 0.05, "Más = hojas más afiladas"],
         ["paintSpacing", "Separación", "num", 0.52, 0.25, 1.5, 0.01, "Entre hojas, respecto a su largo: menos = más hojas. El largo y el ancho son «Tamaño» y «Ancho» de Hojas (tamaño × 62 = pixeles)"],
