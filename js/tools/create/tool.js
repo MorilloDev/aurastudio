@@ -1,16 +1,18 @@
 "use strict";
 
-// Crear: una pestaña para todo lo que genera el estudio — bloques y plantas hoy, hojas y semillas después.
-// Cada modo es un generador completo, montado la primera vez que se muestra, así cambiar de modo conserva
-// el trabajo de cada uno. Aquí sólo vive la barra de modos, la orientación y el hand-off al modo en pantalla.
+// Crear: one tab for everything the studio generates — blocks and plants today, leaves and seeds next. Each mode is a
+// whole generator (the Bloques and Foliage tools as they were) mounted the first time it is shown, so switching keeps
+// each one's work; this file is only the mode bar, the orientation state and the hand-off of the studio's calls to the
+// mode on show.
 (function (Aura) {
   const { h } = Aura.dom;
   const { segmented } = Aura.controls;
   const { prefs } = Aura.storage;
 
-  // Un sprite isométrico no se puede girar 90° como bitmap: la proyección 2:1 no es invariante bajo esa
-  // rotación. El giro ocurre en coordenadas de mundo y se vuelve a proyectar; los espejos, en cambio, sí son
-  // transformaciones de píxel y se aplican al final del render. Por eso cada modo declara qué ejes soporta.
+  // Orientation. An isometric sprite cannot be rotated 90° as a bitmap: the 2:1 projection is not invariant under that
+  // rotation, so the yaw is a world-space rotation the generators apply before projecting, while the mirrors (flipX /
+  // flipY) are pixel transforms applied at the end of the render. Each mode declares which axes it supports: plants are
+  // billboards facing the camera, so they only take a horizontal mirror.
   const AXES = { yaw: false, flipX: false, flipY: false };
   const normYaw = (y) => (((Math.round((y || 0) / 90) * 90) % 360) + 360) % 360;
   const ROT_ZERO = () => ({ yaw: 0, flipX: false, flipY: false });
@@ -24,16 +26,12 @@
 
   const MODES = [
     {
-      id: "blocks", label: "Bloque",
-      hint: "Cubos, losas, escaleras… con las caras de una hoja",
-      // El cubo puede girar en los 4 yaw y espejarse; la vegetación es un billboard que mira a cámara, así
-      // que sólo admite espejo horizontal (girarla 90° la tumbaría).
+      id: "blocks", label: "Bloque", hint: "Cubos, losas, escaleras… con las caras de una hoja",
       axes: { yaw: true, flipX: true, flipY: true },
       make: () => Aura.blocksTool.blocksTool(),
     },
     {
-      id: "plants", label: "Planta",
-      hint: "Hierba, flores, cultivos, plantas de agua, hojas y semillas",
+      id: "plants", label: "Planta", hint: "Hierba, flores, cultivos, plantas de agua, hojas y semillas",
       axes: { yaw: false, flipX: true, flipY: false },
       make: () => Aura.plantsTool.plantsTool(),
     },
@@ -69,35 +67,32 @@
       this.show(prefs.get("create:mode", this.modes[0].id));
     }
 
+    // Lazy construction and mounting: a generator is built the first time it is shown, so opening one mode never pays
+    // for the other.
     show(id) {
       const mode = this.modes.find((m) => m.id === id) ?? this.modes[0];
       if (mode === this.current) return;
       this.current?.tool?.deactivate?.();
       for (const m of this.modes) m.host.classList.toggle("active", m === mode);
-
-      // Construcción y montaje perezosos: antes los dos generadores se instanciaban al crear la herramienta,
-      // aunque el usuario no abriese el otro modo.
       if (!mode.tool) mode.tool = mode.make();
       if (!mode.mounted) {
         mode.mounted = true;
         mode.tool.mount(mode.host, this.studio);
         if (this.project) mode.tool.onProject?.(this.project);
       }
-
       this.current = mode;
       this.seg.set(mode.id);
       this.hint.textContent = mode.hint;
       this.buildRotBar(mode);
       mode.tool.setRotation?.(this.rotOf(mode));
       prefs.set("create:mode", mode.id);
-
-      // Montado en oculto el generador midió un canvas de tamaño cero; al mostrarlo es cuando puede dibujar.
-      // El token descarta activar un modo que ya se abandonó si el usuario cambia rápido.
+      // Mounted while hidden, a generator measured a zero-size canvas; showing it is when it can draw. The token
+      // discards the activation of a mode that has already been left.
       const token = ++this.token;
       requestAnimationFrame(() => { if (this.token === token) mode.tool.activate?.(); });
     }
 
-    // ─── orientación ────────────────────────────────────────────────────────────────────────────────
+    // ── Orientation ─────────────────────────────────────────────────────────────────────────────────
     rotOf(mode) {
       if (!mode.rot) mode.rot = rot.sane(prefs.get(`create:rot:${mode.id}`, ROT_ZERO()));
       return mode.rot;
@@ -121,13 +116,10 @@
       this.rotBox.hidden = !(caps.yaw || caps.flipX || caps.flipY);
       if (this.rotBox.hidden) return;
 
-      const btn = (glyph, title, on, fn) => {
-        const b = h("button", {
-          class: ["cr-rbtn", on && "on"], type: "button", title, "aria-label": title,
-          onclick: () => this.setRot(fn(cur)),
-        }, glyph);
-        return b;
-      };
+      const btn = (glyph, title, on, fn) => h("button", {
+        class: ["cr-rbtn", on && "on"], type: "button", title, "aria-label": title,
+        onclick: () => this.setRot(fn(cur)),
+      }, glyph);
 
       if (caps.yaw) {
         this.rotBox.append(
@@ -153,18 +145,16 @@
       e.preventDefault();
     }
 
-    // ─── ciclo de vida ──────────────────────────────────────────────────────────────────────────────
+    // ── Lifecycle ───────────────────────────────────────────────────────────────────────────────────
     activate() {
       window.addEventListener("keydown", this.onKey);
       const mode = this.current;
       if (mode) requestAnimationFrame(() => { if (this.current === mode) mode.tool.activate?.(); });
     }
-
     deactivate() {
       window.removeEventListener("keydown", this.onKey);
       this.current?.tool?.deactivate?.();
     }
-
     dispose() {
       this.deactivate();
       for (const m of this.modes) {
