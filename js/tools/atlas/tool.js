@@ -96,6 +96,9 @@
       this.studio = studio;
       this.showMarks = prefs.get("atlas:marks", true);
       this.showCoords = prefs.get("atlas:coords", false);
+      // Moves and swaps carry only the pixels: no tile or item JSON is rewritten. Off by default — following the art is
+      // what keeps sprites and data in step; this is for re-arranging what is drawn without touching what uses it.
+      this.pixelsOnly = prefs.get("atlas:pixelsOnly", false);
       host.appendChild(this.#buildLayout());
       this.vp = new Viewport(this.canvas);
       this.vp.on("change", () => this.#draw());
@@ -182,6 +185,9 @@
         onclick: () => this.#toggleMarks() }, "Marcas");
       this.coordsBtn = h("button", { class: this.showCoords ? "on" : "", title: "Coordenadas [x, y] de cada celda, como van en el JSON (C)",
         onclick: () => this.#toggleCoords() }, "Coords");
+      this.pixelsBtn = h("button", { class: this.pixelsOnly ? "on" : "",
+        title: "Solo píxeles: mover e intercambiar celdas sin cambiar las coordenadas de los JSON (P)",
+        onclick: () => this.#togglePixelsOnly() }, "Solo píxeles");
       this.undoBtn = h("button", { class: "icon", title: "Deshacer (Ctrl+Z)", onclick: () => this.history.undo() }, "↶");
       this.redoBtn = h("button", { class: "icon", title: "Rehacer (Ctrl+Y)", onclick: () => this.history.redo() }, "↷");
       this.saveBtn = h("button", { class: "primary", title: "Guardar la hoja, sus mapas y los JSON cambiados (Ctrl+S)", onclick: () => this.save() }, "Guardar");
@@ -190,7 +196,7 @@
       this.viewEl = h("div", { class: "at-view" }, this.canvas, this.banner);
       const stage = h("div", { class: "at-stage" },
         h("div", { class: "at-toolbar" },
-          this.viewSeg, this.marksBtn, this.coordsBtn,
+          this.viewSeg, this.marksBtn, this.coordsBtn, this.pixelsBtn,
           h("button", { title: "Ver la hoja entera (F)", onclick: () => this.#fit() }, "Encajar"),
           h("span", { class: "grow" }),
           this.undoBtn, this.redoBtn, this.saveBtn),
@@ -282,6 +288,15 @@
       prefs.set("atlas:marks", this.showMarks);
       this.marksBtn.classList.toggle("on", this.showMarks);
       this.#draw();
+    }
+
+    #togglePixelsOnly() {
+      this.pixelsOnly = !this.pixelsOnly;
+      prefs.set("atlas:pixelsOnly", this.pixelsOnly);
+      this.pixelsBtn.classList.toggle("on", this.pixelsOnly);
+      this.studio.setStatus(this.pixelsOnly
+        ? "Solo píxeles: mover no cambia ningún JSON — los tiles e items siguen apuntando a sus celdas."
+        : "Mover lleva las coordenadas de los JSON con el arte.", this.pixelsOnly ? "warn" : "ok");
     }
 
     #toggleCoords() {
@@ -781,7 +796,8 @@
       const displaced = sortCells(dst.filter((c) => !srcSet.has(ck(...c))));
       const vacated = sortCells(src.filter((c) => !dstSet.has(ck(...c))));
       const pairs = src.map((c, i) => [c, dst[i]]).concat(displaced.map((c, i) => [c, vacated[i]]));
-      const plan = this.#refPlan(pairs);
+      // Pixels only: no reference follows, so nothing can be split either.
+      const plan = this.pixelsOnly ? { moves: [], conflicts: [] } : this.#refPlan(pairs);
       if (plan.conflicts.length) {
         this.studio.toast("No puedo mover sin partir un tile.", {
           kind: "bad", detail: plan.conflicts.slice(0, 4).map((r) => `${T.tileLabel(r.tile)} (${T.refLabel(r)})`).join(" · ")
@@ -791,7 +807,7 @@
       }
       const inverse = pairs.map(([a, b]) => [b, a]);
       const layers = [...this.img.layers.values()];
-      this.#run(`Mover ${src.length} celda(s)`,
+      this.#run(`Mover ${src.length} celda(s)${this.pixelsOnly ? " (solo píxeles)" : ""}`,
         () => { this.#permute(layers, pairs); for (const m of plan.moves) { m.coord[0] = m.to[0]; m.coord[1] = m.to[1]; } },
         () => { this.#permute(layers, inverse); for (const m of plan.moves) { m.coord[0] = m.from[0]; m.coord[1] = m.from[1]; } });
       this.#select(dst);
@@ -1704,6 +1720,7 @@
         { id: "atlas.fit", title: "Ver la hoja entera", group: "Atlas", keys: ["F"], enabled: has, run: () => this.#fit() },
         { id: "atlas.marks", title: "Mostrar/ocultar marcas", group: "Atlas", keys: ["M"], enabled: has, run: () => this.#toggleMarks() },
         { id: "atlas.coords", title: "Mostrar/ocultar coordenadas", group: "Atlas", keys: ["C"], enabled: has, run: () => this.#toggleCoords() },
+        { id: "atlas.pixelsOnly", title: "Solo píxeles (mover sin cambiar los JSON)", group: "Atlas", keys: ["P"], enabled: has, run: () => this.#togglePixelsOnly() },
         { id: "atlas.all", title: "Seleccionar todo el arte", group: "Atlas", keys: ["Ctrl+A"], enabled: has, run: () => this.#select([...this.#artCells].map(pk)) },
         { id: "atlas.left", title: "Mover selección a la izquierda", group: "Atlas", keys: ["ArrowLeft"], enabled: sel, hidden: true, run: arrow(-1, 0) },
         { id: "atlas.right", title: "Mover selección a la derecha", group: "Atlas", keys: ["ArrowRight"], enabled: sel, hidden: true, run: arrow(1, 0) },
