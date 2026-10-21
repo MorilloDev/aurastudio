@@ -496,6 +496,7 @@
     // Not on seamless blocks: strands hang outside the block, over whatever is below, so they would cut the seams.
     if (spec.vines > 0 && !seamless) paintVines(spec, out, blade, rnd, uni, k, nTones, mainPal);
     if (spec.blossoms > 0) paintBlossoms(spec, out, put, crown, rnd, k);
+    if (spec.fruits > 0) paintFruits(spec, out, put, crown, k);
 
     // Pinholes: some seam pixels left open, so the block is seen through in specks between the leaves (the
     // reference's many one- and two-pixel gaps) instead of in a few big holes.
@@ -811,6 +812,72 @@
       for (const [dx, dy, c] of [[0, -r, petal], [-r, 0, petal], [r, 0, shade], [0, r, shade], [0, 0, centre]]) {
         const X = x + dx, Y = y + dy;
         if (X >= 0 && Y >= 0 && X < S && Y < S) put(X, Y, c, face, 0, false);
+      }
+    }
+  }
+
+  /**
+   * Fruits over the leaves: round (apple, orange), long (mango, pear) or a cluster (cherries), each shaded by the same
+   * light as the leaves — a lit spot up-left, a dark rim down-right — with a short stalk. Kept whole inside the crown,
+   * so on a seamless block no fruit is cut at the sprite's edge. Its own random stream, so adding fruit never moves a
+   * leaf.
+   */
+  function paintFruits(spec, out, put, crown, k) {
+    const S = out.size;
+    const rnd = mulberry(((spec.seed >>> 0) ^ 0x5bd1e995) >>> 0 || 7);
+    const base = hexRgb(spec.fruitColor), tip = hexRgb(spec.fruitTipColor), stalk = hexRgb(spec.fruitStemColor);
+    const mul = (c, f) => c.map((v) => Math.max(0, Math.min(255, Math.round(v * f))));
+    const R = Math.max(1, spec.fruitSize * k);
+    const shape = spec.fruitShape;
+    // Blobs of one fruit: [dx, dy, rx, ry] around its centre.
+    const blobs = shape === "LONG" ? [[0, 0, R * 0.72, R * 1.25]]
+      : shape === "CLUSTER" ? [[-R * 0.55, 0, R * 0.55, R * 0.55], [R * 0.55, R * 0.15, R * 0.55, R * 0.55], [0, R * 0.85, R * 0.55, R * 0.55]]
+      : [[0, 0, R, R * 0.95]];
+    const reach = R * 1.9 + 2;
+    const placed = [];
+    const count = Math.round(spec.fruits);
+    for (let tries = 0; placed.length < count && tries < count * 40; tries++) {
+      const x = 2 + rnd() * (S - 4), y = 2 + Math.pow(rnd(), 0.8) * (S - 4);
+      // Whole fruit inside the crown, and not over another fruit.
+      if ([[-reach, -reach], [reach, -reach], [-reach, reach], [reach, reach]].some(([dx, dy]) => !crown.inside(x + dx, y + dy, 0.98))) continue;
+      if (placed.some(([px, py]) => Math.hypot(px - x, py - y) < reach * 1.3)) continue;
+      placed.push([x, y]);
+    }
+    const Lx = PAINT_LIGHT[0], Ly = PAINT_LIGHT[1];
+    for (const [cx, cy] of placed) {
+      const face = crown.faceOf(cx, cy);
+      // Stalk first, so the fruit's top covers its foot: one or two pixels up from each blob (a cluster joins them).
+      const top = Math.min(...blobs.map(([dx, dy, , ry]) => cy + dy - ry));
+      const sx = Math.round(cx), sy = Math.floor(top);
+      for (let i = 1; i <= Math.max(1, Math.round(k * 1.5)); i++) {
+        const Y = sy - i + 1;
+        if (Y >= 0 && Y < S && sx >= 0 && sx < S) put(sx, Y, stalk, face, 0, false);
+      }
+      if (shape === "CLUSTER") for (const [dx, dy] of blobs) {
+        // Thin stems from the shared point to each cherry.
+        const ex = cx + dx, ey = cy + dy - R * 0.5, n = Math.ceil(Math.hypot(ex - sx, ey - sy));
+        for (let t = 0; t <= n; t++) {
+          const X = Math.round(sx + (ex - sx) * t / Math.max(1, n)), Y = Math.round(sy + (ey - sy) * t / Math.max(1, n));
+          if (X >= 0 && Y >= 0 && X < S && Y < S) put(X, Y, stalk, face, 0, false);
+        }
+      }
+      for (const [dx, dy, rx, ry] of blobs) {
+        const bx = cx + dx, by = cy + dy;
+        for (let y = Math.floor(by - ry - 1); y <= Math.ceil(by + ry + 1); y++) {
+          for (let x = Math.floor(bx - rx - 1); x <= Math.ceil(bx + rx + 1); x++) {
+            if (x < 0 || y < 0 || x >= S || y >= S) continue;
+            const ux = (x + 0.5 - bx) / rx, uy = (y + 0.5 - by) / ry, d = Math.hypot(ux, uy);
+            if (d > 1) continue;
+            // Towards the light → the tip colour; away and at the rim → darker, so a 3–5 px fruit still reads round.
+            const lit = ux * Lx + uy * Ly;
+            let c = base;
+            if (d > 0.72 && lit < 0.1) c = mul(base, 0.55);
+            else if (lit < -0.25) c = mul(base, 0.78);
+            else if (lit > 0.35 && d < 0.75) c = tip;
+            if (lit > 0.55 && d > 0.25 && d < 0.6 && spec.fruitShine > 0) c = mul(tip, 1 + spec.fruitShine * 0.35);
+            put(x, y, c, face, 0, false);
+          }
+        }
       }
     }
   }
