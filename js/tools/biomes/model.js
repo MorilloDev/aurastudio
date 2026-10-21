@@ -108,5 +108,134 @@
     return joinPath(data, "Worldgen", "Biomes", id + ".json");
   }
 
-  Aura.biomeModel = { PARAMS, SURFACES, loadBiomes, serialize, isDirty, kindOf, boxOf, pick, inside, blank, tileRefs, newBiomePath };
+  // ── Repartir decoraciones ───────────────────────────────────────────────────────────────────────────────────────
+  // Which biome each decoration tile belongs in, from what the tile files already say: its habitat (where it grows), its
+  // spawnOn (what ground it needs), its growth climate and its tags. The Studio only proposes; the person ticks.
+
+  const HABITAT_ON = { land: "surface", submerged: "seafloor", emergent: "shallows", floating: "watersurface" };
+  const HABITAT_LABEL = { land: "tierra", submerged: "sumergida", emergent: "emergente", floating: "flotante" };
+  // For tiles without "habitat": the name is a good guess, and the guess decides "on" so the game puts it in the water.
+  const NAME_HABITAT = [
+    [/kelp|seaweed|alga|coral|anemone|seagrass|sea_grass|sponge/, "submerged"],
+    [/reed|cattail|papyrus|junco|bulrush|rush|mangrove_root/, "emergent"],
+    [/lily|lilypad|duckweed|nenufar|lenteja/, "floating"],
+  ];
+  const DECOR_TAGS = ["herb", "plant", "flower", "foliage", "mushroom", "fungus", "rock", "pebble", "decoration", "bush", "fern", "coral"];
+  const DECOR_CATEGORIES = ["foliage", "plants", "flora", "decoration", "decorations"];
+
+  const lowerTags = (tile) => (Array.isArray(tile?.tags) ? tile.tags.map((t) => String(t).toLowerCase()) : []);
+  const shortId = (id) => String(id ?? "").replace(/^aura:/, "");
+
+  /** { habitat, guessed }: the tile's own habitat, or one guessed from its name (land when nothing says otherwise). */
+  function habitatOf(tile, id) {
+    const own = tile?.habitat ? String(tile.habitat).toLowerCase() : "";
+    if (HABITAT_ON[own]) return { habitat: own, guessed: false };
+    const name = shortId(id).toLowerCase();
+    for (const [re, hab] of NAME_HABITAT) if (re.test(name)) return { habitat: hab, guessed: true };
+    return { habitat: "land", guessed: false };
+  }
+
+  /**
+   * The tiles that can be decoration: plants, rocks and the like, not crop stages (anything with a next stage, or that is
+   * one) nor the middle / top of a column, which grow from their base.
+   */
+  function decorationCandidates(tiles) {
+    const grown = new Set();
+    for (const [, info] of tiles) {
+      const g = info.tile?.growth;
+      for (const k of ["next", "middle", "top", "into"]) if (g?.[k]) grown.add(shortId(g[k]));
+    }
+    const out = [];
+    for (const [id, info] of tiles) {
+      const tile = info.tile, short = shortId(id);
+      if (!tile || grown.has(short) || tile.growth?.next) continue;
+      const tags = lowerTags(tile);
+      if (tags.includes("crop") || tags.includes("planted")) continue;
+      const category = String(info.doc?.root?.category ?? "").toLowerCase();
+      const decor = !!tile.habitat || tags.some((t) => DECOR_TAGS.includes(t)) || DECOR_CATEGORIES.includes(category);
+      if (!decor) continue;
+      out.push({ id: short, info, tags, ...habitatOf(tile, short) });
+    }
+    return out;
+  }
+
+  /** 0..1, how much of the tile's growth climate the biome's box covers; null when the tile sets none. */
+  function climateFit(tile, box) {
+    const c = tile?.growth?.climate;
+    if (!c || !box) return null;
+    let fit = 1, any = false;
+    for (const key of ["temperature", "humidity"]) {
+      if (!Array.isArray(c[key])) continue;
+      any = true;
+      const [a, b] = range(c[key]), [lo, hi] = box[key];
+      const overlap = Math.max(0, Math.min(b, hi) - Math.max(a, lo));
+      fit *= overlap / Math.max(1e-6, Math.min(b - a, hi - lo) || 1e-6);
+    }
+    return any ? Math.min(1, fit) : null;
+  }
+
+  /** true / false when the tile's spawnOn names grounds, null when it names none. tagsOf(id) → lower-case tags. */
+  function groundFits(tile, root, tagsOf) {
+    const list = Array.isArray(tile?.spawnOn) ? tile.spawnOn.map((v) => String(v).toLowerCase()) : [];
+    if (!list.length) return null;
+    const m = root?.materials ?? {};
+    const grounds = [m.surface, ...(m.surfaceVariants ?? []).map((v) => v?.tile)].filter(Boolean).map((g) => shortId(g).toLowerCase());
+    return grounds.some((g) => list.some((want) => (want.startsWith("#") ? tagsOf(g).includes(want.slice(1)) : shortId(want) === g)));
+  }
+
+  /**
+   * What a biome would gain: [{ tile, on, chance, habitat, guessed, reason }] for every candidate that fits and is not
+   * already in its decoration. Chances are a starting point by kind (grass tufts common, flowers and rocks rare, ore
+   * rocks rarer), scaled by how well the climate fits, then scaled down together so the biome's total stays under 0.95.
+   */
+  function suggestDecoration(root, tiles, tagsOf) {
+    if (!root) return [];
+    const kind = kindOf(root);
+    const box = kind === "ocean" ? null : boxOf(root);
+    const have = new Set((root.decoration ?? []).map((d) => shortId(d?.tile).toLowerCase()));
+    const surfaceTags = tagsOf(shortId(root.materials?.surface).toLowerCase());
+    const grassy = surfaceTags.includes("biome_tinted") || /grass/.test(String(root.materials?.surface ?? ""));
+    const wet = kind === "coast" || (box && box.humidity[1] >= 0.5);
+    const out = [];
+    for (const c of decorationCandidates(tiles)) {
+      if (have.has(c.id.toLowerCase())) continue;
+      const tile = c.info.tile, reasons = [];
+      let chance;
+      if (c.habitat === "land") {
+        if (kind === "ocean") continue;
+        const ground = groundFits(tile, root, tagsOf);
+        const rocky = c.tags.includes("rock") || c.tags.includes("pebble");
+        if (ground === false) continue;
+        if (ground === true) reasons.push("crece sobre " + shortId(root.materials?.surface));
+        else if (!rocky && !grassy) continue;      // plants without spawnOn grow on grass, not on sand or stone
+        chance = rocky ? (c.tags.includes("needs_pickaxe") ? 0.0006 : 0.002)
+          : c.info.tinted ? 0.15 : tile.growth?.type === "column" ? 0.006 : 0.005;
+        reasons.push(rocky ? "roca" : c.info.tinted ? "hierba (se tiñe)" : "planta de tierra");
+      } else {
+        if (c.habitat === "submerged") {
+          chance = 0.07;
+          reasons.push(kind === "ocean" ? "fondo del mar" : "fondo de ríos y lagos");
+        } else {
+          if (kind === "ocean") continue;          // the open sea has no shore and no calm water for lily pads
+          if (kind !== "ocean" && !wet) continue;  // reeds and lily pads only where the biome is humid enough for water
+          chance = c.habitat === "emergent" ? 0.05 : 0.03;
+          reasons.push(c.habitat === "emergent" ? "orillas" : "sobre el agua");
+        }
+      }
+      const fit = climateFit(tile, box);
+      if (fit === 0) continue;
+      if (fit !== null) { chance *= fit; reasons.push(`clima ${Math.round(fit * 100)} %`); }
+      // Only an explicit "on" when the tile does not say its habitat itself: the game's Auto would put it on land.
+      const on = c.guessed ? HABITAT_ON[c.habitat] : undefined;
+      out.push({ tile: c.id, on, chance, habitat: c.habitat, guessed: c.guessed, reason: reasons.join(" · "), info: c.info });
+    }
+    const used = (root.decoration ?? []).reduce((s, d) => s + (Number(d.chance) || 0), 0);
+    const room = Math.max(0, 0.95 - used), want = out.reduce((s, d) => s + d.chance, 0);
+    const k = want > room ? room / want : 1;
+    for (const d of out) d.chance = Math.round(d.chance * k * 100000) / 100000;
+    return out.filter((d) => d.chance > 0);
+  }
+
+  Aura.biomeModel = { PARAMS, SURFACES, HABITAT_LABEL, loadBiomes, serialize, isDirty, kindOf, boxOf, pick, inside, blank, tileRefs, newBiomePath,
+    decorationCandidates, suggestDecoration };
 })(window.Aura ??= {});
