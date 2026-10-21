@@ -160,9 +160,10 @@
         if (!tile || typeof tile !== "object") continue;
         const sheet = docSheet(doc, tile);
         if (isItemDoc(doc)) {
-          // [0, 0] is "no icon of its own" in the game (fallback square, or a tile item's tile), never a real cell.
+          // Any "iconCoord", [0, 0] included, is a real cell. An item without the key has no icon of its own: the game
+          // shows its fallback square, or a tile item's tile.
           const c = tile.iconCoord;
-          if (isCoord(c) && (c[0] !== 0 || c[1] !== 0)) refs.push({ doc, tile, owner: tile, where: "", state: "icon", side: "front", coord: c, sheet, tw, th });
+          if (isCoord(c)) refs.push({ doc, tile, owner: tile, where: "", state: "icon", side: "front", coord: c, sheet, tw, th });
           continue;
         }
         for (const { owner, where } of artOwners(tile)) {
@@ -224,8 +225,6 @@
       const at = firstCell.get(r.tile);
       if (!at || r.coord[1] < at[1] || (r.coord[1] === at[1] && r.coord[0] < at[0])) firstCell.set(r.tile, [r.coord[0], r.coord[1]]);
     }
-    // An item at [0, 0] has no ref but is still "at Y 0": it goes first, as asked.
-    if (isItemDoc(doc)) for (const it of list) if (it && !firstCell.has(it) && isCoord(it.iconCoord)) firstCell.set(it, [0, 0]);
 
     const keyed = list.map((t, i) => ({ t, i, at: firstCell.get(t) }));
     keyed.sort((a, b) => {
