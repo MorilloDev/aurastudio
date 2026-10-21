@@ -1,909 +1,490 @@
 "use strict";
 
-// More plant types for the Foliage tab — water plants, mushrooms, rocks, crystals, ferns, clover, reeds, papyrus,
-// bamboo, vines and hanging plants — ported from the Stylized Foliage Generator add-on (v18), plus the variety
-// presets of every type (grass kinds, flower kinds…), each with its own colours. Registers into Aura.plantGen.
+// Leaves and seeds for the Crear tab. Leaves come in three forms — a leaf block (a tree's canopy cube, kept inside the
+// block so it tiles with its neighbours), leaves lying on the ground, and a pile — each with the species presets (oak,
+// birch, pine, spruce, five jungle kinds, acacia, dark oak, cherry, mangrove, willow, autumn, dead). Seeds are the item
+// a crop is planted from: grains, flat seeds, kernels or a seed potato, as a small pile, scattered, or in a pouch.
+// Registers into Aura.plantGen; no DOM, so it also runs under Node.
 (function (Aura) {
   const G = Aura.plantGen;
   const M = Aura.plantMesh;
-  const { V, UP, clamp01, smooth, jitterColor, gradient, anyPerp, bezierPath, arcPath, headMatrix, crack, noise3 } = M;
-  const { L, deg, vary, kink, nodeColors, featherLeaf, petal, flowerCenter, segmentedStem } = G.helpers;
+  const { V, UP, clamp01, jitterColor, anyPerp, noise3 } = M;
+  const { L } = G.helpers;
 
-  // ── Shared pieces ────────────────────────────────────────────────────────────────────────────────────────────────
+  const blockH = () => Aura.blockEngine.BLOCK_HEIGHT;
 
-  /** A curl that winds tighter toward its end: vine tendrils, a fern's young fiddlehead. */
-  function coil(mb, base, direction, length, width, color, turns = 2) {
-    const d = V.len(direction) > 1e-6 ? V.norm(direction) : UP;
-    const side = anyPerp(d), up = V.norm(V.cross(d, side));
-    const steps = 14, pts = [];
-    for (let s = 0; s <= steps; s++) {
-      const t = s / steps, a = t * turns * 2 * Math.PI, r = length * 0.35 * (1 - 0.8 * t);
-      pts.push(V.add(V.add(base, V.mul(d, length * 0.6 * t)), V.mul(V.add(V.mul(side, Math.sin(a)), V.mul(up, 1 - Math.cos(a))), r)));
+  // Leaf outlines: half-width along the leaf (t = 0 at the stalk, 1 at the tip), before the width option.
+  const OUTLINES = {
+    LOBED: (t) => Math.sin(Math.PI * Math.pow(t, 0.8)) * (0.7 + 0.3 * Math.abs(Math.cos(t * Math.PI * 3.5))),
+    OVAL: (t) => Math.pow(Math.sin(Math.PI * Math.min(1, t * 0.95 + 0.05)), 0.7),
+    ROUND: (t) => Math.pow(Math.sin(Math.PI * t), 0.5),
+    LANCE: (t) => Math.sin(Math.PI * Math.pow(t, 0.8)),
+    NARROW: (t) => 0.9 * Math.sin(Math.PI * Math.pow(t, 0.7)),
+    HEART: (t) => Math.sin(Math.PI * Math.pow(t, 0.75)) * (1.15 - 0.3 * t),
+    // Monstera: a heart cut by slits from the edge toward the rib.
+    SPLIT: (t) => {
+      const w = Math.sin(Math.PI * Math.pow(t, 0.75)) * (1.15 - 0.3 * t);
+      return t > 0.22 && t < 0.92 && (t * 6) % 1 < 0.3 ? w * 0.22 : w;
+    },
+    TINY: (t) => Math.sin(Math.PI * t),
+  };
+
+  // ── Pieces ───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * A flat leaf from base along dir, lying in the plane whose normal is normal; curl bends it toward that normal (a
+   * cupped leaf), fold creases it along the rib.
+   */
+  function flatLeaf(mb, base, dir, normal, length, width, c0, c1, shape, curl, fold, seg = 4) {
+    const d = V.norm(dir);
+    let n = V.sub(normal, V.mul(d, V.dot(normal, d)));
+    n = V.len(n) > 1e-6 ? V.norm(n) : anyPerp(d);
+    const side = V.norm(V.cross(d, n));
+    const outline = OUTLINES[shape] ?? OUTLINES.LANCE;
+    const path = [], widths = [], cols = [];
+    for (let i = 0; i <= seg; i++) {
+      const t = i / seg;
+      path.push(V.add(V.add(base, V.mul(d, length * t)), V.mul(n, length * curl * 0.45 * t * t)));
+      widths.push(Math.max(0, outline(t)) * width * 0.5);
+      cols.push(V.lerp(c0, c1, t));
     }
-    mb.tube(pts, pts.map((_, s) => width * (1 - 0.6 * s / steps)), 3, pts.map(() => color));
+    mb.ribbon(path, widths, side, cols, { fold, details: "LEAF" });
   }
 
-  // ── Climbers ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
-  function genVine(mb, p, r, pos) {
-    const seg = Math.max(4, p.vineSegments);
-    const cb = jitterColor(r, p.baseColorL, p.colorVariation), ct = jitterColor(r, p.tipColorL, p.colorVariation);
-    let a = r.uniform(0, 2 * Math.PI);
-    const step = p.vineLength / seg;
-    const path = [pos.slice()];
-    for (let i = 0; i < seg; i++) {
-      a += r.uniform(-p.vineWobble, p.vineWobble);
-      const horiz = V.mul([Math.cos(a), Math.sin(a), 0], step * Math.max(0, 1 - Math.abs(p.vineClimb) * 0.5));
-      path.push(V.add(V.add(path[path.length - 1], horiz), V.mul(UP, step * p.vineClimb)));
-    }
-    mb.tube(path, path.map((_, i) => p.vineWidth * (1 - 0.5 * i / seg)), p.tubeSides, gradient(cb, ct, seg + 1));
-    const lc = p.vineLeafColorL;
-    for (let i = 0; i < p.vineLeaves; i++) {
-      const idx = Math.min(seg, Math.floor((i + 1) / (p.vineLeaves + 1) * seg));
-      const tan = V.norm(V.sub(path[Math.min(seg, idx + 1)], path[Math.max(0, idx - 1)]));
-      let out = V.cross(tan, UP);
-      out = V.mul(V.len(out) > 1e-6 ? V.norm(out) : anyPerp(tan), i % 2 === 0 ? 1 : -1);
-      const size = p.vineLeafSize * r.uniform(0.8, 1.2);
-      mb.leaf(path[idx], out, size, size * 0.55, [jitterColor(r, V.mul(lc, 0.85), 0.05), lc], { lift: 0.25, droop: 0.3, fold: 0.2, shape: "HEART" });
-    }
-    for (let i = 0; i < p.vineTendrils; i++) {
-      const idx = Math.min(seg, Math.floor((i + 0.5) / p.vineTendrils * seg));
-      coil(mb, path[idx], [r.uniform(-1, 1), r.uniform(-1, 1), 0.4], p.vineLeafSize * 0.5, p.vineWidth * 0.35, ct, r.uniform(1.5, 2.5));
-    }
-  }
-
-  /** Roots, moss or vines hanging from the block above (caves, overhangs): anchored at the ceiling, growing down. */
-  function genHanging(mb, p, r, pos) {
-    const H = Aura.blockEngine.BLOCK_HEIGHT;
-    const ceiling = V.add(pos, [0, 0, p.hangCeiling * H]);
-    const cv = p.colorVariation;
-    const c0 = jitterColor(r, p.baseColorL, cv), c1 = jitterColor(r, p.tipColorL, cv), lc = jitterColor(r, p.stemLeafColorL, cv);
-    const bc = p.berryColorL;
-    for (let s = 0; s < p.hangStrands; s++) {
-      const a = r.uniform(0, 2 * Math.PI);
-      const start = V.add(ceiling, V.mul([Math.cos(a), Math.sin(a), 0], r.uniform(0, p.areaSize * 0.2)));
-      const length = Math.max(0.05, vary(r, p.hangLength, p.heightVariation));
-      const seg = Math.max(4, p.segments * 2);
-      const sway = V.mul([r.uniform(-1, 1), r.uniform(-1, 1), 0], length * 0.12);
-      const path = [];
-      for (let i = 0; i <= seg; i++) path.push(V.add(V.sub(start, V.mul(UP, length * i / seg)), V.mul(sway, Math.sin(i / seg * Math.PI))));
-      mb.tube(path, path.map((_, i) => p.vineWidth * (1 - 0.5 * i / seg)), Math.max(3, p.tubeSides), gradient(c0, c1, seg + 1));
-      for (let k = 0; k < p.hangLeaves; k++) {
-        const i = Math.min(seg, Math.floor((k + 1) / (p.hangLeaves + 1) * seg));
-        const la = r.uniform(0, 2 * Math.PI), size = p.vineLeafSize * r.uniform(0.7, 1.2);
-        mb.leaf(path[i], [Math.cos(la), Math.sin(la), -0.4], size, size * 0.45, [V.mul(lc, 0.85), lc], { lift: -0.1, droop: 0.3, fold: 0.25, shape: "LANCE" });
-      }
-      for (let b = 0; b < p.hangBerries; b++) {
-        const i = r.int(Math.floor(seg / 3), seg);
-        mb.blob(V.add(path[i], V.mul([r.uniform(-1, 1), r.uniform(-1, 1), 0], p.vineWidth * 2)), p.vineWidth * 1.8, () => bc, r, { subdiv: 1 });
-      }
+  /** Pine / spruce: a green rib with needles fanned around it. */
+  function needleSpray(mb, base, dir, normal, length, c0, c1, r, needles = 9) {
+    const d = V.norm(dir);
+    const tip = V.add(base, V.mul(d, length));
+    mb.tube([base, tip], [length * 0.03, length * 0.015], 3, [V.mul(c0, 0.7), c0], { capTip: false });
+    for (let k = 0; k < needles; k++) {
+      const t = 0.15 + 0.85 * k / Math.max(1, needles - 1);
+      const at = V.lerp(base, tip, t);
+      const around = V.rot(V.len(V.cross(d, normal)) > 1e-6 ? V.norm(V.cross(d, normal)) : anyPerp(d), d, k * 2.39996 + r.uniform(-0.3, 0.3));
+      const nd = V.norm(V.add(V.mul(d, 0.55), V.add(around, V.mul(normal, 0.35))));
+      const nl = length * 0.42 * (1 - 0.35 * t);
+      mb.tube([at, V.add(at, V.mul(nd, nl))], [length * 0.012, length * 0.004], 3, [c0, c1], { capTip: false });
     }
   }
 
-  // ── Fungi, rocks, crystals ───────────────────────────────────────────────────────────────────────────────────────
-
-  function genMushroom(mb, p, r, pos) {
-    const cv = p.colorVariation;
-    const sh = Math.max(0.02, vary(r, p.mushroomStemHeight, p.mushroomStemVar));
-    const cr = Math.max(0.01, vary(r, p.mushroomCapSize, p.mushroomCapVar));
-    const sc = jitterColor(r, p.mushroomStemColorL, cv), cb = jitterColor(r, p.mushroomCapColorL, cv), ct = jitterColor(r, p.mushroomCapTipColorL, cv);
-    const gc = p.mushroomGillColorL;
-    const seg = Math.max(3, p.segments);
-    const path = arcPath(pos, [r.uniform(-1, 1), r.uniform(-1, 1), 0], sh, r.uniform(0, 12), 0.2, seg);
-    const widths = path.map((_, i) => p.mushroomStemWidth * 0.5 * (1 + 0.35 * Math.sin(i / seg * Math.PI) + 0.2 * (1 - i / seg)));
-    mb.tube(path, widths, Math.max(5, p.tubeSides), path.map(() => sc), { capTip: false });
-    const axis = V.norm(V.sub(path[seg], path[seg - 1]));
-    const Mh = headMatrix(axis), top = path[seg];
-    // Cap: a surface of revolution, the dome down to the rim, then the gills back to the stem.
-    const cracked = p.mushroomCracks > 0;
-    const rings = 6 + (cracked ? 4 : 0), sides = Math.max(8, p.tubeSides * 2) * (cracked ? 2 : 1);
-    const fl = p.mushroomCapFlatten, zspan = cr * fl;
-    const ringPts = [];
-    for (let k = 0; k <= rings; k++) {
-      const phi = Math.PI * 0.5 * (1 - k / rings);
-      const rad = k < rings ? cr * Math.cos(phi) : cr, z = cr * fl * Math.sin(phi);
-      ringPts.push(Array.from({ length: sides }, (_, s) => {
-        const a = 2 * Math.PI * s / sides, wave = 1 + 0.06 * Math.sin(a * p.mushroomCapWaves) * (k / rings);
-        return { q: V.add(top, Mh([Math.cos(a) * rad * wave, Math.sin(a) * rad * wave, z])), h: z };
-      }));
-    }
-    const crackSeed = r.random() * 100, crackDark = V.mul(cb, 1 - p.mushroomCrackDark);
-    const capCol = (v) => {
-      const c = V.lerp(ct, cb, clamp01(1 - v.h / Math.max(1e-6, zspan)));
-      return V.lerp(c, crackDark, crack(V.sub(v.q, top), 1 / Math.max(1e-4, cr * 0.45), p.mushroomCracks, crackSeed));
-    };
-    for (let k = 0; k < rings; k++) {
-      for (let s = 0; s < sides; s++) {
-        const j = (s + 1) % sides, a = ringPts[k], b = ringPts[k + 1];
-        mb.quad(a[s].q, b[s].q, b[j].q, a[j].q, capCol(a[s]), capCol(b[s]), capCol(b[j]), capCol(a[j]));
+  /** Palm or fern frond: a drooping rib with narrow leaflets in pairs. */
+  function frond(mb, base, dir, length, c0, c1, r, pinnae = 9) {
+    const d = V.norm([dir[0], dir[1], 0]);
+    const p1 = V.add(V.add(base, V.mul(d, length * 0.45)), V.mul(UP, length * 0.18));
+    const p2 = V.add(V.add(base, V.mul(d, length)), V.mul(UP, -length * 0.25));
+    const path = M.bezierPath(base, p1, p2, 6);
+    mb.tube(path, path.map((_, i) => length * 0.014 * (1 - 0.6 * i / 6)), 3, path.map((_, i) => V.lerp(V.mul(c0, 0.8), c0, i / 6)), { capTip: false });
+    const tans = M.tangents(path);
+    for (let k = 0; k < pinnae; k++) {
+      const t = (k + 1) / (pinnae + 1), i = Math.min(5, Math.floor(t * 6));
+      const at = V.lerp(path[i], path[i + 1], t * 6 - i);
+      let side = V.cross(tans[i], UP);
+      side = V.len(side) > 1e-6 ? V.norm(side) : anyPerp(tans[i]);
+      const size = length * 0.32 * (1 - 0.55 * t) * r.uniform(0.85, 1.1);
+      for (const s of [-1, 1]) {
+        const ld = V.norm(V.add(V.mul(side, s), V.add(V.mul(tans[i], 0.45), V.mul(UP, -0.25))));
+        flatLeaf(mb, at, ld, UP, size, size * 0.22, c0, c1, "NARROW", 0.15, 0.25, 3);
       }
     }
-    const inner = Array.from({ length: sides }, (_, s) => V.add(top, Mh([Math.cos(2 * Math.PI * s / sides) * widths[seg] * 1.1, Math.sin(2 * Math.PI * s / sides) * widths[seg] * 1.1, -0.002])));
-    const rim = ringPts[rings];
-    for (let s = 0; s < sides; s++) {
-      const j = (s + 1) % sides, shade = V.mul(gc, s % 2 === 0 ? 0.85 : 1);
-      mb.quad(rim[s].q, rim[j].q, inner[j], inner[s], shade, shade, shade, shade);
+  }
+
+  /** Five petals round a centre, facing normal (cherry blossom). */
+  function blossom(mb, centre, normal, size, petal, middle, r) {
+    const n = V.norm(normal);
+    const a0 = anyPerp(n);
+    for (let k = 0; k < 5; k++) {
+      const d = V.rot(a0, n, k * 2 * Math.PI / 5 + r.uniform(-0.2, 0.2));
+      flatLeaf(mb, centre, V.norm(V.add(d, V.mul(n, 0.25))), n, size, size * 0.9, V.mul(petal, 0.92), petal, "ROUND", 0.3, 0.1, 3);
     }
-    const spot = p.mushroomSpotColorL;
-    for (let i = 0; i < p.mushroomSpots; i++) {
-      const a = r.uniform(0, 2 * Math.PI), phi = r.uniform(0.25, 1.2);
-      const at = V.add(top, Mh([Math.cos(a) * cr * Math.cos(phi), Math.sin(a) * cr * Math.cos(phi), cr * fl * Math.sin(phi)]));
-      mb.blob(at, cr * r.uniform(0.08, 0.14), () => spot, r, { subdiv: 1, squash: [1, 1, 0.4] });
-    }
+    mb.blob(V.add(centre, V.mul(n, size * 0.15)), size * 0.22, () => middle, r, { subdiv: 0 });
+  }
+
+  // The colour of one leaf: the species' base → tip pair, sometimes its second colour (autumn mixes, dead patches).
+  function leafColors(p, r) {
+    const alt = p.leafAltChance > 0 && r.random() < p.leafAltChance;
+    const c0 = jitterColor(r, alt ? V.mul(p.leafAltColorL, 0.8) : p.leafColorL, p.colorVariation);
+    const c1 = jitterColor(r, alt ? p.leafAltColorL : p.leafTipColorL, p.colorVariation);
+    return [c0, c1];
+  }
+
+  /** One leaf of the species' shape at base, facing normal, pointing along dir. */
+  function speciesLeaf(mb, p, r, base, dir, normal) {
+    const size = p.leafSize * (1 + r.uniform(-p.leafSizeVar, p.leafSizeVar));
+    const [c0, c1] = leafColors(p, r);
+    if (p.leafShape === "NEEDLE") { needleSpray(mb, base, dir, normal, size, c0, c1, r); return; }
+    if (p.leafShape === "PALM") { frond(mb, base, dir, size, c0, c1, r); return; }
+    const start = V.sub(base, V.mul(V.norm(dir), size * 0.35));
+    flatLeaf(mb, start, dir, normal, size, size * p.leafWidth, c0, c1, p.leafShape, p.leafCurl, p.leafFold);
+  }
+
+  // ── Leaf forms ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+  // The canopy volume, in units where the block is [-1, 1] on every axis: a box whose corners round off with blockRound.
+  function insideCanopy(q, round) {
+    const rr = Math.max(1e-3, round);
+    const ex = Math.max(Math.abs(q[0]) - (1 - rr), 0), ey = Math.max(Math.abs(q[1]) - (1 - rr), 0), ez = Math.max(Math.abs(q[2]) - (1 - rr), 0);
+    return Math.hypot(ex, ey, ez) <= rr && Math.abs(q[0]) <= 1 && Math.abs(q[1]) <= 1 && Math.abs(q[2]) <= 1;
   }
 
   /**
-   * Mineral inclusions in a stone: 0 = plain stone, otherwise 0..1, how deep inside the ore the point is (its edge →
-   * its heart), so the ore can run from its base colour to its shine. Read from the point's place in the world, not the
-   * face, so a speck or a vein carries on round the corner of a block onto the next face.
+   * Leaf block: leaves through the block, most of them near its skin and facing out, inside a box whose corners round
+   * off; noise opens holes; a dark core hides what would be seen through. Every vertex is then kept inside the block,
+   * so the sprite is exactly a block wherever the leaves are dense and neighbouring leaf blocks join.
    */
-  function oreAt(q, p, seed) {
-    if (!(p.oreAmount > 0)) return 0;
-    const f = 1 / Math.max(0.01, p.oreSize);
-    const o = [seed * 1.7 + 37, seed * 0.9 + 11, seed * 0.3 + 5];
-    if (p.oreStyle === "VEINS") {
-      // Veins: the zero line of a smooth noise is a winding thread; its width grows with the amount.
-      const n = Math.abs(noise3([q[0] * f * 0.6 + o[0], q[1] * f * 0.6 + o[1], q[2] * f * 0.6 + o[2]]));
-      const w = p.oreAmount * 0.16;
-      return n < w ? clamp01(1 - n / w) : 0;
-    }
-    // Specks and nuggets: the tops of a noise. Nuggets add a second, coarser noise so the specks gather in clumps.
-    let n = noise3([q[0] * f + o[0], q[1] * f + o[1], q[2] * f + o[2]]);
-    if (p.oreStyle === "NUGGETS") n = n * 0.6 + noise3([q[0] * f * 0.35 + o[1], q[1] * f * 0.35 + o[2], q[2] * f * 0.35 + o[0]]) * 0.7;
-    const thr = 0.5 - p.oreAmount * 0.75;
-    return n > thr ? clamp01((n - thr) / 0.22) : 0;
-  }
-  /** The stone's colour with its ore laid over; t from oreAt, k the cube's own small shade. */
-  function withOre(col, t, p, k = 1) {
-    if (!(t > 0)) return col;
-    const ore = V.lerp(p.oreColorL, p.oreTipColorL, clamp01(t * p.oreShine * 1.6));
-    return V.mul(ore, k);
-  }
-
-  function genPebbles(mb, p, r, pos) {
-    const cv = p.colorVariation;
-    const c0 = jitterColor(r, p.rockColorL, cv), c1 = jitterColor(r, p.rockTipColorL, cv);
-    const sz = Math.max(0.01, vary(r, p.rockSize, p.rockVar));
-    const flat = p.rockFlatten;
-    const seed = r.random() * 100;
-    const crackScale = 1 / Math.max(1e-4, sz * p.rockCrackSize);
-    const crackDark = V.mul(c0, 1 - p.rockCrackDark);
-    const moss = p.mossColorL;
-    const squash = [r.uniform(0.9, 1.3), r.uniform(0.8, 1.1), flat];
-    if (p.rockShape === "BLOCK") {
-      // A whole block (an ore block, a stone block) made of the same cubes: always one, filling its cell, whatever
-      // «Cantidad» says — the other plants of the patch would only overlap it.
-      if (mb.oreBlockDone) return;
-      mb.oreBlockDone = true;
-      genStoneBlock(mb, p, r, seed, c0, c1, crackScale, crackDark, moss);
-      return;
-    }
-    if (p.rockStyle === "VOXEL") {
-      // Cubes on a grid, so the rock reads as pixel art: a noisy ellipsoid, surface cubes knocked out along cracks,
-      // moss on patches of the upward faces, every cube its own small shade.
-      const vs = Math.max(0.01, p.rockVoxel);
-      const rx = sz * squash[0], ry = sz * squash[1], rz = sz * squash[2];
-      const centre = V.add(pos, [0, 0, rz * 0.45]);
-      const nx = Math.ceil(rx / vs) + 1, ny = Math.ceil(ry / vs) + 1, nz = Math.ceil(rz / vs) + 1;
-      const ns = 2.5 / Math.max(1e-4, sz);
-      const cells = new Set();
-      for (let i = -nx; i < nx; i++) for (let j = -ny; j < ny; j++) for (let k = -nz; k < nz; k++) {
-        const q = [(i + 0.5) * vs, (j + 0.5) * vs, (k + 0.5) * vs];
-        if (centre[2] + q[2] < pos[2] - vs * 0.5) continue;
-        let e = (q[0] / rx) ** 2 + (q[1] / ry) ** 2 + (q[2] / rz) ** 2;
-        e += noise3([(centre[0] + q[0]) * ns + seed, (centre[1] + q[1]) * ns + seed * 0.5, (centre[2] + q[2]) * ns]) * p.rockNoise;
-        if (e <= 1) cells.add(`${i},${j},${k}`);
+  function genLeafBlock(mb, p, r) {
+    const H = blockH(), half = [0.5, 0.5, H / 2], centre = [0, 0, H / 2];
+    const first = mb.pos.length;
+    const toWorld = (q) => [q[0] * half[0], q[1] * half[1], centre[2] + q[2] * half[2]];
+    if (p.blockCore > 0) coreBox(mb, half, centre, p.blockCore, p.coreColorL);
+    for (let i = 0; i < p.leafCount; i++) {
+      let q;
+      for (let t = 0; t < 30; t++) {
+        q = [r.uniform(-1, 1), r.uniform(-1, 1), r.uniform(-1, 1)];
+        if (insideCanopy(q, p.blockRound)) break;
       }
-      const cellPos = (c) => V.add(centre, [(c[0] + 0.5) * vs, (c[1] + 0.5) * vs, (c[2] + 0.5) * vs]);
-      if (p.rockCracks > 0) {
-        const surface = (c) => [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].some((d) => !cells.has(`${c[0] + d[0]},${c[1] + d[1]},${c[2] + d[2]}`));
-        const gone = [...cells].filter((key) => {
-          const c = key.split(",").map(Number);
-          return surface(c) && crack(cellPos(c), crackScale, p.rockCracks, seed) > 0.5;
-        });
-        // Never split a small rock into floating crumbs.
-        if (gone.length < cells.size * 0.35) for (const g of gone) cells.delete(g);
-      }
-      const span = Math.max(1e-6, 2 * rz);
-      const shade = new Map([...cells].map((c) => [c, 1 + r.uniform(-p.rockDither, p.rockDither)]));
-      const origin = centre;
-      mb.voxels(cells, [origin[0], origin[1], origin[2]], vs, (c, di) => {
-        const q = cellPos(c), k = shade.get(c.join(","));
-        let col = V.mul(V.lerp(c0, c1, clamp01((q[2] - pos[2]) / span)), k);
-        col = V.lerp(col, crackDark, crack(q, crackScale, p.rockCracks, seed) * 0.8);
-        col = withOre(col, oreAt(q, p, seed), p, k);
-        if (di === 4 && p.mossAmount > 0) {
-          const m = clamp01(0.5 + noise3(V.add(V.mul(q, 6 / Math.max(1e-4, sz)), [seed, 0, 0])) * 1.5 - (1 - p.mossAmount));
-          if (m > 0.5) col = V.mul(moss, k);
+      // Pushed out to the skin (minus a little): leaves inside a dense block are never seen.
+      if (r.random() < p.blockShell) {
+        let lo = 1, hi = 3;
+        for (let it = 0; it < 12; it++) {
+          const mid = (lo + hi) / 2;
+          if (insideCanopy(V.mul(q, mid), p.blockRound)) lo = mid; else hi = mid;
         }
-        return col;
-      });
-      return;
+        q = V.mul(q, lo * (1 - r.uniform(0, 0.12)));
+      }
+      const w = toWorld(q);
+      if (p.blockHoles > 0 && noise3([w[0] * 6 + p.seed, w[1] * 6, w[2] * 6]) > 1 - p.blockHoles * 1.6) continue;
+      // Facing out: the box face it is nearest to, rounded toward the centre as the corners round.
+      const a = q.map(Math.abs), axis = a[0] >= a[1] && a[0] >= a[2] ? 0 : a[1] >= a[2] ? 1 : 2;
+      const flat = [0, 0, 0];
+      flat[axis] = Math.sign(q[axis]) || 1;
+      const normal = V.norm(V.lerp(flat, V.norm(q), p.blockRound));
+      let dir = V.rot(anyPerp(normal), normal, r.uniform(0, 2 * Math.PI));
+      dir = V.norm(V.add(dir, V.mul(normal, p.leafTilt)));
+      if (p.leafHang > 0) dir = V.norm(V.lerp(dir, [0, 0, -1], p.leafHang));
+      speciesLeaf(mb, p, r, w, dir, normal);
     }
-    const centre = V.add(pos, [0, 0, sz * flat * 0.55]);
-    const span = Math.max(1e-6, 2 * sz * flat);
-    mb.blob(centre, sz, (q, n) => {
-      let c = V.lerp(c0, c1, clamp01((q[2] - pos[2]) / span));
-      let m = clamp01((n[2] - (1 - p.mossAmount * 1.4)) * 3);
-      m *= clamp01(0.5 + noise3(V.add(V.mul(q, 6 / Math.max(1e-4, sz)), [seed, 0, 0])) * 1.5);
-      c = withOre(c, oreAt(q, p, seed), p);
-      if (p.mossAmount > 0) c = V.lerp(c, moss, m);
-      return V.lerp(c, crackDark, crack(q, crackScale, p.rockCracks, seed));
-    }, r, { subdiv: p.rockDetail, noise: p.rockNoise, squash, displace: (q) => -crack(q, crackScale, p.rockCracks, seed) * sz * p.rockCrackDepth });
+    for (let i = 0; i < p.blossomCount; i++) {
+      const q = [r.uniform(-1, 1), r.uniform(-1, 1), r.uniform(-0.2, 1)];
+      const s = Math.max(Math.abs(q[0]), Math.abs(q[1]), Math.abs(q[2]));
+      const at = toWorld(V.mul(q, 0.97 / Math.max(1e-6, s)));
+      blossom(mb, at, V.norm(q), p.blossomSize, p.blossomColorL, p.blossomCenterColorL, r);
+    }
+    hangingStrands(mb, p, r, half, centre);
+    clampToBlock(mb.pos, first, H);
   }
 
-  /** The full-cell stone: cubes of «Tamaño cubito» from the floor to the block's height, cracks only darken (a block
-   *  never loses cubes), ore and moss as on a rock. */
-  function genStoneBlock(mb, p, r, seed, c0, c1, crackScale, crackDark, moss) {
-    const H = Aura.blockEngine.BLOCK_HEIGHT;
-    const n = Math.max(4, Math.round(1 / Math.max(0.01, p.rockVoxel)));
-    const vs = 1 / n, nz = Math.max(1, Math.round(H / vs));
-    const cells = new Set();
-    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) for (let k = 0; k < nz; k++) cells.add(`${i},${j},${k}`);
-    const origin = [-0.5, -0.5, 0];
-    const cellPos = (c) => [origin[0] + (c[0] + 0.5) * vs, origin[1] + (c[1] + 0.5) * vs, origin[2] + (c[2] + 0.5) * vs];
-    const shade = new Map([...cells].map((c) => [c, 1 + r.uniform(-p.rockDither, p.rockDither)]));
-    mb.voxels(cells, origin, vs, (c, di) => {
-      const q = cellPos(c), k = shade.get(c.join(","));
-      // A block reads lit from above by the camera's face light: a soft top-to-bottom ramp only, not the rock's.
-      let col = V.mul(V.lerp(c0, c1, 0.35 + 0.3 * clamp01(q[2] / H)), k);
-      col = V.lerp(col, crackDark, crack(q, crackScale, p.rockCracks, seed) * 0.8);
-      col = withOre(col, oreAt(q, p, seed), p, k);
-      if (di === 4 && p.mossAmount > 0) {
-        const m = clamp01(0.5 + noise3(V.add(V.mul(q, 6), [seed, 0, 0])) * 1.5 - (1 - p.mossAmount));
-        if (m > 0.5) col = V.mul(moss, k);
+  // Vines, willow strands, mangrove propagules: from the top edge down the outside of the block.
+  function hangingStrands(mb, p, r, half, centre) {
+    const H = blockH();
+    for (let i = 0; i < p.vineCount; i++) {
+      const face = r.int(0, 3), u = r.uniform(-0.45, 0.45);
+      const out = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]][face];
+      const x = out[0] ? out[0] * 0.49 : u, y = out[1] ? out[1] * 0.49 : u;
+      const len = H * p.vineLength * r.uniform(0.5, 1);
+      const pts = Array.from({ length: 5 }, (_, k) => [x + r.uniform(-0.02, 0.02), y + r.uniform(-0.02, 0.02), H - len * k / 4]);
+      mb.tube(pts, pts.map(() => 0.007), 3, pts.map(() => p.vineColorL), { capTip: false });
+      for (let k = 1; k < 5; k++) {
+        if (r.random() > 0.7) continue;
+        speciesLeaf(mb, { ...p, leafSize: p.leafSize * 0.6 }, r, pts[k], V.norm(V.add(out, [0, 0, -0.6])), out);
       }
-      return col;
+    }
+  }
+
+  function coreBox(mb, half, centre, k, color) {
+    const hx = half[0] * k, hy = half[1] * k, hz = half[2] * k;
+    const c = (sx, sy, sz) => [centre[0] + sx * hx, centre[1] + sy * hy, centre[2] + sz * hz];
+    const faces = [
+      [c(-1, -1, 1), c(1, -1, 1), c(1, 1, 1), c(-1, 1, 1)], [c(-1, -1, -1), c(-1, 1, -1), c(1, 1, -1), c(1, -1, -1)],
+      [c(1, -1, -1), c(1, 1, -1), c(1, 1, 1), c(1, -1, 1)], [c(-1, -1, -1), c(-1, -1, 1), c(-1, 1, 1), c(-1, 1, -1)],
+      [c(-1, 1, -1), c(-1, 1, 1), c(1, 1, 1), c(1, 1, -1)], [c(-1, -1, -1), c(1, -1, -1), c(1, -1, 1), c(-1, -1, 1)],
+    ];
+    for (const [a, b, cc, d] of faces) mb.quad(a, b, cc, d, color, color, color, color);
+  }
+
+  function clampToBlock(pos, first, H) {
+    for (let j = first; j < pos.length; j += 3) {
+      pos[j] = Math.max(-0.5, Math.min(0.5, pos[j]));
+      pos[j + 1] = Math.max(-0.5, Math.min(0.5, pos[j + 1]));
+      pos[j + 2] = Math.max(0, Math.min(H, pos[j + 2]));
+    }
+  }
+
+  /** Leaves fallen on the ground: flat, a little cupped, overlapping in layers. */
+  function genLeafGround(mb, p, r) {
+    const reach = 0.5 - p.cellMargin;
+    for (let i = 0; i < p.leafCount; i++) {
+      const at = [r.uniform(-reach, reach), r.uniform(-reach, reach), 0.003 + 0.002 * (i / Math.max(1, p.leafCount)) * 6];
+      const normal = V.norm([r.uniform(-0.25, 0.25), r.uniform(-0.25, 0.25), 1]);
+      const a = r.uniform(0, 2 * Math.PI);
+      const dir = [Math.cos(a), Math.sin(a), 0];
+      if (p.leafShape === "NEEDLE") {
+        const [c0, c1] = leafColors(p, r), l = p.leafSize * 0.5;
+        mb.tube([at, V.add(at, V.mul(dir, l))], [l * 0.025, l * 0.02], 3, [c0, c1], { capTip: false });
+        continue;
+      }
+      speciesLeaf(mb, { ...p, leafCurl: p.leafCurl * 0.5, leafShape: p.leafShape === "PALM" ? "NARROW" : p.leafShape }, r, at, dir, normal);
+    }
+  }
+
+  /** A pile: a dome of leaves, most on its surface facing out, some inside so it never shows the ground through. */
+  function genLeafPile(mb, p, r) {
+    const R = p.pileRadius, Hp = p.pileHeight * blockH();
+    const height = (x, y) => Hp * Math.max(0, 1 - (x * x + y * y) / (R * R));
+    for (let i = 0; i < p.leafCount; i++) {
+      const a = r.uniform(0, 2 * Math.PI), d = R * Math.sqrt(r.random()) * 0.98;
+      const x = Math.cos(a) * d, y = Math.sin(a) * d;
+      const top = height(x, y);
+      const z = Math.max(0.003, top * (r.random() < 0.8 ? r.uniform(0.85, 1) : r.uniform(0.2, 0.8)));
+      // The dome's normal: (−∂h/∂x, −∂h/∂y, 1).
+      const gx = 2 * Hp * x / (R * R), gy = 2 * Hp * y / (R * R);
+      const normal = V.norm([gx + r.uniform(-0.3, 0.3), gy + r.uniform(-0.3, 0.3), 1]);
+      const b = r.uniform(0, 2 * Math.PI);
+      const dir = V.norm(V.sub([Math.cos(b), Math.sin(b), 0], V.mul(normal, V.dot([Math.cos(b), Math.sin(b), 0], normal))));
+      speciesLeaf(mb, { ...p, leafShape: p.leafShape === "PALM" ? "NARROW" : p.leafShape }, r, [x, y, z], dir, normal);
+    }
+  }
+
+  function genLeaves(mb, p, r) {
+    // Painted: no mesh at all — the raster paints the sprite from these numbers (Aura.plantRaster.paintLeaves). Its
+    // tones run from the species' base colour (darkest) to its tip colour (lightest), so every species paints too.
+    if (p.leafForm === "PAINTED") {
+      mb.painted = {
+        // Seamless: the pattern repeats every block (period 1), so one sprite joins its neighbours on every side.
+        seed: p.seed, seamless: p.paintSeamless, period: 1, phase: [0, 0], shape: p.leafShape, length: Math.max(3, Math.min(32, p.leafSize * 62 * p.paintScale)), lengthVar: p.leafSizeVar * 0.8,
+        width: p.leafWidth, point: p.paintPoint, spacing: p.paintSpacing, backSpacing: 1.1, jitter: p.paintJitter,
+        hang: p.leafHang, layers: p.paintLayers, holes: p.paintHoles + Math.max(0, p.blockHoles - 0.15) * 0.8,
+        backHoles: p.paintBackHoles, pinholes: p.paintPinholes, round: p.paintRound, fill: p.paintFill, clip: p.paintClip,
+        darker: p.paintDarker, lighter: p.paintLighter, highlight: p.paintHighlight,
+        edge: p.paintEdge, edgeTones: 1, edgeShadow: p.paintEdgeShadow,
+        light: p.leafTipColor, dark: p.leafColor, tones: p.paintTones,
+        altChance: p.leafAltChance, altColor: p.leafAltColor,
+        blossoms: p.blossomCount, blossomColor: p.blossomColor, blossomCenter: p.blossomCenterColor,
+        fruits: p.fruitCount, fruitSize: p.fruitSize, fruitShape: p.fruitShape, fruitShine: p.fruitShine,
+        fruitColor: p.fruitColor, fruitTipColor: p.fruitTipColor, fruitStemColor: p.fruitStemColor,
+        vines: p.vineCount, vineLength: p.vineLength, vineColor: p.vineColor,
+      };
+      return;
+    }
+    if (p.leafForm === "GROUND") genLeafGround(mb, p, r);
+    else if (p.leafForm === "PILE") genLeafPile(mb, p, r);
+    else genLeafBlock(mb, p, r);
+  }
+
+  // ── Seeds ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  // Each shape as a squashed blob: [x (length), y (width), z (thickness)], plus its lumpiness.
+  const SEED_SHAPES = {
+    GRAIN: { squash: [1, 0.45, 0.4], noise: 0.04 },
+    TEAR: { squash: [1, 0.62, 0.22], noise: 0.02, point: 0.45 },
+    ROUND: { squash: [1, 1, 0.9], noise: 0.08 },
+    KERNEL: { squash: [0.8, 1, 0.55], noise: 0.12 },
+    CHUNK: { squash: [1, 0.85, 0.7], noise: 0.25 },
+  };
+
+  function seed(mb, p, r, at, yaw) {
+    const shape = SEED_SHAPES[p.seedShape] ?? SEED_SHAPES.GRAIN;
+    const size = p.seedSize * (1 + r.uniform(-p.seedSizeVar, p.seedSizeVar));
+    const tilt = r.uniform(-0.25, 0.25);
+    const ax = [Math.cos(yaw) * Math.cos(tilt), Math.sin(yaw) * Math.cos(tilt), Math.sin(tilt)];
+    const side = V.norm(V.cross(UP, ax)), up = V.norm(V.cross(ax, side));
+    const orient = (d) => V.add(V.add(V.mul(ax, d[0]), V.mul(side, d[1])), V.mul(up, d[2]));
+    const c0 = jitterColor(r, p.seedColorL, p.colorVariation), c1 = jitterColor(r, p.seedTipColorL, p.colorVariation);
+    const centre = V.add(at, [0, 0, size * shape.squash[2] * 0.9]);
+    mb.blob(centre, size, (q) => {
+      const local = V.sub(q, centre);
+      const u = V.dot(local, ax) / size, w = V.dot(local, side) / size;
+      if (p.seedStripes && Math.floor((w * 0.5 + 0.5) * 5) % 2 === 1) return p.seedStripeColorL;
+      return V.lerp(c0, c1, clamp01(u * 0.5 + 0.5));
+    }, r, {
+      subdiv: 1, noise: shape.noise, squash: shape.squash,
+      orient: (d) => {
+        // A teardrop narrows toward one end.
+        const k = shape.point && d[0] > 0 ? 1 - shape.point * (d[0] / size) : 1;
+        return orient([d[0], d[1] * k, d[2] * k]);
+      },
     });
   }
 
-  function genCrystal(mb, p, r, pos) {
-    const base = V.add(pos, [0, 0, -0.01]);
-    const cv = p.colorVariation;
-    const cb = jitterColor(r, p.crystalColorL, cv), ct = jitterColor(r, p.crystalTipColorL, cv);
-    const spread = deg(p.crystalSpread);
-    for (let k = 0; k < p.crystalCount; k++) {
-      let axis = UP, length = p.crystalLength;
-      if (k > 0) {
-        const tilt = r.uniform(0.3, 1) * spread, a = r.uniform(0, 2 * Math.PI);
-        axis = [Math.sin(tilt) * Math.cos(a), Math.sin(tilt) * Math.sin(a), Math.cos(tilt)];
-        length = p.crystalLength * r.uniform(0.35, 0.8);
-      }
-      const radius = p.crystalRadius * Math.pow(length / p.crystalLength, 0.6);
-      const first = mb.triangleCount;
-      mb.prism(V.add(base, V.mul([axis[0], axis[1], 0], radius * 0.6)), axis, length, radius, p.crystalSides, cb, ct, p.crystalTip, r.uniform(0, 1));
-      mb.facetShade(first, r, p.crystalFacets);
-    }
-    for (let i = 0; i < p.crystalShards; i++) {
-      const a = r.uniform(0, 2 * Math.PI), rr = p.crystalRadius * r.uniform(1.5, 3);
-      const at = V.add(base, [Math.cos(a) * rr, Math.sin(a) * rr, 0]);
-      const first = mb.triangleCount;
-      mb.prism(at, V.norm([Math.cos(a) * 0.6, Math.sin(a) * 0.6, 1]), p.crystalLength * r.uniform(0.12, 0.25), p.crystalRadius * 0.35, Math.max(3, p.crystalSides - 2), cb, ct, 0.5, r.uniform(0, 1));
-      mb.facetShade(first, r, p.crystalFacets);
+  function genSeeds(mb, p, r) {
+    if (p.seedForm === "POUCH") { seedPouch(mb, p, r); return; }
+    const R = p.seedForm === "PILE" ? p.pileRadius * 0.8 : 0.5 - p.cellMargin;
+    const Hp = p.seedForm === "PILE" ? p.pileHeight * blockH() * 0.4 : 0;
+    for (let i = 0; i < p.seedCount; i++) {
+      const a = r.uniform(0, 2 * Math.PI), d = R * Math.sqrt(r.random());
+      const x = Math.cos(a) * d, y = Math.sin(a) * d;
+      const z = Hp * Math.max(0, 1 - (d * d) / (R * R)) * r.uniform(0.6, 1);
+      seed(mb, p, r, [x, y, z], r.uniform(0, 2 * Math.PI));
     }
   }
 
-  // ── Herbs ────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-  function genFern(mb, p, r, pos) {
-    const lc = jitterColor(r, p.tipColorL, p.colorVariation);
-    for (let f = 0; f < p.fernFronds; f++) {
-      const a = 2 * Math.PI * f / p.fernFronds + r.uniform(-0.3, 0.3);
-      featherLeaf(mb, p, pos, [Math.cos(a), Math.sin(a), 0], vary(r, p.bladeHeight, p.heightVariation), lc, p.fernPinnae, p.fernLift);
+  /** A cloth pouch tied at the neck, open, with seeds on top and a few spilled in front. */
+  function seedPouch(mb, p, r) {
+    const H = blockH(), body = 0.24, cloth = p.pouchColorL;
+    mb.blob([0, 0.04, body * 0.95], body, (q, n) => V.mul(cloth, 0.8 + 0.3 * n[2] + 0.08 * noise3(V.mul(q, 18))), r,
+      { subdiv: 3, noise: 0.03, squash: [1, 1, 0.95] });
+    const neck = [[0, 0.04, body * 1.75], [0, 0.04, body * 2.05], [0, 0.04, body * 2.25]];
+    mb.tube(neck, [body * 0.45, body * 0.38, body * 0.55], 10, neck.map(() => V.mul(cloth, 1.05)), { capTip: false });
+    const tieZ = body * 1.95;
+    const ring = Array.from({ length: 13 }, (_, k) => [Math.cos(k / 12 * 2 * Math.PI) * body * 0.42, 0.04 + Math.sin(k / 12 * 2 * Math.PI) * body * 0.42, tieZ]);
+    mb.tube(ring, ring.map(() => 0.012), 4, ring.map(() => p.pouchTieColorL), { capTip: false });
+    for (let i = 0; i < Math.min(14, p.seedCount); i++) {
+      const a = r.uniform(0, 2 * Math.PI), d = body * 0.35 * Math.sqrt(r.random());
+      seed(mb, p, r, [Math.cos(a) * d, 0.04 + Math.sin(a) * d, body * 2.18], r.uniform(0, 2 * Math.PI));
     }
-    const young = V.mul(lc, 1.15);
-    for (let f = 0; f < p.fernFiddleheads; f++) {
-      const a = r.uniform(0, 2 * Math.PI);
-      const stalkTop = V.add(V.add(pos, V.mul([Math.cos(a), Math.sin(a), 0], 0.03)), [0, 0, p.bladeHeight * 0.35]);
-      mb.tube([pos, stalkTop], [p.bladeHeight * 0.012, p.bladeHeight * 0.012], 3, [V.mul(lc, 0.8), young], { capTip: false });
-      coil(mb, stalkTop, [Math.cos(a), Math.sin(a), 0.6], p.bladeHeight * 0.22, p.bladeHeight * 0.02, young, 1.6);
+    for (let i = 0; i < Math.min(10, p.seedCount); i++) {
+      seed(mb, p, r, [r.uniform(-0.35, 0.05), r.uniform(-0.42, -0.2), 0], r.uniform(0, 2 * Math.PI));
     }
-  }
-
-  function genClover(mb, p, r, pos) {
-    const lc = jitterColor(r, p.tipColorL, p.colorVariation), sc = jitterColor(r, p.baseColorL, p.colorVariation);
-    for (let s = 0; s < p.cloverStems; s++) {
-      const path = arcPath(pos, [r.uniform(-1, 1), r.uniform(-1, 1), 0], p.cloverHeight * r.uniform(0.7, 1.1), r.uniform(5, 25), 0.3, 3);
-      mb.tube(path, path.map(() => p.stemWidth * 0.2), 3, gradient(sc, lc, 4));
-      const spin = r.uniform(0, 2 * Math.PI);
-      for (let k = 0; k < p.cloverLeaflets; k++) {
-        const a = spin + 2 * Math.PI * k / p.cloverLeaflets;
-        mb.leaf(path[3], [Math.cos(a), Math.sin(a), 0], p.cloverLeafSize, p.cloverLeafSize * 0.55, [V.mul(lc, 0.85), lc],
-          { lift: 0.05, droop: 0.1, fold: 0.15, shape: "HEART", segments: 3 });
-      }
-    }
-    if (p.cloverFlower && r.random() < 0.5) {
-      const fc = p.petalColorL;
-      const path = arcPath(pos, [1, 0, 0], p.cloverHeight * 1.4, 8, 0.1, 3);
-      mb.tube(path, path.map(() => p.stemWidth * 0.2), 3, gradient(sc, lc, 4));
-      mb.blob(V.add(path[3], [0, 0, p.cloverLeafSize * 0.3]), p.cloverLeafSize * 0.45, () => fc, r, { subdiv: 1, noise: 0.25 });
-    }
-  }
-
-  function genReeds(mb, p, r, pos) {
-    const cv = p.colorVariation;
-    const cb = jitterColor(r, p.baseColorL, cv), ct = jitterColor(r, p.tipColorL, cv);
-    const h = Math.max(0.05, vary(r, p.bladeHeight, p.heightVariation));
-    for (let li = 0; li < p.reedLeaves; li++) {
-      const d = [Math.cos(li * 2.4 + r.uniform(-0.5, 0.5)), Math.sin(li * 2.4 + r.uniform(-0.5, 0.5)), 0];
-      const path = kink(arcPath(pos, d, h * r.uniform(0.7, 1), r.uniform(3, 15) + p.inclination, p.bend, Math.max(3, p.segments)), r, p);
-      const last = path.length - 1;
-      mb.ribbon(path, path.map((_, i) => p.reedLeafWidth * 0.5 * Math.max(0, 1 - (i / last) ** 1.8)), V.norm(V.cross(UP, d)),
-        gradient(cb, ct, last + 1), { fold: 0.6, details: "LEAF" });
-    }
-    const hc = p.reedHeadColorL;
-    for (let hi = 0; hi < p.reedHeads; hi++) {
-      const d = [r.uniform(-1, 1), r.uniform(-1, 1), 0];
-      const sh = h * r.uniform(1, 1.25);
-      const path = arcPath(V.add(pos, V.mul(d, 0.01)), d, sh, r.uniform(0, 8), 0.1, 4);
-      mb.tube(path, path.map(() => p.reedLeafWidth * 0.12), 4, nodeColors(p, gradient(cb, ct, 5)));
-      const axis = V.norm(V.sub(path[4], path[3]));
-      const hl = sh * p.reedHeadLength;
-      const start = V.sub(path[4], V.mul(axis, hl * 1.1));
-      const pts = [0, 1, 2, 3, 4].map((i) => V.add(start, V.mul(axis, hl * i / 4)));
-      const rad = p.reedLeafWidth * 0.45;
-      mb.tube(pts, [rad * 0.7, rad, rad, rad, rad * 0.6], 6, gradient(V.mul(hc, 0.85), hc, 5), { capBase: true });
-      mb.tube([pts[4], V.add(pts[4], V.mul(axis, hl * 0.35))], [rad * 0.15, rad * 0.05], 3, [cb, ct]);
-    }
-  }
-
-  function genPapyrus(mb, p, r, pos) {
-    const cv = p.colorVariation;
-    const c0 = jitterColor(r, p.baseColorL, cv), c1 = jitterColor(r, p.tipColorL, cv);
-    for (let s = 0; s < p.papyrusStems; s++) {
-      const a = r.uniform(0, 2 * Math.PI), d = [Math.cos(a), Math.sin(a), 0];
-      const h = Math.max(0.1, vary(r, p.bladeHeight, p.heightVariation));
-      const path = arcPath(V.add(pos, V.mul(d, 0.02 * s)), d, h, r.uniform(2, 12) + p.inclination, p.bend * 0.5 + p.wilt * 0.3, Math.max(4, p.segments));
-      // Papyrus stems are triangular in section.
-      mb.tube(path, path.map((_, i) => p.stemWidth * 0.5 * (1 - 0.4 * i / (path.length - 1))), 3, gradient(c0, c1, path.length));
-      const top = path[path.length - 1], axis = V.norm(V.sub(top, path[path.length - 2]));
-      for (let k = 0; k < p.papyrusRays; k++) {
-        const ra = 2 * Math.PI * k / p.papyrusRays + r.uniform(-0.15, 0.15), out = [Math.cos(ra), Math.sin(ra), 0];
-        const length = p.papyrusRayLength * r.uniform(0.75, 1.15);
-        const mid = V.add(V.add(top, V.mul(out, length * 0.5)), V.mul(axis, length * 0.25));
-        const end = V.sub(V.add(top, V.mul(out, length)), V.mul(UP, length * r.uniform(0, 0.35)));
-        mb.ribbon(bezierPath(top, mid, end, 3), [p.stemWidth * 0.25, p.stemWidth * 0.25, p.stemWidth * 0.25, 0], V.norm(V.cross(UP, out)),
-          gradient(c1, V.mul(c1, 1.15), 4), { details: "LEAF" });
-      }
-    }
-  }
-
-  function genBamboo(mb, p, r, pos) {
-    const cv = p.colorVariation;
-    const c0 = jitterColor(r, p.baseColorL, cv), c1 = jitterColor(r, p.tipColorL, cv), lc = jitterColor(r, p.stemLeafColorL, cv);
-    for (let c = 0; c < p.bambooCulms; c++) {
-      const a = r.uniform(0, 2 * Math.PI), d = [Math.cos(a), Math.sin(a), 0];
-      const start = V.add(pos, V.mul(d, p.bambooRadius * 2.2 * c * 0.6));
-      const h = Math.max(0.1, vary(r, p.bambooHeight, p.heightVariation));
-      const path = segmentedStem(mb, p, start, d, h, r.uniform(0, 6) + p.inclination, p.bambooRadius, p.bambooNodes, c0, c1, 0.05 + p.wilt * 0.3);
-      // Leaves sprout from the upper nodes, in small drooping fans.
-      const nodes = [];
-      for (let i = 3; i < path.length - 1; i += 3) nodes.push(i);
-      for (const i of nodes.slice(Math.floor(nodes.length / 2))) {
-        for (let k = 0; k < p.bambooLeaves; k++) {
-          const la = r.uniform(0, 2 * Math.PI), size = p.stemLeafSize * r.uniform(0.8, 1.3);
-          mb.leaf(path[i], [Math.cos(la), Math.sin(la), 0], size, size * 0.18, [V.mul(lc, 0.85), lc], { lift: 0.25, droop: 0.5, fold: 0.35, shape: "LANCE" });
-        }
-      }
-    }
-  }
-
-  // Sugar cane: a tight clump of thin, jointed canes, straight and pale, with long narrow leaves arching out of the
-  // joints — more of them low on the cane, and a small tuft at each tip.
-  function genSugarCane(mb, p, r, pos) {
-    const cv = p.colorVariation;
-    const c0 = jitterColor(r, p.baseColorL, cv), c1 = jitterColor(r, p.tipColorL, cv), lc = jitterColor(r, p.stemLeafColorL, cv);
-    for (let c = 0; c < p.caneCount; c++) {
-      const a = r.uniform(0, 2 * Math.PI), d = [Math.cos(a), Math.sin(a), 0];
-      const start = V.add(pos, V.mul(d, r.uniform(0, p.caneSpread)));
-      const h = Math.max(0.1, vary(r, p.caneHeight, p.heightVariation));
-      const path = segmentedStem(mb, p, start, d, h, r.uniform(0, 4) + p.inclination, p.caneRadius, p.caneNodes, c0, c1, 0.02 + p.wilt * 0.2);
-      for (let i = 3; i < path.length - 1; i += 3) {
-        const t = i / (path.length - 1);
-        if (r.random() > p.caneLeafChance * (1.2 - t * 0.6)) continue;
-        const la = r.uniform(0, 2 * Math.PI), size = p.stemLeafSize * r.uniform(0.75, 1.2) * (1.1 - t * 0.4);
-        mb.leaf(path[i], [Math.cos(la), Math.sin(la), 0], size, size * 0.09, [V.mul(lc, 0.85), lc], { lift: 0.45, droop: 0.65, fold: 0.3, shape: "LANCE" });
-      }
-      const tip = path[path.length - 1];
-      for (let k = 0; k < p.caneTipLeaves; k++) {
-        const la = r.uniform(0, 2 * Math.PI), size = p.stemLeafSize * r.uniform(0.5, 0.8);
-        mb.leaf(tip, [Math.cos(la), Math.sin(la), 0], size, size * 0.09, [V.mul(lc, 0.85), lc], { lift: 0.8, droop: 0.4, fold: 0.3, shape: "LANCE" });
-      }
-    }
-  }
-
-  // ── Water ────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-  function genSeaweed(mb, p, r, pos) {
-    const seg = Math.max(8, p.seaweedSegments);
-    const cb = jitterColor(r, p.seaweedColorL, p.colorVariation), ct = jitterColor(r, p.seaweedTipColorL, p.colorVariation);
-    const a = r.uniform(0, 2 * Math.PI), sway = [Math.cos(a), Math.sin(a), 0];
-    const len = vary(r, p.seaweedLength, 0.25);
-    const path = [];
-    for (let s = 0; s <= seg; s++) {
-      const t = s / seg, wave = Math.sin(t * Math.PI * p.seaweedWaves + r.uniform(-0.2, 0.2)) * p.seaweedAmplitude * t;
-      path.push(V.add(V.add(pos, V.mul(UP, len * t)), V.mul(sway, wave)));
-    }
-    const widths = path.map((_, s) => p.seaweedWidth * (0.6 + 0.4 * Math.sin(Math.PI * Math.min(1, s / seg + 0.1))));
-    widths[seg] = 0;
-    const side = V.norm(V.cross(UP, sway));
-    mb.ribbon(path, widths, side, gradient(cb, ct, seg + 1), { fold: 0.25, details: "LEAF" });
-    const bc = p.seaweedBladderColorL;
-    for (let b = 0; b < p.seaweedBladders; b++) {
-      const idx = Math.min(seg, Math.floor((b + 1) / (p.seaweedBladders + 1) * seg));
-      mb.blob(V.add(path[idx], V.mul(side, p.seaweedWidth * (b % 2 ? 1 : -1))), p.seaweedWidth * 0.7, () => bc, r, { subdiv: 1, squash: [1, 1, 1.3] });
-    }
-    const lc = p.seaweedLeafColorL;
-    for (let i = 0; i < p.seaweedLeafCount; i++) {
-      const idx = Math.min(seg, Math.floor((i + 1) / (p.seaweedLeafCount + 1) * seg));
-      const size = p.seaweedLeafSize * r.uniform(0.8, 1.2);
-      mb.leaf(path[idx], V.mul(side, i % 2 === 0 ? 1 : -1), size, size * 0.3, [V.mul(lc, 0.85), lc], { lift: 0.6, droop: 0.1, fold: 0.2, shape: "LANCE" });
-    }
-  }
-
-  function genSeagrass(mb, p, r, pos) {
-    const cb = jitterColor(r, p.baseColorL, p.colorVariation), ct = jitterColor(r, p.tipColorL, p.colorVariation);
-    for (let b = 0; b < p.seagrassBlades; b++) {
-      const a = r.uniform(0, 2 * Math.PI), sway = [Math.cos(a), Math.sin(a), 0];
-      const h = Math.max(0.05, vary(r, p.bladeHeight, p.heightVariation));
-      const seg = Math.max(6, p.segments * 2), phase = r.uniform(0, 6.28);
-      const path = [];
-      for (let s = 0; s <= seg; s++) {
-        path.push(V.add(V.add(V.add(pos, V.mul(sway, 0.01 * b)), V.mul(UP, h * s / seg)), V.mul(sway, Math.sin(s / seg * Math.PI * 1.5 + phase) * p.seaweedAmplitude * s / seg)));
-      }
-      const widths = path.map((_, s) => p.seagrassWidth * 0.5 * (1 - 0.3 * s / seg));
-      widths[seg] = p.seagrassWidth * 0.15;
-      mb.ribbon(path, widths, V.norm(V.cross(UP, sway)), gradient(cb, ct, seg + 1), { fold: 0.2, details: "LEAF" });
-    }
-  }
-
-  function genCoral(mb, p, r, pos) {
-    const cb = jitterColor(r, p.coralColorL, p.colorVariation), ct = jitterColor(r, p.coralTipColorL, p.colorVariation);
-    const depthMax = Math.max(1, p.coralDepth);
-    const branch = (start, direction, length, thick, depth) => {
-      if (depth <= 0 || length < 0.01) return;
-      const seg = Math.max(2, p.coralSegments);
-      const bend = [r.uniform(-0.3, 0.3), r.uniform(-0.3, 0.3), 0.25];
-      const end = V.add(start, V.mul(V.norm(V.add(direction, bend)), length));
-      const mid = V.add(V.lerp(start, end, 0.5), V.mul(bend, length * 0.2));
-      const path = bezierPath(start, mid, end, seg);
-      const level = depthMax > 1 ? 1 - (depth - 1) / (depthMax - 1) : 1;
-      const c0 = V.lerp(cb, ct, level * 0.7), c1 = V.lerp(cb, ct, Math.min(1, level * 0.7 + 0.3));
-      mb.tube(path, path.map((_, i) => thick * (1 - 0.35 * i / seg)), Math.max(4, p.tubeSides), gradient(c0, c1, seg + 1));
-      if (depth === 1 && p.coralPolyps > 0) {
-        const pc = p.coralPolypColorL;
-        for (let k = 0; k < p.coralPolyps; k++) {
-          const off = V.mul(V.rot(anyPerp(direction), V.norm(direction), 2 * Math.PI * k / p.coralPolyps), thick);
-          mb.blob(V.add(V.add(end, off), V.mul(direction, thick * 0.3)), thick * 0.45, () => pc, r, { subdiv: 1 });
-        }
-        return;
-      }
-      const spin = r.uniform(0, 2 * Math.PI);
-      for (let c = 0; c < p.coralBranchCount; c++) {
-        // Children fan out evenly around the parent and tilt away from it, so the coral spreads like a bush.
-        const a = spin + 2 * Math.PI * c / p.coralBranchCount + r.uniform(-0.4, 0.4);
-        let nd = V.norm(V.add(V.mul(direction, 1 - 0.5 * p.coralBranchAngle), V.mul([Math.cos(a), Math.sin(a), 0], p.coralBranchAngle)));
-        if (nd[2] < 0.15) nd = V.norm(V.add(nd, [0, 0, 0.3]));
-        branch(end, nd, length * p.coralBranchLength, thick * 0.7, depth - 1);
-      }
-    };
-    const a = r.uniform(0, 2 * Math.PI);
-    branch(pos, V.norm([Math.cos(a) * 0.3, Math.sin(a) * 0.3, 1]), p.coralLength, p.coralThickness, depthMax);
-  }
-
-  function genAnemone(mb, p, r, pos) {
-    const body = jitterColor(r, p.anemoneColorL, p.colorVariation), tip = jitterColor(r, p.anemoneTipColorL, p.colorVariation);
-    const size = Math.max(0.02, vary(r, p.anemoneSize, 0.25));
-    const column = [0, 1, 2, 3].map((s) => V.add(pos, [0, 0, size * 0.8 * s / 3]));
-    mb.tube(column, [size * 0.45, size * 0.38, size * 0.4, size * 0.5], Math.max(8, p.tubeSides * 2), gradient(V.mul(body, 0.8), body, 4));
-    const top = column[3];
-    for (let row = 0; row < p.anemoneRows; row++) {
-      const n = p.anemoneTentacles, rr = size * (0.45 - 0.12 * row);
-      for (let k = 0; k < n; k++) {
-        const a = 2 * Math.PI * k / n + row * Math.PI / n + r.uniform(-0.1, 0.1), out = [Math.cos(a), Math.sin(a), 0];
-        const start = V.add(top, V.mul(out, rr));
-        const length = size * p.anemoneTentacleLength * r.uniform(0.8, 1.2) * (1 - 0.15 * row);
-        const mid = V.add(V.add(start, V.mul(out, length * 0.45)), [0, 0, length * (0.5 + 0.15 * row)]);
-        const end = V.add(V.add(V.add(start, V.mul(out, length * 0.75)), [0, 0, length * (0.45 + 0.3 * row)]), V.mul([r.uniform(-1, 1), r.uniform(-1, 1), 0], length * 0.15));
-        const path = bezierPath(start, mid, end, 4);
-        mb.tube(path, path.map((_, s) => size * 0.07 * (1 - 0.6 * s / 4)), 4, gradient(body, tip, 5));
-      }
-    }
-  }
-
-  function genLilypad(mb, p, r, pos) {
-    const cv = p.colorVariation;
-    const cIn = jitterColor(r, p.baseColorL, cv), cOut = jitterColor(r, p.tipColorL, cv);
-    const rad = Math.max(0.02, vary(r, p.lilySize, 0.3));
-    const sides = 24, notch = deg(p.lilyNotch);
-    const vein = V.mul(cOut, 1 + p.lilyVeins);
-    const bite = r.random() < p.biteChance, biteAt = r.int(3, sides - 4), biteSize = r.uniform(0.25, 0.5);
-    const rot = r.uniform(0, 2 * Math.PI);
-    const hub = V.add(pos, [0, 0, 0.002]);
-    const rim = [];
-    for (let k = 0; k <= sides; k++) {
-      const a = rot + notch * 0.5 + (2 * Math.PI - notch) * k / sides;
-      let rr = rad * (1 + r.uniform(-0.04, 0.04));
-      if (bite) rr *= 1 - biteSize * Math.exp(-(((k - biteAt) / 1.6) ** 2));
-      rim.push(V.add(pos, [Math.cos(a) * rr, Math.sin(a) * rr, p.lilyCup * rad]));
-    }
-    // Every third spoke carries a vein: lighter (or darker) from the stem to the rim.
-    for (let k = 0; k < sides; k++) mb.tri(hub, rim[k], rim[k + 1], cIn, k % 3 === 0 ? vein : cOut, (k + 1) % 3 === 0 ? vein : cOut);
-    if (p.lilyStems && p.waterModeResolved === "SURFACE" && p.waterSurface > 1e-3) {
-      // Built at the pad's height and lifted with it, so it always ends on the bottom.
-      const bottom = V.add(V.sub(pos, [0, 0, p.waterSurface]), V.mul([r.uniform(-1, 1), r.uniform(-1, 1), 0], rad * 0.4));
-      mb.tube(bezierPath(pos, V.add(V.lerp(pos, bottom, 0.5), [rad * 0.3, 0, 0]), bottom, 5), Array(6).fill(rad * 0.05), 4, gradient(cIn, V.mul(cIn, 0.6), 6), { capTip: false });
-    }
-    if (p.lilyFlower && r.random() < p.lilyFlowerChance) {
-      const Mh = headMatrix(UP);
-      const tip = V.add(pos, [r.uniform(-rad, rad) * 0.3, r.uniform(-rad, rad) * 0.3, 0.01]);
-      for (let layer = 0; layer < 2; layer++) {
-        for (let i = 0; i < 8; i++) {
-          const a = 2 * Math.PI * i / 8 + layer * Math.PI / 8;
-          petal(mb, p, Mh, tip, [Math.cos(a), Math.sin(a), 0], rad * (0.5 - 0.1 * layer), rad * 0.14, 35 + 25 * layer, 0.2, p.petalColorL, p.petalTipColorL);
-        }
-      }
-      flowerCenter(mb, p, r, tip, Mh, rad * 0.08, cIn, rad * 0.05);
-    }
-  }
-
-  /** Floating carpet of tiny round fronds, some with a short root hanging below. */
-  function genDuckweed(mb, p, r, pos) {
-    const c0 = jitterColor(r, p.baseColorL, p.colorVariation), c1 = jitterColor(r, p.tipColorL, p.colorVariation);
-    for (let f = 0; f < p.duckweedFronds; f++) {
-      const a = r.uniform(0, 2 * Math.PI), rr = p.areaSize * 0.15 * Math.sqrt(r.random());
-      const at = V.add(pos, [Math.cos(a) * rr, Math.sin(a) * rr, r.uniform(0, 0.004)]);
-      const rad = p.duckweedSize * r.uniform(0.7, 1.3);
-      const hub = V.add(at, [0, 0, rad * 0.08]);
-      const rim = Array.from({ length: 7 }, (_, k) => V.add(at, [Math.cos(2 * Math.PI * k / 7) * rad * r.uniform(0.85, 1.1), Math.sin(2 * Math.PI * k / 7) * rad * r.uniform(0.85, 1.1), 0]));
-      const col = V.lerp(c0, c1, r.random());
-      for (let k = 0; k < 7; k++) mb.tri(hub, rim[k], rim[(k + 1) % 7], V.mul(col, 1.12), col, col);
-      if (p.duckweedRoots && r.random() < 0.5) {
-        mb.tube([at, V.sub(at, [0, 0, rad * r.uniform(1.5, 3)])], [rad * 0.08, rad * 0.04], 3, [V.mul(c0, 0.6), V.mul(c0, 0.5)], { capTip: false });
-      }
-    }
+    if (H < body * 2.4) clampToBlock(mb.pos, 0, H);
   }
 
   // ── Registration ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-  G.register("VINE", {
-    category: "climbers", label: "Enredadera",
-    params: { "Enredadera": [
-      ["vineLength", "Longitud", "num", 1.5, 0.1, 3, 0.01], ["vineSegments", "Segmentos", "int", 24, 4, 60, 1],
-      ["vineWidth", "Grosor", "num", 0.02, 0.003, 0.1, 0.001], ["vineWobble", "Serpenteo", "num", 0.5, 0, 2, 0.01],
-      ["vineClimb", "Subida", "num", 0.7, -1, 2, 0.01], ["vineLeaves", "Nº hojas", "int", 8, 0, 40, 1],
-      ["vineLeafSize", "Tam. hoja", "num", 0.1, 0.01, 0.4, 0.005], ["vineLeafColor", "Color hoja", "color", L(0.2, 0.6, 0.15)],
-      ["vineTendrils", "Zarcillos", "int", 3, 0, 20, 1],
-    ] },
-    defaults: { count: 3, separation: 0.4, tubeSides: 4, baseColor: L(0.25, 0.35, 0.12), tipColor: L(0.35, 0.55, 0.15) },
-  }, genVine, [
-    { key: "IVY", label: "Hiedra", values: {} },
-    { key: "GRAPE", label: "Parra", values: { vineLeafColor: L(0.25, 0.5, 0.1), vineLeafSize: 0.14, vineTendrils: 6, baseColor: L(0.3, 0.2, 0.1), tipColor: L(0.4, 0.3, 0.15) } },
-    { key: "FLOWER", label: "Con flores", values: { vineLeafColor: L(0.15, 0.5, 0.12), vineTendrils: 2 } },
-  ]);
+  if (!G.CATEGORIES.some(([k]) => k === "leaves")) G.CATEGORIES.splice(1, 0, ["leaves", "Hojas y semillas"]);
 
-  G.register("HANGING", {
-    category: "climbers", label: "Colgante", water: "HANGING",
-    params: { "Colgante": [
-      ["hangCeiling", "Techo (bloques)", "num", 1, 0.3, 1.5, 0.01, "Altura del bloque del que cuelga"],
-      ["hangStrands", "Hebras", "int", 8, 1, 40, 1], ["hangLength", "Largo", "num", 0.7, 0.05, 1.5, 0.01],
-      ["hangLeaves", "Hojas por hebra", "int", 4, 0, 12, 1], ["hangBerries", "Bayas por hebra", "int", 0, 0, 8, 1],
-      ["vineWidth", "Grosor", "num", 0.012, 0.003, 0.06, 0.001], ["vineLeafSize", "Tam. hoja", "num", 0.07, 0.01, 0.3, 0.005],
-      ["heightVariation", "Var. largo", "num", 0.3, 0, 1, 0.01],
-      ["stemLeafColor", "Color hoja", "color", L(0.25, 0.5, 0.18)], ["berryColor", "Color bayas", "color", L(0.75, 0.15, 0.2)],
-    ] },
-    defaults: { count: 1, areaSize: 0.8, segments: 5, baseColor: L(0.3, 0.25, 0.15), tipColor: L(0.4, 0.5, 0.2) },
-  }, genHanging, [
-    { key: "ROOTS", label: "Raíces", values: { baseColor: L(0.3, 0.22, 0.12), tipColor: L(0.45, 0.35, 0.2), hangLeaves: 0, hangBerries: 0, vineWidth: 0.014 } },
-    { key: "MOSS", label: "Musgo colgante", values: { baseColor: L(0.2, 0.35, 0.1), tipColor: L(0.4, 0.6, 0.2), hangLeaves: 6, vineLeafSize: 0.05, stemLeafColor: L(0.25, 0.5, 0.15), hangBerries: 0 } },
-    { key: "BERRIES", label: "Enredadera con bayas", values: { baseColor: L(0.3, 0.25, 0.15), tipColor: L(0.4, 0.5, 0.2), hangLeaves: 4, hangBerries: 2 } },
-  ]);
+  const SPECIES = [["AURA", "Aura (pintado, gris)"], ["OAK", "Roble"], ["BIRCH", "Abedul"], ["PINE", "Pino"], ["SPRUCE", "Abeto"], ["JUNGLE", "Jungla"],
+    ["JUNGLE_PALM", "Jungla · palmera"], ["JUNGLE_MONSTERA", "Jungla · costilla de Adán"], ["JUNGLE_BANANA", "Jungla · platanera"],
+    ["JUNGLE_VINES", "Jungla · con lianas"], ["ACACIA", "Acacia"], ["DARK_OAK", "Roble oscuro"], ["CHERRY", "Cerezo"], ["APPLE", "Manzano (frutas)"], ["ORANGE", "Naranjo (frutas)"], ["CHERRY_FRUIT", "Cerezo con cerezas"], ["MANGO", "Mango (frutas)"], ["PEAR", "Peral (frutas)"], ["COCONUT", "Cocotero (cocos)"],
+    ["MANGROVE", "Manglar"], ["WILLOW", "Sauce"], ["AUTUMN", "Otoño"], ["DEAD", "Seca"]];
 
-  G.register("MUSHROOM", {
-    category: "fungi", label: "Seta",
-    params: { "Seta": [
-      ["mushroomStemHeight", "Altura tallo", "num", 0.35, 0.02, 1, 0.01], ["mushroomStemVar", "Var. tallo", "num", 0.25, 0, 1, 0.01],
-      ["mushroomStemWidth", "Ancho tallo", "num", 0.06, 0.005, 0.2, 0.001], ["mushroomCapSize", "Tamaño sombrero", "num", 0.2, 0.02, 0.5, 0.005],
-      ["mushroomCapVar", "Var. sombrero", "num", 0.25, 0, 1, 0.01], ["mushroomCapFlatten", "Altura sombrero", "num", 0.55, 0.1, 1.5, 0.01],
-      ["mushroomCapWaves", "Ondas borde", "int", 6, 0, 20, 1], ["mushroomSpots", "Manchas", "int", 6, 0, 30, 1],
-      ["mushroomCracks", "Grietas", "num", 0, 0, 0.5, 0.01], ["mushroomCrackDark", "Oscuridad grietas", "num", 0.45, 0, 1, 0.01],
-      ["mushroomCapColor", "Sombrero base", "color", L(0.8, 0.2, 0.1)], ["mushroomCapTipColor", "Sombrero punta", "color", L(0.95, 0.5, 0.2)],
-      ["mushroomSpotColor", "Color manchas", "color", L(0.98, 0.95, 0.9)], ["mushroomStemColor", "Color tallo", "color", L(0.9, 0.85, 0.7)],
-      ["mushroomGillColor", "Color láminas", "color", L(0.85, 0.8, 0.7)],
-    ] },
-    defaults: { count: 5, distribution: "CLUSTERS", areaSize: 1, clusterCount: 2, clusterSpread: 0.25, segments: 5, tubeSides: 6 },
-  }, genMushroom, [
-    { key: "AMANITA", label: "Amanita (roja)", values: { mushroomCapColor: L(0.75, 0.04, 0.02), mushroomCapTipColor: L(0.95, 0.18, 0.04), mushroomSpots: 8, mushroomSpotColor: L(0.98, 0.95, 0.9), mushroomStemColor: L(0.9, 0.87, 0.75) } },
-    { key: "BUTTON", label: "Champiñón", values: { mushroomCapColor: L(0.78, 0.68, 0.52), mushroomCapTipColor: L(0.95, 0.9, 0.8), mushroomSpots: 0, mushroomCapFlatten: 0.7, mushroomStemColor: L(0.92, 0.88, 0.8) } },
-    { key: "BOLETE", label: "Boletus (marrón)", values: { mushroomCapColor: L(0.3, 0.13, 0.04), mushroomCapTipColor: L(0.5, 0.25, 0.08), mushroomSpots: 0, mushroomCapFlatten: 0.75, mushroomStemColor: L(0.85, 0.75, 0.55), mushroomStemWidth: 0.09 } },
-    { key: "GLOW", label: "Brillante (mágica)", values: { mushroomCapColor: L(0.03, 0.25, 0.85), mushroomCapTipColor: L(0.25, 0.85, 1), mushroomSpots: 6, mushroomSpotColor: L(0.6, 1, 1), mushroomStemColor: L(0.75, 0.85, 0.95) } },
-  ]);
-
-  G.register("PEBBLES", {
-    category: "fungi", label: "Piedras",
+  G.register("LEAVES", {
+    category: "leaves", label: "Hojas",
+    common: ["Colores", "Vida y detalles", "Textura procedural"],
+    presetParam: "leafSpecies",
     params: {
-      "Piedras": [
-        ["rockShape", "Forma", [["ROCK", "Rocas sueltas"], ["BLOCK", "Bloque entero"]], "ROCK", null, null, null,
-          "Bloque entero: un bloque de piedra de cubitos que llena la celda (para menas: carbón, hierro…). Ignora «Cantidad»"],
-        ["rockStyle", "Estilo", [["VOXEL", "Voxel (cubitos)"], ["SMOOTH", "Suave"]], "VOXEL", null, null, null, "Solo rocas sueltas: el bloque siempre es de cubitos"],
-        ["rockVoxel", "Tamaño cubito", "num", 0.0625, 0.02, 0.2, 0.0025, "En bloques: 0.0625 = 1/16 de bloque, 4 px del sprite de 64"],
-        ["rockDither", "Variación por cubito", "num", 0.06, 0, 0.4, 0.01], ["rockSize", "Tamaño", "num", 0.1, 0.02, 0.5, 0.005],
-        ["rockVar", "Var. tamaño", "num", 0.4, 0, 1, 0.01], ["rockFlatten", "Aplanado", "num", 0.55, 0.1, 1, 0.01],
-        ["rockNoise", "Irregularidad", "num", 0.2, 0, 1, 0.01], ["rockDetail", "Detalle (suave)", "int", 2, 1, 4, 1],
-        ["rockColor", "Color base", "color", L(0.32, 0.31, 0.3)], ["rockTipColor", "Color punta", "color", L(0.55, 0.53, 0.5)],
+      "Hojas": [
+        ["leafForm", "Forma", [["PAINTED", "Bloque pintado (2D)"], ["BLOCK", "Bloque de hojas (3D)"], ["GROUND", "En el suelo"], ["PILE", "Montón"]], "PAINTED", null, null, null,
+          "Pintado: hojas enteras de frente, en capas, como un bloque dibujado a mano (se ajusta en «Pintado»). Bloque 3D: hojas modeladas. Suelo: hojarasca. Montón: un montículo"],
+        ["leafSpecies", "Especie", SPECIES, "AURA"],
+        ["leafShape", "Hoja", [["LOBED", "Lobulada"], ["OVAL", "Ovalada"], ["ROUND", "Redonda"], ["LANCE", "Lanceolada"], ["NARROW", "Estrecha"], ["SERRATED", "Dentada (abedul)"],
+          ["HEART", "Corazón"], ["SPLIT", "Partida (monstera)"], ["TINY", "Diminuta"], ["NEEDLE", "Agujas"], ["PALM", "Fronda"]], "LOBED"],
+        ["leafCount", "Cantidad", "int", 240, 5, 1500, 1],
+        ["leafSize", "Tamaño", "num", 0.16, 0.02, 0.6, 0.005, "Largo de una hoja, en bloques"],
+        ["leafSizeVar", "Var. tamaño", "num", 0.3, 0, 1, 0.01],
+        ["leafWidth", "Ancho", "num", 0.6, 0.1, 1.2, 0.01, "Ancho respecto al largo"],
+        ["leafCurl", "Curvatura", "num", 0.3, 0, 1, 0.01, "Hojas ahuecadas"],
+        ["leafFold", "Pliegue", "num", 0.25, 0, 1, 0.01, "Dobladas por el nervio central"],
+        ["leafTilt", "Hacia fuera", "num", 0.4, 0, 2, 0.01, "Bloque: cuánto apuntan hacia fuera de la copa"],
+        ["leafHang", "Colgando", "num", 0, 0, 1, 0.01, "Sauce: las hojas caen"],
+        ["leafColor", "Color base", "color", L(0.08, 0.25, 0.04)],
+        ["leafTipColor", "Color punta", "color", L(0.25, 0.5, 0.1)],
+        ["leafAltColor", "Segundo color", "color", L(0.65, 0.08, 0.02)],
+        ["leafAltChance", "Hojas del 2.º color", "num", 0, 0, 1, 0.01, "Otoño: mezcla de colores"],
       ],
-      "Grietas y musgo": [
-        ["rockCracks", "Grietas", "num", 0.12, 0, 0.5, 0.01], ["rockCrackSize", "Tamaño trozos", "num", 0.6, 0.1, 3, 0.01],
-        ["rockCrackDepth", "Profundidad grietas", "num", 0.06, 0, 0.3, 0.005], ["rockCrackDark", "Oscuridad grietas", "num", 0.5, 0, 1, 0.01],
-        ["mossAmount", "Musgo", "num", 0, 0, 1, 0.01], ["mossColor", "Color musgo", "color", L(0.25, 0.42, 0.15)],
+      "Bloque": [
+        ["blockRound", "Esquinas redondas", "num", 0.25, 0, 1, 0.01, "0 = cubo; 1 = esfera dentro del bloque"],
+        ["blockShell", "En la superficie", "num", 0.8, 0, 1, 0.01, "Parte de las hojas que va a la piel de la copa (las de dentro no se ven)"],
+        ["blockHoles", "Huecos", "num", 0.15, 0, 1, 0.01, "Claros entre las hojas"],
+        ["blockCore", "Núcleo oscuro", "num", 0, 0, 1, 0.01, "0 = sin núcleo: entre las hojas se ve a través (transparente). Más de 0: un cubo oscuro dentro tapa los huecos"],
+        ["coreColor", "Color núcleo", "color", L(0.02, 0.08, 0.015)],
+        ["blossomCount", "Flores", "int", 0, 0, 120, 1],
+        ["blossomSize", "Tamaño flor", "num", 0.05, 0.015, 0.15, 0.005],
+        ["blossomColor", "Color flor", "color", L(1, 0.6, 0.75)],
+        ["blossomCenterColor", "Centro flor", "color", L(1, 0.85, 0.3)],
+        ["vineCount", "Colgantes", "int", 0, 0, 30, 1, "Lianas, ramas de sauce, raíces de manglar por fuera"],
+        ["vineLength", "Largo colgante", "num", 0.8, 0.1, 1, 0.01],
+        ["vineColor", "Color colgante", "color", L(0.1, 0.3, 0.05)],
       ],
-      "Minerales": [
-        ["oreAmount", "Cantidad", "num", 0, 0, 1, 0.01, "0 = piedra sin mineral"],
-        ["oreStyle", "Forma", [["SPECKS", "Motas"], ["NUGGETS", "Pepitas (en grupos)"], ["VEINS", "Vetas"]], "SPECKS"],
-        ["oreSize", "Tamaño", "num", 0.12, 0.03, 0.5, 0.005, "En bloques: lo grande que es cada mota o lo ancha que ondula la veta"],
-        ["oreColor", "Color", "color", L(0.02, 0.02, 0.025)],
-        ["oreTipColor", "Color brillo", "color", L(0.12, 0.12, 0.14)],
-        ["oreShine", "Brillo", "num", 0.5, 0, 1, 0.01, "Cuánto llega el color de brillo al centro de cada mota o veta"],
+      "Pintado": [
+        ["paintSeamless", "Sin costuras", "bool", true, null, null, null, "El dibujo sigue en el bloque de al lado: una copa de muchos bloques se ve como una sola masa. Apagado: cada bloque es una bola redonda"],
+        ["paintScale", "Escala de hoja", "num", 1.35, 0.5, 3, 0.05, "Multiplica «Tamaño»: a 64 px una hoja necesita unos 9–14 px para que se lea su forma"],
+        ["paintPoint", "Punta", "num", 1.4, 0.5, 3, 0.05, "Más = hojas más afiladas"],
+        ["paintSpacing", "Separación", "num", 0.52, 0.25, 1.5, 0.01, "Entre hojas, respecto a su largo: menos = más hojas. El largo y el ancho son «Tamaño» y «Ancho» de Hojas (tamaño × 62 = pixeles)"],
+        ["paintJitter", "Desorden", "num", 70, 0, 180, 1, "Grados que se aparta cada hoja de apuntar hacia fuera"],
+        ["paintLayers", "Capas", "int", 2, 1, 4, 1, "Las de atrás van un tono más oscuras y se ven entre las de delante"],
+        ["paintEdge", "Borde entre hojas", "num", 1, 0, 3, 0.5, "Pixeles de la línea oscura que separa cada hoja de la de detrás: lo que deja ver su forma"],
+        ["paintEdgeShadow", "Borde solo en la sombra", "bool", true, null, null, null, "La línea solo del lado contrario a la luz, como la sombra de la hoja; apagado: alrededor de toda la hoja"],
+        ["paintPinholes", "Agujeritos", "num", 0.25, 0, 0.8, 0.01, "Parte de esa línea que queda abierta: se ve a través en puntitos, no en agujeros grandes"],
+        ["paintHoles", "Huecos delante", "num", 0.06, 0, 0.6, 0.01],
+        ["paintBackHoles", "Huecos detrás", "num", 0.08, 0, 0.8, 0.01, "Hojas de atrás que faltan: agujeros más grandes"],
+        ["paintRound", "Redondez", "num", 0.6, 0, 1, 0.01, "0 = la silueta del bloque; 1 = un círculo"],
+        ["paintFill", "Llenado", "num", 0.93, 0.5, 1.2, 0.01, "Hasta dónde llegan las hojas hacia el borde"],
+        ["paintClip", "Puntas fuera", "num", 1.3, 1, 1.5, 0.01, "Cuánto pueden salir las puntas de la silueta"],
+        ["paintDarker", "Hojas más oscuras", "num", 0.25, 0, 0.8, 0.01, "Parte de las hojas un tono por debajo"],
+        ["paintLighter", "Hojas más claras", "num", 0.1, 0, 0.8, 0.01],
+        ["paintHighlight", "Brillos arriba", "num", 0.35, 0, 1, 0.01, "Hojas de arriba con su mitad iluminada en el tono más claro"],
+        ["paintTones", "Tonos", "int", 6, 3, 10, 1, "Entre el color base (el más oscuro) y el de la punta (el más claro)"],
+      ],
+      "Frutas": [
+        ["fruitCount", "Frutas", "int", 0, 0, 30, 1, "Por bloque. Solo en «Bloque pintado (2D)»"],
+        ["fruitShape", "Forma", [["ROUND", "Redonda (manzana, naranja)"], ["LONG", "Alargada (mango, pera)"], ["CLUSTER", "Racimo (cerezas)"]], "ROUND"],
+        ["fruitSize", "Tamaño", "num", 2.5, 1, 8, 0.5, "Radio en pixeles de un sprite de 64"],
+        ["fruitColor", "Color", "color", L(0.6, 0.03, 0.02)],
+        ["fruitTipColor", "Color luz", "color", L(0.95, 0.25, 0.12)],
+        ["fruitStemColor", "Color tallo", "color", L(0.12, 0.07, 0.02)],
+        ["fruitShine", "Brillo", "num", 0.5, 0, 1, 0.01, "El puntito de luz de las frutas lisas"],
+      ],
+      "Suelo y montón": [
+        ["pileHeight", "Altura montón", "num", 0.45, 0.05, 1, 0.01, "En bloques"],
+        ["pileRadius", "Radio montón", "num", 0.45, 0.15, 0.5, 0.01],
       ],
     },
-    defaults: { count: 6, distribution: "DISC", areaSize: 0.9, minDistance: 0.15 },
-  }, genPebbles, [
-    { key: "GREY", label: "Gris", values: { rockColor: L(0.32, 0.31, 0.3), rockTipColor: L(0.55, 0.53, 0.5), mossAmount: 0, rockShape: "ROCK", oreAmount: 0 } },
-    { key: "SAND", label: "Arenisca", values: { rockColor: L(0.5, 0.36, 0.2), rockTipColor: L(0.8, 0.65, 0.42), mossAmount: 0, rockShape: "ROCK", oreAmount: 0 } },
-    { key: "DARK", label: "Oscura (basalto)", values: { rockColor: L(0.1, 0.1, 0.11), rockTipColor: L(0.28, 0.28, 0.3), mossAmount: 0, rockShape: "ROCK", oreAmount: 0 } },
-    { key: "MOSSY", label: "Con musgo", values: { rockColor: L(0.3, 0.3, 0.28), rockTipColor: L(0.5, 0.5, 0.46), mossAmount: 0.55, rockShape: "ROCK", oreAmount: 0 } },
-    { key: "COPPER_PEBBLES", label: "Guijarros con cobre", values: { rockShape: "ROCK", rockColor: L(0.3, 0.3, 0.29), rockTipColor: L(0.5, 0.49, 0.47), mossAmount: 0, oreAmount: 0.4, oreStyle: "SPECKS", oreSize: 0.04, oreColor: L(0.42, 0.13, 0.03), oreTipColor: L(0.95, 0.5, 0.18), oreShine: 0.6 } },
-    { key: "ORE_COAL", label: "Mena de carbón", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.3, oreStyle: "NUGGETS", oreSize: 0.08, oreColor: L(0.012, 0.012, 0.015), oreTipColor: L(0.06, 0.06, 0.07), oreShine: 0.3 } },
-    { key: "ORE_COPPER", label: "Mena de cobre", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.3, oreStyle: "SPECKS", oreSize: 0.08, oreColor: L(0.42, 0.13, 0.03), oreTipColor: L(0.95, 0.5, 0.18), oreShine: 0.6 } },
-    { key: "ORE_IRON", label: "Mena de hierro", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.28, oreStyle: "NUGGETS", oreSize: 0.08, oreColor: L(0.5, 0.26, 0.14), oreTipColor: L(0.85, 0.62, 0.45), oreShine: 0.55 } },
-    { key: "ORE_GOLD", label: "Mena de oro", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.3, oreStyle: "SPECKS", oreSize: 0.08, oreColor: L(0.7, 0.42, 0.03), oreTipColor: L(1, 0.9, 0.35), oreShine: 0.75 } },
-    { key: "ORE_TIN", label: "Mena de estaño", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.3, oreStyle: "SPECKS", oreSize: 0.08, oreColor: L(0.42, 0.44, 0.47), oreTipColor: L(0.8, 0.84, 0.88), oreShine: 0.55 } },
-    { key: "ORE_SILVER", label: "Mena de plata", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.25, oreStyle: "NUGGETS", oreSize: 0.08, oreColor: L(0.6, 0.63, 0.7), oreTipColor: L(1, 1, 1), oreShine: 0.7 } },
-    { key: "ORE_QUARTZ", label: "Vetas de cuarzo", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.45, oreStyle: "VEINS", oreSize: 0.2, oreColor: L(0.78, 0.76, 0.74), oreTipColor: L(1, 1, 1), oreShine: 0.5 } },
-    { key: "ORE_COAL_DEEP", label: "Carbón en roca profunda", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.08, 0.08, 0.09), rockTipColor: L(0.2, 0.2, 0.22), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.3, oreStyle: "NUGGETS", oreSize: 0.08, oreColor: L(0.006, 0.006, 0.008), oreTipColor: L(0.05, 0.05, 0.06), oreShine: 0.3 } },
+    defaults: { count: 1, distribution: "GRID", keepInCell: false, fitSprite: false, aoBase: 0, colorVariation: 0.12, leafTwist: 25, leafSegments: 4, cellMargin: 0.04 },
+  }, (mb, p, r) => genLeaves(mb, p, r), [
+    // Dalvin's hand-made leaf block, measured: whole pointed leaves facing the camera in two layers, two tones each,
+    // six grays from 99 to 185, lighter on top and darker down the right. Painted (no mesh); gray for biome_tinted.
+    { key: "AURA", label: "Aura (pintado, gris)", values: { fruitCount: 0, leafForm: "PAINTED", leafShape: "LANCE", leafSize: 0.161, paintScale: 1, leafSizeVar: 0.3, leafWidth: 0.55, leafHang: 0, paintPoint: 1.4, paintSpacing: 0.52, paintJitter: 70, paintLayers: 2, paintEdge: 1, paintEdgeShadow: true, paintPinholes: 0.25, paintHoles: 0.06, paintBackHoles: 0.08, paintRound: 0.6, paintFill: 0.93, paintClip: 1.3, paintDarker: 0.25, paintLighter: 0.1, paintHighlight: 0.35, paintTones: 6, leafColor: "#636363", leafTipColor: "#b9b9b9", leafAltChance: 0, blockHoles: 0.15, blossomCount: 0, vineCount: 0 } },
+    { key: "OAK", label: "Roble", values: { fruitCount: 0, leafShape: "LOBED", leafSize: 0.16, leafWidth: 0.6, leafCount: 240, leafCurl: 0.3, leafHang: 0, leafColor: L(0.08, 0.25, 0.04), leafTipColor: L(0.25, 0.5, 0.1), leafAltChance: 0, blockRound: 0.25, blockHoles: 0.15, blockCore: 0, coreColor: L(0.02, 0.08, 0.015), blossomCount: 0, vineCount: 0 } },
+    { key: "BIRCH", label: "Abedul", values: { fruitCount: 0, leafShape: "SERRATED", leafSize: 0.11, leafWidth: 0.7, leafCount: 320, leafCurl: 0.2, leafHang: 0, leafColor: L(0.18, 0.4, 0.07), leafTipColor: L(0.55, 0.75, 0.2), leafAltChance: 0, blockRound: 0.3, blockHoles: 0.22, blockCore: 0, coreColor: L(0.05, 0.12, 0.02), blossomCount: 0, vineCount: 0 } },
+    { key: "PINE", label: "Pino", values: { fruitCount: 0, leafShape: "NEEDLE", leafSize: 0.2, leafCount: 110, leafHang: 0.1, leafColor: L(0.03, 0.15, 0.05), leafTipColor: L(0.08, 0.3, 0.1), leafAltChance: 0, blockRound: 0.35, blockHoles: 0.18, blockCore: 0, coreColor: L(0.01, 0.05, 0.02), blossomCount: 0, vineCount: 0 } },
+    { key: "SPRUCE", label: "Abeto", values: { fruitCount: 0, leafShape: "NEEDLE", leafSize: 0.16, leafCount: 140, leafHang: 0.25, leafColor: L(0.02, 0.1, 0.06), leafTipColor: L(0.05, 0.22, 0.13), leafAltChance: 0, blockRound: 0.1, blockHoles: 0.08, blockCore: 0, coreColor: L(0.01, 0.04, 0.025), blossomCount: 0, vineCount: 0 } },
+    { key: "JUNGLE", label: "Jungla", values: { fruitCount: 0, leafShape: "HEART", leafSize: 0.22, leafWidth: 0.75, leafCount: 150, leafCurl: 0.35, leafHang: 0.15, veinStrength: 0.2, leafColor: L(0.02, 0.3, 0.03), leafTipColor: L(0.15, 0.65, 0.08), leafAltChance: 0, blockRound: 0.15, blockHoles: 0.1, blockCore: 0, coreColor: L(0.01, 0.08, 0.01), blossomCount: 0, vineCount: 6, vineColor: L(0.08, 0.28, 0.04) } },
+    { key: "JUNGLE_PALM", label: "Jungla · palmera", values: { fruitCount: 0, leafShape: "PALM", leafSize: 0.42, leafCount: 45, leafHang: 0, leafColor: L(0.05, 0.3, 0.05), leafTipColor: L(0.3, 0.6, 0.1), leafAltChance: 0, blockRound: 0.4, blockHoles: 0, blockCore: 0, coreColor: L(0.01, 0.05, 0.01), blossomCount: 0, vineCount: 0 } },
+    { key: "JUNGLE_MONSTERA", label: "Jungla · costilla de Adán", values: { fruitCount: 0, leafShape: "SPLIT", leafSize: 0.3, leafWidth: 0.95, leafCount: 120, leafCurl: 0.25, leafHang: 0.1, veinStrength: 0.25, leafColor: L(0.01, 0.2, 0.03), leafTipColor: L(0.08, 0.45, 0.08), leafAltChance: 0, blockRound: 0.2, blockHoles: 0.05, blockCore: 0, coreColor: L(0.005, 0.06, 0.01), blossomCount: 0, vineCount: 3, vineColor: L(0.08, 0.25, 0.04) } },
+    { key: "JUNGLE_BANANA", label: "Jungla · platanera", values: { fruitCount: 0, leafShape: "LANCE", leafSize: 0.36, leafWidth: 0.42, leafCount: 70, leafCurl: 0.15, leafHang: 0.2, leafRuffle: 0.3, biteChance: 0.25, leafColor: L(0.1, 0.4, 0.05), leafTipColor: L(0.4, 0.75, 0.15), leafAltChance: 0.1, leafAltColor: L(0.5, 0.45, 0.15), blockRound: 0.2, blockHoles: 0.08, blockCore: 0, coreColor: L(0.02, 0.1, 0.02), blossomCount: 0, vineCount: 0 } },
+    { key: "JUNGLE_VINES", label: "Jungla · con lianas", values: { fruitCount: 0, leafShape: "HEART", leafSize: 0.14, leafWidth: 0.8, leafCount: 210, leafCurl: 0.3, leafHang: 0.2, leafColor: L(0.03, 0.28, 0.03), leafTipColor: L(0.18, 0.6, 0.1), leafAltChance: 0, blockRound: 0.15, blockHoles: 0.12, blockCore: 0, coreColor: L(0.01, 0.07, 0.01), blossomCount: 0, vineCount: 16, vineLength: 1, vineColor: L(0.1, 0.32, 0.05) } },
+    { key: "ACACIA", label: "Acacia", values: { fruitCount: 0, leafShape: "TINY", leafSize: 0.07, leafWidth: 0.5, leafCount: 520, leafCurl: 0.1, leafHang: 0, leafColor: L(0.15, 0.25, 0.04), leafTipColor: L(0.4, 0.48, 0.12), leafAltChance: 0, blockRound: 0.45, blockHoles: 0.35, blockCore: 0, coreColor: L(0.05, 0.08, 0.02), blossomCount: 0, vineCount: 0 } },
+    { key: "DARK_OAK", label: "Roble oscuro", values: { fruitCount: 0, leafShape: "LOBED", leafSize: 0.18, leafWidth: 0.65, leafCount: 300, leafCurl: 0.3, leafHang: 0.05, leafColor: L(0.02, 0.12, 0.02), leafTipColor: L(0.1, 0.28, 0.05), leafAltChance: 0, blockRound: 0.1, blockHoles: 0.05, blockCore: 0, coreColor: L(0.005, 0.03, 0.005), blossomCount: 0, vineCount: 0 } },
+    { key: "CHERRY", label: "Cerezo", values: { fruitCount: 0, leafShape: "OVAL", leafSize: 0.1, leafWidth: 0.7, leafCount: 260, leafCurl: 0.3, leafHang: 0, leafColor: L(0.8, 0.35, 0.5), leafTipColor: L(1, 0.7, 0.82), leafAltChance: 0.15, leafAltColor: L(0.2, 0.45, 0.1), blockRound: 0.35, blockHoles: 0.18, blockCore: 0, coreColor: L(0.35, 0.12, 0.2), blossomCount: 40, blossomColor: L(1, 0.85, 0.9), blossomCenterColor: L(1, 0.6, 0.7), vineCount: 0 } },
+    { key: "MANGROVE", label: "Manglar", values: { fruitCount: 0, leafShape: "OVAL", leafSize: 0.12, leafWidth: 0.55, leafCount: 280, leafCurl: 0.2, leafHang: 0.05, leafColor: L(0.05, 0.25, 0.06), leafTipColor: L(0.2, 0.45, 0.12), leafAltChance: 0, blockRound: 0.2, blockHoles: 0.15, blockCore: 0, coreColor: L(0.02, 0.07, 0.02), blossomCount: 0, vineCount: 5, vineLength: 0.6, vineColor: L(0.28, 0.3, 0.1) } },
+    { key: "WILLOW", label: "Sauce", values: { fruitCount: 0, leafShape: "NARROW", leafSize: 0.22, leafWidth: 0.25, leafCount: 260, leafCurl: 0.1, leafHang: 0.8, leafColor: L(0.15, 0.38, 0.12), leafTipColor: L(0.45, 0.65, 0.25), leafAltChance: 0, blockRound: 0.3, blockHoles: 0.2, blockCore: 0, coreColor: L(0.04, 0.1, 0.03), blossomCount: 0, vineCount: 10, vineLength: 1, vineColor: L(0.2, 0.4, 0.12) } },
+    { key: "APPLE", label: "Manzano (frutas)", values: { leafForm: "PAINTED", leafShape: "OVAL", leafSize: 0.14, paintScale: 1.1, leafSizeVar: 0.3, leafWidth: 0.62, leafHang: 0, paintPoint: 1.2, paintSpacing: 0.52, paintJitter: 70, paintLayers: 2, paintEdge: 1, paintEdgeShadow: true, paintPinholes: 0.2, paintHoles: 0.05, paintBackHoles: 0.08, paintRound: 0.6, paintFill: 0.93, paintClip: 1.3, paintDarker: 0.25, paintLighter: 0.1, paintHighlight: 0.35, paintTones: 6, leafColor: L(0.05, 0.2, 0.03), leafTipColor: L(0.3, 0.55, 0.12), leafAltChance: 0, blossomCount: 0, vineCount: 0, fruitCount: 6, fruitShape: "ROUND", fruitSize: 2.5, fruitColor: L(0.55, 0.02, 0.02), fruitTipColor: L(0.95, 0.22, 0.1), fruitStemColor: L(0.12, 0.07, 0.02), fruitShine: 0.5 } },
+    { key: "ORANGE", label: "Naranjo (frutas)", values: { leafForm: "PAINTED", leafShape: "OVAL", leafSize: 0.13, paintScale: 1.1, leafSizeVar: 0.3, leafWidth: 0.6, leafHang: 0, paintPoint: 1.2, paintSpacing: 0.52, paintJitter: 70, paintLayers: 2, paintEdge: 1, paintEdgeShadow: true, paintPinholes: 0.2, paintHoles: 0.05, paintBackHoles: 0.08, paintRound: 0.6, paintFill: 0.93, paintClip: 1.3, paintDarker: 0.25, paintLighter: 0.1, paintHighlight: 0.35, paintTones: 6, leafColor: L(0.02, 0.15, 0.03), leafTipColor: L(0.15, 0.42, 0.08), leafAltChance: 0, blossomCount: 0, vineCount: 0, fruitCount: 6, fruitShape: "ROUND", fruitSize: 2.5, fruitColor: L(0.8, 0.22, 0.01), fruitTipColor: L(1, 0.55, 0.08), fruitStemColor: L(0.08, 0.1, 0.02), fruitShine: 0.4 } },
+    { key: "CHERRY_FRUIT", label: "Cerezo con cerezas", values: { leafForm: "PAINTED", leafShape: "OVAL", leafSize: 0.12, paintScale: 1.1, leafSizeVar: 0.3, leafWidth: 0.62, leafHang: 0, paintPoint: 1.2, paintSpacing: 0.52, paintJitter: 70, paintLayers: 2, paintEdge: 1, paintEdgeShadow: true, paintPinholes: 0.2, paintHoles: 0.05, paintBackHoles: 0.08, paintRound: 0.6, paintFill: 0.93, paintClip: 1.3, paintDarker: 0.25, paintLighter: 0.1, paintHighlight: 0.35, paintTones: 6, leafColor: L(0.05, 0.22, 0.04), leafTipColor: L(0.3, 0.55, 0.13), leafAltChance: 0, blossomCount: 0, vineCount: 0, fruitCount: 5, fruitShape: "CLUSTER", fruitSize: 2.5, fruitColor: L(0.35, 0.0, 0.02), fruitTipColor: L(0.85, 0.05, 0.08), fruitStemColor: L(0.15, 0.25, 0.04), fruitShine: 0.6 } },
+    { key: "MANGO", label: "Mango (frutas)", values: { leafForm: "PAINTED", leafShape: "LANCE", leafSize: 0.18, paintScale: 1.1, leafSizeVar: 0.3, leafWidth: 0.4, leafHang: 0, paintPoint: 1.2, paintSpacing: 0.52, paintJitter: 70, paintLayers: 2, paintEdge: 1, paintEdgeShadow: true, paintPinholes: 0.2, paintHoles: 0.05, paintBackHoles: 0.08, paintRound: 0.6, paintFill: 0.93, paintClip: 1.3, paintDarker: 0.25, paintLighter: 0.1, paintHighlight: 0.35, paintTones: 6, leafColor: L(0.03, 0.15, 0.03), leafTipColor: L(0.2, 0.45, 0.1), leafAltChance: 0, blossomCount: 0, vineCount: 0, fruitCount: 5, fruitShape: "LONG", fruitSize: 2.5, fruitColor: L(0.45, 0.35, 0.02), fruitTipColor: L(1, 0.45, 0.06), fruitStemColor: L(0.1, 0.08, 0.02), fruitShine: 0.4 } },
+    { key: "PEAR", label: "Peral (frutas)", values: { leafForm: "PAINTED", leafShape: "OVAL", leafSize: 0.13, paintScale: 1.1, leafSizeVar: 0.3, leafWidth: 0.6, leafHang: 0, paintPoint: 1.2, paintSpacing: 0.52, paintJitter: 70, paintLayers: 2, paintEdge: 1, paintEdgeShadow: true, paintPinholes: 0.2, paintHoles: 0.05, paintBackHoles: 0.08, paintRound: 0.6, paintFill: 0.93, paintClip: 1.3, paintDarker: 0.25, paintLighter: 0.1, paintHighlight: 0.35, paintTones: 6, leafColor: L(0.06, 0.22, 0.04), leafTipColor: L(0.32, 0.55, 0.14), leafAltChance: 0, blossomCount: 0, vineCount: 0, fruitCount: 5, fruitShape: "LONG", fruitSize: 2.5, fruitColor: L(0.45, 0.55, 0.06), fruitTipColor: L(0.85, 0.9, 0.3), fruitStemColor: L(0.12, 0.07, 0.02), fruitShine: 0.3 } },
+    { key: "COCONUT", label: "Cocotero (cocos)", values: { leafForm: "PAINTED", leafShape: "NARROW", leafSize: 0.3, paintScale: 1.1, leafSizeVar: 0.3, leafWidth: 0.3, leafHang: 0, paintPoint: 1.2, paintSpacing: 0.52, paintJitter: 70, paintLayers: 2, paintEdge: 1, paintEdgeShadow: true, paintPinholes: 0.2, paintHoles: 0.05, paintBackHoles: 0.08, paintRound: 0.6, paintFill: 0.93, paintClip: 1.3, paintDarker: 0.25, paintLighter: 0.1, paintHighlight: 0.35, paintTones: 6, leafColor: L(0.04, 0.22, 0.04), leafTipColor: L(0.3, 0.55, 0.1), leafAltChance: 0, blossomCount: 0, vineCount: 0, fruitCount: 4, fruitShape: "ROUND", fruitSize: 3.5, fruitColor: L(0.12, 0.06, 0.02), fruitTipColor: L(0.35, 0.2, 0.08), fruitStemColor: L(0.08, 0.05, 0.02), fruitShine: 0.15 } },
+    { key: "AUTUMN", label: "Otoño", values: { fruitCount: 0, leafShape: "LOBED", leafSize: 0.15, leafWidth: 0.62, leafCount: 240, leafCurl: 0.35, leafHang: 0, leafColor: L(0.8, 0.28, 0.02), leafTipColor: L(1, 0.62, 0.05), leafAltChance: 0.35, leafAltColor: L(0.65, 0.05, 0.02), blockRound: 0.25, blockHoles: 0.2, blockCore: 0, coreColor: L(0.2, 0.05, 0.01), blossomCount: 0, vineCount: 0 } },
+    { key: "DEAD", label: "Seca", values: { fruitCount: 0, leafShape: "OVAL", leafSize: 0.12, leafWidth: 0.55, leafCount: 90, leafCurl: 0.8, leafHang: 0.1, leafColor: L(0.25, 0.15, 0.05), leafTipColor: L(0.45, 0.3, 0.12), leafAltChance: 0.3, leafAltColor: L(0.15, 0.1, 0.05), blockRound: 0.3, blockHoles: 0.5, blockCore: 0, blossomCount: 0, vineCount: 0 } },
   ]);
 
-  G.register("CRYSTAL", {
-    category: "fungi", label: "Cristales",
-    params: { "Cristales": [
-      ["crystalCount", "Cristales", "int", 6, 1, 30, 1], ["crystalLength", "Largo", "num", 0.7, 0.05, 1.4, 0.01],
-      ["crystalRadius", "Radio", "num", 0.09, 0.01, 0.3, 0.005], ["crystalSides", "Caras", "int", 6, 3, 12, 1],
-      ["crystalTip", "Punta", "num", 0.3, 0.05, 0.9, 0.01], ["crystalSpread", "Apertura", "num", 45, 0, 85, 1],
-      ["crystalFacets", "Brillo facetas", "num", 0.15, 0, 0.6, 0.01], ["crystalShards", "Esquirlas", "int", 3, 0, 20, 1],
-      ["crystalColor", "Color base", "color", L(0.35, 0.2, 0.75)], ["crystalTipColor", "Color punta", "color", L(0.8, 0.7, 1)],
-    ] },
-    defaults: { count: 1 },
-  }, genCrystal, [
-    { key: "AMETHYST", label: "Amatista", values: { crystalColor: L(0.35, 0.2, 0.75), crystalTipColor: L(0.8, 0.7, 1) } },
-    { key: "EMERALD", label: "Esmeralda", values: { crystalColor: L(0.03, 0.45, 0.12), crystalTipColor: L(0.5, 1, 0.6) } },
-    { key: "RUBY", label: "Rubí", values: { crystalColor: L(0.55, 0.01, 0.04), crystalTipColor: L(1, 0.4, 0.45) } },
-    { key: "SAPPHIRE", label: "Zafiro", values: { crystalColor: L(0.04, 0.12, 0.65), crystalTipColor: L(0.5, 0.7, 1) } },
-    { key: "QUARTZ", label: "Cuarzo", values: { crystalColor: L(0.75, 0.75, 0.8), crystalTipColor: L(1, 1, 1) } },
-    { key: "TOPAZ", label: "Topacio", values: { crystalColor: L(0.85, 0.45, 0.03), crystalTipColor: L(1, 0.85, 0.4) } },
+  G.register("SEEDS", {
+    category: "leaves", label: "Semillas",
+    common: ["Colores", "Textura procedural"],
+    presetParam: "seedKind",
+    params: {
+      "Semillas": [
+        ["seedKind", "De", [["WHEAT", "Trigo"], ["CARROT", "Zanahoria"], ["POTATO", "Patata (de siembra)"], ["CORN", "Maíz"], ["PUMPKIN", "Calabaza"],
+          ["MELON", "Sandía"], ["SUNFLOWER", "Girasol"], ["BEET", "Remolacha"], ["GENERIC", "Genéricas"]], "WHEAT"],
+        ["seedForm", "Presentación", [["PILE", "Montoncito"], ["SCATTER", "Esparcidas"], ["POUCH", "En bolsita"]], "PILE"],
+        ["seedShape", "Forma", [["GRAIN", "Grano"], ["TEAR", "Plana (lágrima)"], ["ROUND", "Redonda"], ["KERNEL", "Grano de maíz"], ["CHUNK", "Trozo"]], "GRAIN"],
+        ["seedCount", "Cantidad", "int", 40, 1, 200, 1],
+        ["seedSize", "Tamaño", "num", 0.056, 0.008, 0.2, 0.001],
+        ["seedSizeVar", "Var. tamaño", "num", 0.2, 0, 0.8, 0.01],
+        ["seedColor", "Color base", "color", L(0.6, 0.42, 0.12)],
+        ["seedTipColor", "Color punta", "color", L(0.85, 0.68, 0.3)],
+        ["seedStripes", "Rayas", "bool", false],
+        ["seedStripeColor", "Color rayas", "color", L(0.85, 0.85, 0.8)],
+        ["pileHeight", "Altura montón", "num", 0.45, 0.05, 1, 0.01],
+        ["pileRadius", "Radio montón", "num", 0.45, 0.15, 0.5, 0.01],
+        ["pouchColor", "Color bolsita", "color", L(0.55, 0.4, 0.22)],
+        ["pouchTieColor", "Color cordel", "color", L(0.35, 0.2, 0.08)],
+      ],
+    },
+    defaults: { count: 1, distribution: "GRID", keepInCell: false, fitSprite: true, aoBase: 0, colorVariation: 0.08, cellMargin: 0.08 },
+  }, (mb, p, r) => genSeeds(mb, p, r), [
+    { key: "WHEAT", label: "Trigo", values: { seedShape: "GRAIN", seedCount: 45, seedSize: 0.056, seedColor: L(0.6, 0.42, 0.12), seedTipColor: L(0.85, 0.68, 0.3), seedStripes: false } },
+    { key: "CARROT", label: "Zanahoria", values: { seedShape: "TEAR", seedCount: 60, seedSize: 0.035, seedColor: L(0.3, 0.2, 0.08), seedTipColor: L(0.45, 0.33, 0.15), seedStripes: false } },
+    { key: "POTATO", label: "Patata (de siembra)", values: { seedShape: "CHUNK", seedCount: 3, seedSize: 0.176, seedColor: L(0.55, 0.38, 0.18), seedTipColor: L(0.75, 0.58, 0.3), seedStripes: false } },
+    { key: "CORN", label: "Maíz", values: { seedShape: "KERNEL", seedCount: 35, seedSize: 0.064, seedColor: L(0.95, 0.6, 0.05), seedTipColor: L(1, 0.85, 0.35), seedStripes: false } },
+    { key: "PUMPKIN", label: "Calabaza", values: { seedShape: "TEAR", seedCount: 22, seedSize: 0.088, seedColor: L(0.85, 0.78, 0.55), seedTipColor: L(0.98, 0.95, 0.82), seedStripes: false } },
+    { key: "MELON", label: "Sandía", values: { seedShape: "TEAR", seedCount: 28, seedSize: 0.064, seedColor: L(0.03, 0.025, 0.02), seedTipColor: L(0.12, 0.1, 0.08), seedStripes: false } },
+    { key: "SUNFLOWER", label: "Girasol", values: { seedShape: "TEAR", seedCount: 28, seedSize: 0.08, seedColor: L(0.04, 0.035, 0.03), seedTipColor: L(0.1, 0.09, 0.08), seedStripes: true, seedStripeColor: L(0.75, 0.75, 0.7) } },
+    { key: "BEET", label: "Remolacha", values: { seedShape: "ROUND", seedCount: 30, seedSize: 0.056, seedColor: L(0.3, 0.12, 0.08), seedTipColor: L(0.45, 0.25, 0.15), seedStripes: false } },
+    { key: "GENERIC", label: "Genéricas", values: { seedShape: "ROUND", seedCount: 40, seedSize: 0.045, seedColor: L(0.25, 0.16, 0.08), seedTipColor: L(0.4, 0.28, 0.14), seedStripes: false } },
   ]);
 
-  G.register("FERN", {
-    category: "herbs", label: "Helecho",
-    params: { "Helecho": [
-      ["bladeHeight", "Largo fronda", "num", 0.8, 0.1, 1.4, 0.01], ["heightVariation", "Var. largo", "num", 0.2, 0, 1, 0.01],
-      ["fernFronds", "Frondas", "int", 7, 1, 20, 1], ["fernPinnae", "Foliolos", "int", 8, 2, 20, 1],
-      ["fernLift", "Elevación", "num", 0.7, 0, 1.5, 0.01], ["fernFiddleheads", "Brotes enrollados", "int", 0, 0, 8, 1],
-    ] },
-    defaults: { count: 1, tipColor: L(0.25, 0.6, 0.2) },
-  }, genFern, [
-    { key: "GREEN", label: "Verde", values: { tipColor: L(0.25, 0.6, 0.2), fernFiddleheads: 0 } },
-    { key: "YOUNG", label: "Joven (con brotes)", values: { tipColor: L(0.35, 0.7, 0.2), fernFiddleheads: 3 } },
-    { key: "DRY", label: "Seco", values: { tipColor: L(0.55, 0.4, 0.15), fernLift: 0.45 } },
-  ]);
+  // A variety also names itself in its own option, so the species / kind select follows the buttons.
+  for (const pr of G.PRESETS.LEAVES) pr.values.leafSpecies = pr.key;
+  for (const pr of G.PRESETS.SEEDS) pr.values.seedKind = pr.key;
 
-  G.register("CLOVER", {
-    category: "herbs", label: "Trébol",
-    params: { "Trébol": [
-      ["cloverStems", "Hojas", "int", 5, 1, 20, 1], ["cloverHeight", "Altura", "num", 0.12, 0.02, 0.5, 0.005],
-      ["cloverLeaflets", "Foliolos", "int", 3, 3, 4, 1], ["cloverLeafSize", "Tam. foliolo", "num", 0.06, 0.01, 0.2, 0.002],
-      ["stemWidth", "Ancho tallo", "num", 0.03, 0.005, 0.1, 0.001],
-      ["cloverFlower", "Flores", "bool", true], ["petalColor", "Color flor", "color", L(0.95, 0.85, 0.95)],
-    ] },
-    defaults: { count: 12, distribution: "DISC", areaSize: 0.9, minDistance: 0.1, baseColor: L(0.15, 0.4, 0.1), tipColor: L(0.28, 0.62, 0.22) },
-  }, genClover, [
-    { key: "WHITE", label: "Flor blanca", values: { petalColor: L(0.95, 0.9, 0.95), cloverFlower: true, cloverLeaflets: 3 } },
-    { key: "PINK", label: "Flor rosa", values: { petalColor: L(0.95, 0.35, 0.6), cloverFlower: true, cloverLeaflets: 3 } },
-    { key: "LUCKY", label: "Cuatro hojas", values: { cloverFlower: false, cloverLeaflets: 4 } },
-  ]);
-
-  G.register("REEDS", {
-    category: "herbs", label: "Juncos / espadañas", water: "EMERGENT",
-    params: { "Juncos": [
-      ["bladeHeight", "Altura", "num", 1.4, 0.2, 1.6, 0.01], ["heightVariation", "Var. altura", "num", 0.2, 0, 1, 0.01],
-      ["reedLeaves", "Hojas", "int", 6, 0, 20, 1], ["reedLeafWidth", "Ancho hoja", "num", 0.05, 0.005, 0.15, 0.001],
-      ["reedHeads", "Espigas", "int", 2, 0, 8, 1], ["reedHeadLength", "Largo espiga", "num", 0.18, 0.02, 0.6, 0.01],
-      ["reedHeadColor", "Color espiga", "color", L(0.35, 0.2, 0.1)],
-      ["stemNodes", "Nudos", "int", 0, 0, 6, 1], ["stemNodeDark", "Oscuridad nudos", "num", 0.25, 0, 0.8, 0.01],
-      ["brokenChance", "Rotas", "num", 0, 0, 1, 0.01],
-    ] },
-    defaults: { count: 3, distribution: "CLUSTERS", areaSize: 0.8, clusterCount: 1, clusterSpread: 0.3, segments: 5, inclination: 4, bend: 0.3, waterDepth: 0.8, emergeHeight: 0.8, multipart: true,
-      baseColor: L(0.18, 0.38, 0.12), tipColor: L(0.5, 0.72, 0.3) },
-  }, genReeds, [
-    { key: "CATTAIL", label: "Espadaña (enea)", values: { reedHeads: 2, reedHeadColor: L(0.35, 0.2, 0.1) } },
-    { key: "RUSH", label: "Junco sin espiga", values: { reedHeads: 0, reedLeafWidth: 0.03 } },
-    { key: "DRY", label: "Seco", values: { baseColor: L(0.4, 0.35, 0.15), tipColor: L(0.75, 0.65, 0.35), reedHeadColor: L(0.3, 0.2, 0.12) } },
-  ]);
-
-  G.register("PAPYRUS", {
-    category: "herbs", label: "Papiro", water: "EMERGENT",
-    params: { "Papiro": [
-      ["bladeHeight", "Altura", "num", 1.4, 0.2, 1.6, 0.01], ["heightVariation", "Var. altura", "num", 0.2, 0, 1, 0.01],
-      ["papyrusStems", "Tallos", "int", 5, 1, 15, 1], ["papyrusRays", "Rayos", "int", 18, 4, 40, 1],
-      ["papyrusRayLength", "Largo rayos", "num", 0.25, 0.03, 0.6, 0.01], ["stemWidth", "Ancho tallo", "num", 0.03, 0.005, 0.1, 0.001],
-    ] },
-    defaults: { count: 1, segments: 5, bend: 0.2, baseColor: L(0.2, 0.45, 0.15), tipColor: L(0.45, 0.7, 0.25) },
-  }, genPapyrus);
-
-  G.register("BAMBOO", {
-    category: "herbs", label: "Bambú",
-    params: { "Bambú": [
-      ["bambooCulms", "Cañas", "int", 3, 1, 10, 1], ["bambooHeight", "Altura", "num", 1.5, 0.2, 2.2, 0.01],
-      ["heightVariation", "Var. altura", "num", 0.15, 0, 1, 0.01], ["bambooRadius", "Radio", "num", 0.035, 0.005, 0.12, 0.001],
-      ["bambooNodes", "Nudos", "int", 6, 1, 14, 1], ["bambooLeaves", "Hojas por nudo", "int", 3, 0, 8, 1],
-      ["stemLeafSize", "Tam. hoja", "num", 0.22, 0.03, 0.5, 0.005], ["stemNodeDark", "Oscuridad nudos", "num", 0.2, 0, 0.8, 0.01],
-      ["stemLeafColor", "Color hoja", "color", L(0.3, 0.6, 0.2)],
-    ] },
-    defaults: { count: 1, inclination: 2, baseColor: L(0.35, 0.55, 0.18), tipColor: L(0.5, 0.7, 0.25), multipart: true, cells: 2, fillCells: true },
-  }, genBamboo, [
-    { key: "GREEN", label: "Verde", values: { baseColor: L(0.35, 0.55, 0.18), tipColor: L(0.5, 0.7, 0.25) } },
-    { key: "GOLDEN", label: "Dorado", values: { baseColor: L(0.7, 0.55, 0.12), tipColor: L(0.85, 0.75, 0.3) } },
-    { key: "BLACK", label: "Negro", values: { baseColor: L(0.06, 0.05, 0.04), tipColor: L(0.15, 0.13, 0.1) } },
-  ]);
-
-  G.register("SUGAR_CANE", {
-    category: "herbs", label: "Caña de azúcar",
-    params: { "Caña": [
-      ["caneCount", "Cañas", "int", 4, 1, 10, 1], ["caneHeight", "Altura", "num", 1.5, 0.2, 2.2, 0.01],
-      ["heightVariation", "Var. altura", "num", 0.15, 0, 1, 0.01], ["caneSpread", "Separación", "num", 0.12, 0, 0.4, 0.005],
-      ["caneRadius", "Radio", "num", 0.028, 0.005, 0.1, 0.001], ["caneNodes", "Nudos", "int", 8, 1, 16, 1],
-      ["stemNodeDark", "Oscuridad nudos", "num", 0.18, 0, 0.8, 0.01],
-      ["caneLeafChance", "Hojas en nudos", "num", 0.7, 0, 1, 0.01, "Probabilidad de una hoja en cada nudo; más abajo, más"],
-      ["caneTipLeaves", "Hojas en la punta", "int", 2, 0, 6, 1],
-      ["stemLeafSize", "Largo hoja", "num", 0.4, 0.05, 0.8, 0.005], ["stemLeafColor", "Color hoja", "color", L(0.25, 0.55, 0.15)],
-    ] },
-    defaults: { count: 1, inclination: 2, baseColor: L(0.35, 0.6, 0.2), tipColor: L(0.55, 0.75, 0.3), multipart: true, cells: 2, fillCells: true },
-  }, genSugarCane, [
-    { key: "GREEN", label: "Verde", values: { baseColor: L(0.35, 0.6, 0.2), tipColor: L(0.55, 0.75, 0.3), stemLeafColor: L(0.25, 0.55, 0.15) } },
-    { key: "PURPLE", label: "Morada", values: { baseColor: L(0.25, 0.08, 0.15), tipColor: L(0.45, 0.2, 0.3), stemLeafColor: L(0.22, 0.45, 0.12) } },
-    { key: "DRY", label: "Seca", values: { baseColor: L(0.55, 0.45, 0.15), tipColor: L(0.75, 0.65, 0.3), stemLeafColor: L(0.55, 0.45, 0.18) } },
-  ]);
-
-  G.register("SEAWEED", {
-    category: "water", label: "Alga (kelp)", water: "UNDERWATER",
-    params: { "Alga": [
-      ["seaweedLength", "Longitud", "num", 1.2, 0.1, 1.6, 0.01], ["seaweedSegments", "Segmentos", "int", 16, 4, 40, 1],
-      ["seaweedWidth", "Ancho cinta", "num", 0.05, 0.005, 0.2, 0.001], ["seaweedWaves", "Ondas", "num", 3, 0.5, 8, 0.1],
-      ["seaweedAmplitude", "Amplitud", "num", 0.15, 0, 0.6, 0.01], ["seaweedLeafCount", "Nº hojas", "int", 4, 0, 16, 1],
-      ["seaweedLeafSize", "Tam. hoja", "num", 0.15, 0.02, 0.4, 0.005], ["seaweedBladders", "Vesículas", "int", 0, 0, 12, 1],
-      ["seaweedColor", "Color base", "color", L(0.1, 0.35, 0.2)], ["seaweedTipColor", "Color punta", "color", L(0.2, 0.6, 0.3)],
-      ["seaweedLeafColor", "Color hoja", "color", L(0.15, 0.5, 0.25)], ["seaweedBladderColor", "Color vesículas", "color", L(0.35, 0.45, 0.15)],
-    ] },
-    defaults: { count: 4, separation: 0.5, waterDepth: 2, waterFill: true, multipart: true },
-  }, genSeaweed, [
-    { key: "KELP", label: "Kelp verde", values: { seaweedColor: L(0.1, 0.35, 0.2), seaweedTipColor: L(0.2, 0.6, 0.3), seaweedLeafColor: L(0.15, 0.5, 0.25), seaweedBladders: 0 } },
-    { key: "BROWN", label: "Alga parda", values: { seaweedColor: L(0.22, 0.16, 0.04), seaweedTipColor: L(0.45, 0.35, 0.1), seaweedLeafColor: L(0.35, 0.28, 0.08), seaweedBladders: 4 } },
-    { key: "RED", label: "Alga roja", values: { seaweedColor: L(0.3, 0.03, 0.04), seaweedTipColor: L(0.65, 0.15, 0.12), seaweedLeafColor: L(0.5, 0.1, 0.1), seaweedBladders: 0 } },
-  ]);
-
-  G.register("SEAGRASS", {
-    category: "water", label: "Hierba marina", water: "UNDERWATER",
-    params: { "Hierba marina": [
-      ["seagrassBlades", "Hojas por mata", "int", 8, 1, 30, 1], ["seagrassWidth", "Ancho hoja", "num", 0.035, 0.003, 0.12, 0.001],
-      ["bladeHeight", "Altura", "num", 0.6, 0.05, 1.4, 0.01], ["heightVariation", "Var. altura", "num", 0.3, 0, 1, 0.01],
-      ["seaweedAmplitude", "Ondulación", "num", 0.12, 0, 0.5, 0.01],
-    ] },
-    defaults: { count: 5, distribution: "CLUSTERS", areaSize: 0.8, clusterCount: 2, clusterSpread: 0.25, baseColor: L(0.12, 0.35, 0.18), tipColor: L(0.3, 0.6, 0.3) },
-  }, genSeagrass, [
-    { key: "GREEN", label: "Verde", values: { baseColor: L(0.12, 0.35, 0.18), tipColor: L(0.3, 0.6, 0.3) } },
-    { key: "TEAL", label: "Verde azulado", values: { baseColor: L(0.05, 0.3, 0.28), tipColor: L(0.2, 0.6, 0.5) } },
-    { key: "OLIVE", label: "Oliva", values: { baseColor: L(0.25, 0.3, 0.08), tipColor: L(0.5, 0.55, 0.2) } },
-  ]);
-
-  G.register("CORAL", {
-    category: "water", label: "Coral", water: "UNDERWATER",
-    params: { "Coral": [
-      ["coralLength", "Longitud rama", "num", 0.5, 0.05, 1, 0.01], ["coralThickness", "Grosor rama", "num", 0.06, 0.01, 0.2, 0.002],
-      ["coralDepth", "Niveles", "int", 3, 1, 5, 1], ["coralBranchCount", "Ramas por nudo", "int", 2, 1, 4, 1],
-      ["coralBranchAngle", "Apertura", "num", 0.8, 0.1, 1.5, 0.01], ["coralBranchLength", "Long. rama hija", "num", 0.6, 0.3, 0.9, 0.01],
-      ["coralSegments", "Segmentos", "int", 4, 2, 10, 1], ["coralPolyps", "Pólipos", "int", 0, 0, 8, 1],
-      ["coralColor", "Color base", "color", L(0.9, 0.3, 0.5)], ["coralTipColor", "Color punta", "color", L(1, 0.5, 0.7)],
-      ["coralPolypColor", "Color pólipos", "color", L(1, 0.85, 0.9)],
-    ] },
-    defaults: { count: 3, separation: 0.6, tubeSides: 5 },
-  }, genCoral, [
-    { key: "PINK", label: "Rosa", values: { coralColor: L(0.9, 0.3, 0.5), coralTipColor: L(1, 0.5, 0.7) } },
-    { key: "ORANGE", label: "Naranja", values: { coralColor: L(0.95, 0.3, 0.06), coralTipColor: L(1, 0.6, 0.25) } },
-    { key: "PURPLE", label: "Morado", values: { coralColor: L(0.4, 0.08, 0.55), coralTipColor: L(0.75, 0.4, 0.9) } },
-    { key: "YELLOW", label: "Amarillo", values: { coralColor: L(0.85, 0.65, 0.05), coralTipColor: L(1, 0.95, 0.4) } },
-    { key: "BLUE", label: "Azul", values: { coralColor: L(0.05, 0.25, 0.7), coralTipColor: L(0.4, 0.75, 1) } },
-  ]);
-
-  G.register("ANEMONE", {
-    category: "water", label: "Anémona", water: "UNDERWATER",
-    params: { "Anémona": [
-      ["anemoneSize", "Tamaño", "num", 0.2, 0.03, 0.5, 0.005], ["anemoneTentacles", "Tentáculos", "int", 12, 3, 40, 1],
-      ["anemoneTentacleLength", "Largo tentáculos", "num", 1.2, 0.2, 3, 0.01], ["anemoneRows", "Filas", "int", 2, 1, 4, 1],
-      ["anemoneColor", "Color cuerpo", "color", L(0.85, 0.35, 0.45)], ["anemoneTipColor", "Color puntas", "color", L(1, 0.8, 0.85)],
-    ] },
-    defaults: { count: 2, distribution: "DISC", areaSize: 0.6, minDistance: 0.25, tubeSides: 5 },
-  }, genAnemone, [
-    { key: "PINK", label: "Rosa", values: { anemoneColor: L(0.85, 0.35, 0.45), anemoneTipColor: L(1, 0.8, 0.85) } },
-    { key: "ORANGE", label: "Naranja", values: { anemoneColor: L(0.95, 0.35, 0.04), anemoneTipColor: L(1, 0.85, 0.7) } },
-    { key: "GREEN", label: "Verde", values: { anemoneColor: L(0.1, 0.45, 0.22), anemoneTipColor: L(0.6, 1, 0.5) } },
-    { key: "PURPLE", label: "Morada", values: { anemoneColor: L(0.35, 0.1, 0.55), anemoneTipColor: L(0.85, 0.6, 1) } },
-  ]);
-
-  G.register("LILYPAD", {
-    category: "water", label: "Nenúfar", water: "SURFACE",
-    params: { "Nenúfar": [
-      ["lilySize", "Tamaño hoja", "num", 0.22, 0.03, 0.5, 0.005], ["lilyNotch", "Corte", "num", 30, 0, 90, 1],
-      ["lilyCup", "Borde levantado", "num", 0.05, 0, 0.5, 0.01], ["lilyVeins", "Nervios", "num", 0.15, -0.6, 0.6, 0.01],
-      ["lilyStems", "Tallos hasta el fondo", "bool", false],
-      ["lilyFlower", "Flores", "bool", true], ["lilyFlowerChance", "Prob. flor", "num", 0.35, 0, 1, 0.01],
-      ["petalSegments", "Segmentos pétalo", "int", 4, 3, 8, 1],
-      ["petalColor", "Pétalo base", "color", L(0.98, 0.85, 0.92)], ["petalTipColor", "Pétalo punta", "color", L(0.95, 0.55, 0.75)],
-      ["centerColor", "Color centro", "color", L(1, 0.85, 0.2)],
-    ] },
-    defaults: { count: 5, distribution: "DISC", areaSize: 1, minDistance: 0.3, baseColor: L(0.12, 0.38, 0.12), tipColor: L(0.3, 0.6, 0.22) },
-  }, genLilypad, [
-    { key: "PINK", label: "Flor rosa", values: { petalColor: L(0.98, 0.85, 0.92), petalTipColor: L(0.95, 0.55, 0.75), lilyFlower: true } },
-    { key: "WHITE", label: "Flor blanca", values: { petalColor: L(1, 1, 0.95), petalTipColor: L(1, 0.97, 0.88), lilyFlower: true } },
-    { key: "YELLOW", label: "Flor amarilla", values: { petalColor: L(1, 0.85, 0.15), petalTipColor: L(1, 0.95, 0.5), lilyFlower: true } },
-    { key: "NONE", label: "Sin flor", values: { lilyFlower: false } },
-  ]);
-
-  G.register("DUCKWEED", {
-    category: "water", label: "Lenteja de agua", water: "SURFACE",
-    params: { "Lenteja de agua": [
-      ["duckweedFronds", "Hojitas", "int", 40, 1, 300, 1], ["duckweedSize", "Tam. hojita", "num", 0.025, 0.005, 0.08, 0.001],
-      ["duckweedRoots", "Raicillas", "bool", true],
-    ] },
-    defaults: { count: 3, distribution: "DISC", areaSize: 1, baseColor: L(0.3, 0.55, 0.12), tipColor: L(0.5, 0.75, 0.2) },
-  }, genDuckweed);
-
-  // ── Varieties of the first types ─────────────────────────────────────────────────────────────────────────────────
-
-  G.PRESETS.GRASS = [
-    { key: "CLUMP", label: "Mata", values: { count: 40, separation: 0.10, positionJitter: 0.6, bladeHeight: 1.0, heightVariation: 0.45, segments: 4, widthScale: 0.055, widthBase: 1, widthMid: 0.7, widthTip: 0.15, inclination: 10, inclinationVariation: 12, bend: 0.15, leanMode: "RADIAL", leanSpread: 20, baseColor: L(0.12, 0.35, 0.08), tipColor: L(0.55, 0.85, 0.25) } },
-    { key: "LAWN", label: "Césped corto", values: { count: 200, separation: 0.06, positionJitter: 0.5, bladeHeight: 0.35, heightVariation: 0.25, segments: 3, widthScale: 0.028, widthBase: 1, widthMid: 0.8, widthTip: 0.25, inclination: 12, inclinationVariation: 10, bend: 0.2, leanMode: "RADIAL", leanSpread: 25, baseColor: L(0.08, 0.32, 0.06), tipColor: L(0.38, 0.78, 0.18) } },
-    { key: "WILD", label: "Silvestre", values: { count: 60, separation: 0.12, positionJitter: 0.85, gridRotation: 15, bladeHeight: 0.9, heightVariation: 0.6, segments: 5, widthScale: 0.03, widthBase: 1, widthMid: 0.6, widthTip: 0.1, inclination: 30, inclinationVariation: 25, bend: 0.7, leanMode: "RANDOM", leanSpread: 45, baseColor: L(0.15, 0.33, 0.07), tipColor: L(0.6, 0.78, 0.3), grassSeedChance: 0.2 } },
-    { key: "THICK", label: "Gruesa", values: { count: 35, separation: 0.15, positionJitter: 0.5, bladeHeight: 1.2, heightVariation: 0.4, segments: 6, bladeFlatten: 0.7, widthScale: 0.07, widthBase: 1, widthMid: 0.8, widthTip: 0.3, inclination: 12, inclinationVariation: 15, bend: 0.3, leanMode: "RADIAL", leanSpread: 22, baseColor: L(0.07, 0.28, 0.05), tipColor: L(0.33, 0.68, 0.16) } },
-    { key: "TALL", label: "Alta", values: { count: 80, separation: 0.14, positionJitter: 0.7, bladeHeight: 1.6, heightVariation: 0.55, segments: 6, widthScale: 0.035, widthBase: 1, widthMid: 0.9, widthTip: 0.2, inclination: 20, inclinationVariation: 20, bend: 0.5, leanMode: "RANDOM", leanSpread: 35, baseColor: L(0.14, 0.36, 0.09), tipColor: L(0.6, 0.85, 0.35) } },
-    { key: "WINDY", label: "Con viento", values: { count: 60, separation: 0.11, positionJitter: 0.6, bladeHeight: 1.0, heightVariation: 0.4, segments: 5, widthScale: 0.035, inclination: 28, inclinationVariation: 8, bend: 0.6, leanMode: "WIND", leanSpread: 15, baseColor: L(0.12, 0.35, 0.08), tipColor: L(0.55, 0.85, 0.25) } },
-    { key: "AUTUMN", label: "Otoño", values: { count: 50, separation: 0.11, positionJitter: 0.7, bladeHeight: 0.9, heightVariation: 0.5, widthScale: 0.04, inclination: 15, inclinationVariation: 15, bend: 0.3, leanMode: "RADIAL", leanSpread: 25, baseColor: L(0.2, 0.3, 0.05), tipColor: L(0.85, 0.55, 0.1) } },
-    { key: "DRY", label: "Seca", values: { count: 45, separation: 0.11, positionJitter: 0.7, bladeHeight: 0.85, heightVariation: 0.55, segments: 5, widthScale: 0.03, widthBase: 1, widthMid: 0.6, widthTip: 0.1, inclination: 25, inclinationVariation: 20, bend: 0.6, leanMode: "RANDOM", leanSpread: 40, baseColor: L(0.3, 0.28, 0.1), tipColor: L(0.75, 0.65, 0.3) } },
-    { key: "TROPICAL", label: "Tropical", values: { count: 55, separation: 0.10, positionJitter: 0.6, bladeHeight: 1.1, heightVariation: 0.4, segments: 5, widthScale: 0.05, widthBase: 1, widthMid: 0.85, widthTip: 0.25, inclination: 18, inclinationVariation: 15, bend: 0.4, leanMode: "RADIAL", leanSpread: 30, baseColor: L(0.05, 0.4, 0.08), tipColor: L(0.3, 0.95, 0.2) } },
-    { key: "SNOWY", label: "Nevada", values: { baseColor: L(0.1, 0.25, 0.1), tipColor: L(0.85, 0.9, 0.95), bladeHeight: 0.7, tipDry: 0 } },
-  ];
-
-  // Flower varieties are keyed like the head shapes: picking a head also gives it its flower's colours.
-  G.TYPES.FLOWER.presetParam = "headShape";
-  const stem = { stemColor: L(0.15, 0.45, 0.1), stemLeafColor: L(0.2, 0.55, 0.15) };
-  G.PRESETS.FLOWER = [
-    { key: "DAISY", label: "Margarita", values: { ...stem, headShape: "DAISY", petalColor: L(0.92, 0.92, 0.88), petalTipColor: L(1, 1, 1), centerColor: L(1, 0.72, 0.08), showCenter: true, petalCount: 12, petalLayers: 1, petalLength: 0.17, petalWidth: 0.04, petalTilt: 10, petalCurl: 0.15, centerSize: 0.03, stemHeight: 0.6, headFaceUp: 0.5 } },
-    { key: "ROSE", label: "Rosa", values: { ...stem, headShape: "ROSE", petalColor: L(0.5, 0.01, 0.03), petalTipColor: L(0.85, 0.06, 0.08), showCenter: false, petalCount: 6, petalLayers: 4, petalLength: 0.13, petalWidth: 0.07, petalTilt: 30, petalCurl: 0.4, stemColor: L(0.1, 0.35, 0.08), stemHeight: 0.7, headFaceUp: 0.6 } },
-    { key: "TULIP", label: "Tulipán", values: { ...stem, headShape: "TULIP", petalColor: L(0.8, 0.06, 0.04), petalTipColor: L(1, 0.3, 0.12), petalCount: 3, petalLayers: 2, petalLength: 0.16, petalWidth: 0.06, stemHeight: 0.65, headFaceUp: 0.8, stemLeafCount: 2, stemLeafSize: 0.2 } },
-    { key: "SUNFLOWER", label: "Girasol", values: { ...stem, headShape: "SUNFLOWER", petalColor: L(1, 0.62, 0.01), petalTipColor: L(1, 0.82, 0.08), centerColor: L(0.22, 0.1, 0.02), petalCount: 14, petalLayers: 1, petalLength: 0.22, petalWidth: 0.045, petalTilt: 20, stemHeight: 1.1, stemWidth: 0.04, headFaceUp: 0.2, count: 2, stemLeafSize: 0.18 } },
-    { key: "LAVENDER", label: "Lavanda", values: { ...stem, headShape: "LAVENDER", petalColor: L(0.3, 0.15, 0.7), petalTipColor: L(0.55, 0.38, 0.9), petalCount: 8, petalLength: 0.1, petalWidth: 0.03, stemHeight: 0.55, count: 8, separation: 0.3, stemLeafCount: 2, stemColor: L(0.25, 0.42, 0.2), headFaceUp: 0.8 } },
-    { key: "BELL", label: "Campanilla", values: { ...stem, headShape: "BELL", petalColor: L(0.2, 0.3, 0.85), petalTipColor: L(0.5, 0.55, 1), petalCount: 6, petalLength: 0.1, petalWidth: 0.04, bend: 0.6, stemHeight: 0.55, headFaceUp: 0 } },
-    { key: "DANDELION", label: "Diente de león", values: { ...stem, headShape: "DANDELION", petalColor: L(0.92, 0.92, 0.88), petalTipColor: L(0.72, 0.72, 0.66), petalCount: 6, petalLength: 0.12, petalWidth: 0.06, stemHeight: 0.5, stemColor: L(0.25, 0.45, 0.1), headFaceUp: 0.6 } },
-    { key: "POPPY", label: "Amapola", values: { ...stem, headShape: "POPPY", petalColor: L(0.8, 0.02, 0.01), petalTipColor: L(1, 0.12, 0.05), centerColor: L(0.04, 0.03, 0.03), showCenter: true, centerSize: 0.03, petalLength: 0.14, petalWidth: 0.06, petalTilt: 30, stemHeight: 0.6, headFaceUp: 0.6 } },
-  ];
-
-  G.TYPES.PUMPKIN.presetParam = "pumpkinStyle";
-  G.PRESETS.PUMPKIN = [
-    { key: "PUMPKIN", label: "Calabaza", values: { pumpkinStyle: "PUMPKIN", fruitColor: L(0.95, 0.42, 0.04), fruitGreenColor: L(0.25, 0.45, 0.12), fruitStripeColor: L(0.08, 0.25, 0.06), fruitRibs: 8, fruitRibDepth: 0.12, fruitSize: 0.3 } },
-    { key: "MELON", label: "Sandía", values: { pumpkinStyle: "MELON", fruitColor: L(0.06, 0.32, 0.05), fruitGreenColor: L(0.2, 0.5, 0.15), fruitStripeColor: L(0.01, 0.1, 0.01), fruitRibs: 8, fruitSize: 0.28 } },
-  ];
-
-  G.PRESETS.WHEAT = [
-    { key: "WHEAT", label: "Trigo", values: { ripeColor: L(0.85, 0.7, 0.25), ripeTipColor: L(0.95, 0.85, 0.45), awns: 0.25 } },
-    { key: "BARLEY", label: "Cebada", values: { ripeColor: L(0.8, 0.72, 0.4), ripeTipColor: L(0.92, 0.88, 0.6), awns: 0.9, grainCount: 16 } },
-    { key: "RYE", label: "Centeno", values: { ripeColor: L(0.6, 0.5, 0.28), ripeTipColor: L(0.75, 0.68, 0.45), awns: 0.6 } },
-  ];
+  Aura.plantLeaves = { OUTLINES, SEED_SHAPES, SPECIES };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));
