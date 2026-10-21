@@ -75,3 +75,6 @@
 .pl-gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .bk-panel-head .seg { flex-wrap: nowrap; flex: none; }
 .bk-panel-head > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pair3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.pair3 .field { margin: 0; grid-template-columns: 1fr; }
+.bk-iso { margin: 6px 0 4px; }
