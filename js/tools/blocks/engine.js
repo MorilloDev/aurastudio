@@ -3,7 +3,7 @@
 // Block generator engine: builds a piece (cube, slab, stair, fence…) out of voxels from the textures of its faces and
 // renders it with the game's camera into a sprite, with its normal map, depth, ambient occlusion and a grayscale pass.
 // No DOM, no canvas: plain arrays in, plain arrays out, so the same code runs in the page, in a worker or under Node.
-// Needs shapes.js (Aura.blockShapes); hair.js (Aura.blockHair) is optional and draws the fringe strands...
+// Needs shapes.js (Aura.blockShapes); hair.js (Aura.blockHair) is optional and draws the fringe strands.
 (function (Aura) {
   const Shapes = Aura.blockShapes;
 
@@ -31,7 +31,29 @@
   const DIR_FACE = { [W_UP]: FACE.TOP, [W_LEFT]: FACE.LEFT, [W_RIGHT]: FACE.RIGHT };
 
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const norm3 = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
   const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+
+  /**
+   * The whole piece turned like a 3D model, in degrees: X about the axis the right face looks along, Z about the one the
+   * left face looks along, Y about the vertical — applied in that order (X, then Z, then Y), so tilting and then turning
+   * reads the same as in a 3D editor. Returns null when there is nothing to turn, so the plain path stays exact.
+   */
+  function spinMatrix(rot) {
+    const ax = (rot?.x ?? 0) * Math.PI / 180, ay = (rot?.y ?? 0) * Math.PI / 180, az = (rot?.z ?? 0) * Math.PI / 180;
+    if (Math.abs(ax) < 1e-9 && Math.abs(ay) < 1e-9 && Math.abs(az) < 1e-9) return null;
+    const c = Math.cos, sn = Math.sin;
+    // World: x right face, y depth (the left face looks along -y), z up.
+    const RX = [[1, 0, 0], [0, c(ax), -sn(ax)], [0, sn(ax), c(ax)]];
+    const RY = [[c(az), 0, sn(az)], [0, 1, 0], [-sn(az), 0, c(az)]];
+    const RZ = [[c(ay), -sn(ay), 0], [sn(ay), c(ay), 0], [0, 0, 1]];
+    const mul = (A, B) => A.map((row) => [0, 1, 2].map((k) => row[0] * B[0][k] + row[1] * B[1][k] + row[2] * B[2][k]));
+    return mul(RZ, mul(RY, RX));
+  }
+  const mulV = (M, v) => [M[0][0] * v[0] + M[0][1] * v[1] + M[0][2] * v[2], M[1][0] * v[0] + M[1][1] * v[1] + M[1][2] * v[2],
+    M[2][0] * v[0] + M[2][1] * v[1] + M[2][2] * v[2]];
+  const mulTV = (M, v) => [M[0][0] * v[0] + M[1][0] * v[1] + M[2][0] * v[2], M[0][1] * v[0] + M[1][1] * v[1] + M[2][1] * v[2],
+    M[0][2] * v[0] + M[1][2] * v[1] + M[2][2] * v[2]];
 
   /** Small deterministic random generator (mulberry32), so a seed always gives the same chips, lips and hairs. */
   function rng(seed) {
@@ -589,6 +611,19 @@
     const hemi = hemisphere(Math.max(1, o.aoSamples));
     const aoDist = o.aoDistance;
 
+    // A turned piece is not re-voxelised: each camera ray is turned the other way into the piece's own frame and marched
+    // there, so the voxels, masks, slopes, AO and textures all stay as built and the whole thing turns as one object.
+    // Only depth and light (the turned normal) are taken back out to world space.
+    const spin = spinMatrix(piece.rot3d);
+    const pivot = [0, 0, H / 2];
+    const turn = (M, q, inverse) => {
+      const r = (inverse ? mulTV : mulV)(M, [q[0] - pivot[0], q[1] - pivot[1], q[2] - pivot[2]]);
+      return [r[0] + pivot[0], r[1] + pivot[1], r[2] + pivot[2]];
+    };
+    const toLocal = (q) => (spin ? turn(spin, q, true) : q);
+    const toWorld = (q) => (spin ? turn(spin, q, false) : q);
+    const DIR = spin ? mulTV(spin, FWD) : FWD;
+
     // Depth range: the grid's corners along the view direction (the same for every piece, so depth maps line up).
     let dMin = Infinity, dMax = -Infinity;
     for (const x of [-0.5 + V.iLo * V.vx, -0.5 + V.iHi * V.vx]) for (const y of [-0.5 + V.jLo * V.vx, -0.5 + V.jHi * V.vx]) {
@@ -629,41 +664,44 @@
     for (let py = 0; py < S; py++) {
       for (let px = 0; px < S; px++) {
         const ox = (px + 0.5 - S / 2) * s, oy = (py + 0.5 - S / 2) * s;
-        const origin = [
+        const eye = [
           centre[0] + RIGHT[0] * ox - UP[0] * oy - FWD[0] * far,
           centre[1] + RIGHT[1] * ox - UP[1] * oy - FWD[1] * far,
           centre[2] + RIGHT[2] * ox - UP[2] * oy - FWD[2] * far,
         ];
+        const origin = toLocal(eye);
         // March, but a voxel of a sloped part only counts where the ray really enters that part inside the voxel; if
         // it only grazes the voxel's empty corner, carry on behind it.
-        let hit = march(V, origin, FWD, far * 2), slope = null;
+        let hit = march(V, origin, DIR, far * 2), slope = null;
         for (let guard = 0; hit && guard < 8; guard++) {
           const part = hit.owner === 255 ? V.part(hit.i, hit.j, hit.k) : null;
           if (!part) break;
           // Several sloped parts can share a voxel (the two ramps of an inside corner): the nearest entry wins.
-          const exit = voxelExit(V, hit, origin, FWD);
+          const exit = voxelExit(V, hit, origin, DIR);
           let best = null, bestPart = null;
           for (const sp of V.slopeParts) {
-            const e = enterPart(sp, origin, FWD);
+            const e = enterPart(sp, origin, DIR);
             if (e && e.t <= exit + 1e-9 && (!best || e.t < best.t)) { best = e; bestPart = sp; }
           }
           if (best) {
             if (best.con.isCut) slope = { part: bestPart, con: best.con, t: Math.max(best.t, hit.t) };
             break;
           }
-          const from = [origin[0] + FWD[0] * (exit + 1e-7), origin[1] + FWD[1] * (exit + 1e-7), origin[2] + FWD[2] * (exit + 1e-7)];
-          const next = march(V, from, FWD, far * 2 - exit);
+          const from = [origin[0] + DIR[0] * (exit + 1e-7), origin[1] + DIR[1] * (exit + 1e-7), origin[2] + DIR[2] * (exit + 1e-7)];
+          const next = march(V, from, DIR, far * 2 - exit);
           hit = next ? { ...next, t: next.t + exit + 1e-7 } : null;
         }
         if (!hit) continue;
         const tHit = slope ? slope.t : hit.t;
-        const p = [origin[0] + FWD[0] * tHit, origin[1] + FWD[1] * tHit, origin[2] + FWD[2] * tHit];
+        const p = [origin[0] + DIR[0] * tHit, origin[1] + DIR[1] * tHit, origin[2] + DIR[2] * tHit];
         const nrm = [0, 0, 0];
         nrm[hit.axis] = -hit.sign;
         const hitDir = hit.axis * 2 + (nrm[hit.axis] > 0 ? 0 : 1);
         let visible = DIR_FACE[hitDir] ?? FACE.TOP;
-        if (slope) {
-          const n = slope.con.n;
+        // Turned: the side this pixel counts as (and its light) comes from the normal after the turn, not the voxel's.
+        const worldN = spin ? norm3(mulV(spin, slope ? slope.con.n : nrm)) : null;
+        if (slope || spin) {
+          const n = worldN ?? slope.con.n;
           const wt = Math.max(0, n[2]), wl = Math.max(0, -n[1]), wr = Math.max(0, n[0]);
           visible = wt >= wl && wt >= wr ? FACE.TOP : wl >= wr ? FACE.LEFT : FACE.RIGHT;
         }
@@ -715,10 +753,11 @@
           ao = quantAO(1 - o.aoStrength * (blocked / hemi.length));
         }
         const i = py * S + px;
-        put(i * 4, texel, visible, ao, dot(p, BACK), slope ? slope.con.n : null);
+        const dW = spin ? dot([eye[0] + FWD[0] * tHit, eye[1] + FWD[1] * tHit, eye[2] + FWD[2] * tHit], BACK) : dot(p, BACK);
+        put(i * 4, texel, visible, ao, dW, worldN ?? (slope ? slope.con.n : null));
         mask[i] = 1;
         faceN[i] = visible;
-        zbuf[i] = dot(p, BACK);
+        zbuf[i] = dW;
       }
     }
 
@@ -726,7 +765,9 @@
 
     // Hairs go on after the pixel-art passes: lone-pixel cleanup would eat one-pixel strands.
     if (o.hair.enabled && Aura.blockHair) {
-      Aura.blockHair.draw({ o, V, tex, S, H, zbuf, mask, faceN, put, project, BACK, FACE, quantAO, rng });
+      // Strands grow in the piece's own frame like everything else; projecting and depth turn them out to the world.
+      Aura.blockHair.draw({ o, V, tex, S, H, zbuf, mask, faceN, put, BACK, FACE, quantAO, rng,
+        project: (q, size, h) => project(toWorld(q), size, h), depthOf: (q) => dot(toWorld(q), BACK) });
     }
     return { size: S, color, normal, depth, ao: aoMap, gray, mask, voxels: V, options: o };
   }
@@ -791,5 +832,5 @@
     return out;
   }
 
-  Aura.blockEngine = { DEFAULTS, HAIR_DEFAULTS, MASK_DEFAULTS, COVER_DEFAULTS, BLOCK_HEIGHT, FACE, CUBE, faceTexture, render, project, upscale, merge };
+  Aura.blockEngine = { DEFAULTS, HAIR_DEFAULTS, MASK_DEFAULTS, COVER_DEFAULTS, BLOCK_HEIGHT, FACE, CUBE, faceTexture, render, project, upscale, merge, spinMatrix };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));
