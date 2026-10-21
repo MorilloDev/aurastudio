@@ -153,6 +153,26 @@
     seed: 11,
   };
 
+  // Ore: mineral in the stone, decided by the voxel's place in the piece (not the face), so a speck or a vein carries
+  // on round an edge and into the procedural tongues. "pattern" draws it from noise, filled with its colours or with the
+  // mineral texture; "overlay" lays the mineral texture over the stone where that texture is opaque (Minecraft-style).
+  const ORE_DEFAULTS = {
+    enabled: false,
+    mode: "pattern",            // "pattern" | "overlay"
+    fill: "color",              // pattern only: "color" | "texture"
+    style: "SPECKS",            // SPECKS | NUGGETS (specks in clumps) | VEINS
+    amount: 0.3,
+    size: 0.06,                 // in blocks: one speck, or how wide a vein winds
+    color: "#b05a1c",
+    tip: "#f7b36b",
+    shine: 0.6,
+    seed: 5,
+  };
+
+  // Stone made from colours instead of atlas textures (the panel builds the face textures from it; the engine only
+  // keeps it so it is saved with the rest).
+  const BASE_DEFAULTS = { mode: "texture", color: "#5d5d5a", color2: "#8a8984", grain: 0.6, seed: 3 };
+
   const DEFAULTS = {
     size: 64,                   // sprite width and height, px; a full block always fills it
     res: 32,                    // voxels per block edge: 32 = one voxel per 2 px of a 64 px sprite, 64 = one per pixel
@@ -176,6 +196,8 @@
     outline: 0,                 // darken the silhouette's inner edge pixels by this much
     cleanup: true,              // replace lone pixels surrounded by one colour
     hair: HAIR_DEFAULTS,
+    ore: ORE_DEFAULTS,
+    base: BASE_DEFAULTS,
   };
 
   function merge(opts = {}) {
@@ -186,7 +208,67 @@
     o.cover = { ...COVER_DEFAULTS, ...(opts.cover || {}) };
     o.hair = { ...HAIR_DEFAULTS, ...(opts.hair || {}) };
     o.hair.edges = { ...HAIR_DEFAULTS.edges, ...(opts.hair?.edges || {}) };
+    o.ore = { ...ORE_DEFAULTS, ...(opts.ore || {}) };
+    o.base = { ...BASE_DEFAULTS, ...(opts.base || {}) };
     return o;
+  }
+
+  // ── Ore ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  function hashSigned(x, y, z, seed) {
+    let h = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(z | 0, 2147483647) ^ Math.imul(seed | 0, 1274126177);
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296 * 2 - 1;
+  }
+  function noise3(p, seed) {
+    const x0 = Math.floor(p[0]), y0 = Math.floor(p[1]), z0 = Math.floor(p[2]);
+    const fx = p[0] - x0, fy = p[1] - y0, fz = p[2] - z0;
+    const u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy), w = fz * fz * (3 - 2 * fz);
+    let out = 0;
+    for (let dz = 0; dz < 2; dz++) for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
+      out += (dx ? u : 1 - u) * (dy ? v : 1 - v) * (dz ? w : 1 - w) * hashSigned(x0 + dx, y0 + dy, z0 + dz, seed);
+    }
+    return out;
+  }
+
+  /** 0 = stone; otherwise 0..1, how deep inside the ore q is (edge → heart). q in blocks. Same rules as the rocks'. */
+  function oreAt(q, ore) {
+    if (!(ore.amount > 0)) return 0;
+    const f = 1 / Math.max(0.01, ore.size), sd = ore.seed | 0;
+    if (ore.style === "VEINS") {
+      const n = Math.abs(noise3([q[0] * f * 0.6, q[1] * f * 0.6, q[2] * f * 0.6], sd));
+      const w = ore.amount * 0.16;
+      return n < w ? clamp01(1 - n / w) : 0;
+    }
+    let n = noise3([q[0] * f, q[1] * f, q[2] * f], sd);
+    if (ore.style === "NUGGETS") n = n * 0.6 + noise3([q[0] * f * 0.35, q[1] * f * 0.35, q[2] * f * 0.35], sd + 71) * 0.7;
+    const thr = 0.5 - ore.amount * 0.75;
+    return n > thr ? clamp01((n - thr) / 0.22) : 0;
+  }
+
+  const hexRgb = (hex) => {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+    const v = m ? parseInt(m[1], 16) : 0x808080;
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  };
+
+  /** The stone's texel with the mineral laid over at voxel point q; (u, v) is the face spot, for the mineral texture. */
+  function withOre(texel, q, u, v, ore, oreTex, cols) {
+    if (ore.mode === "overlay") {
+      if (!oreTex) return texel;
+      const c = oreTex.color(u, v);
+      return c[3] >= 128 ? [c[0], c[1], c[2], 255] : texel;
+    }
+    const t = oreAt(q, ore);
+    if (!(t > 0)) return texel;
+    if (ore.fill === "texture" && oreTex) {
+      const c = oreTex.color(u, v);
+      return [c[0], c[1], c[2], 255];
+    }
+    // Keep a little of the stone's own grain under the colour, so the mineral is not a flat sticker.
+    const lum = (0.2126 * texel[0] + 0.7152 * texel[1] + 0.0722 * texel[2]) / 255;
+    const k = 0.82 + 0.36 * lum, s = clamp01(t * ore.shine * 1.6);
+    return [0, 1, 2].map((c) => Math.min(255, (cols.base[c] + (cols.tip[c] - cols.base[c]) * s) * k)).concat(255);
   }
 
   const CUBE = { boxes: [{ min: [0, 0, 0], max: [1, 1, 1] }], state: "default", facing: "front" };
@@ -623,6 +705,7 @@
     const toLocal = (q) => (spin ? turn(spin, q, true) : q);
     const toWorld = (q) => (spin ? turn(spin, q, false) : q);
     const DIR = spin ? mulTV(spin, FWD) : FWD;
+    const oreCols = { base: hexRgb(o.ore.color), tip: hexRgb(o.ore.tip) };
 
     // Depth range: the grid's corners along the view direction (the same for every piece, so depth maps line up).
     let dMin = Infinity, dMax = -Infinity;
@@ -737,8 +820,13 @@
           [name, u, v] = slopeUV(slope.part, slope.con, V.tf.toLocal(unit));
           u = u - Math.floor(u); v = v - Math.floor(v);
         }
-        const texel = tex[name].color(u, v);
+        let texel = tex[name].color(u, v);
         if (texel[3] < 8) continue;
+        if (o.ore.enabled) {
+          // The voxel's centre, not the pixel's point: the mineral comes in whole voxels, like the rest of the piece.
+          const q = [-0.5 + (hit.i + 0.5) * V.vx, -0.5 + (hit.j + 0.5) * V.vx, (hit.k + 0.5) * V.vz];
+          texel = withOre(texel, q, u, v, o.ore, tex.ore, oreCols);
+        }
         const surfN = slope ? slope.con.n : nrm;
 
         let ao = 1;
@@ -832,5 +920,5 @@
     return out;
   }
 
-  Aura.blockEngine = { DEFAULTS, HAIR_DEFAULTS, MASK_DEFAULTS, COVER_DEFAULTS, BLOCK_HEIGHT, FACE, CUBE, faceTexture, render, project, upscale, merge, spinMatrix };
+  Aura.blockEngine = { ORE_DEFAULTS, BASE_DEFAULTS, oreAt, DEFAULTS, HAIR_DEFAULTS, MASK_DEFAULTS, COVER_DEFAULTS, BLOCK_HEIGHT, FACE, CUBE, faceTexture, render, project, upscale, merge, spinMatrix };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));
