@@ -11,7 +11,7 @@
   const { Viewport } = Aura.viewport;
   const { prefs } = Aura.storage;
   const { readText, writeHandle, writeInDir, stripExt } = Aura.fs;
-  const { section, select, segmented } = Aura.controls;
+  const { section, select, segmented, checkbox } = Aura.controls;
   const { listSheets } = Aura.sheetFiles;
   const { addToMgcb } = Aura.mgcb;
   const { COMPANIONS, SheetImage } = Aura.atlasLayers;
@@ -265,11 +265,13 @@
       new ResizeObserver(() => this.#draw()).observe(this.viewEl);
       this.history.on("change", () => this.#changed());
       this.#bindPointer();
+      this.#bindImageImport();
       this.#registerCommands();
       this.#renderAll();
     }
 
     async activate() {
+      this.active = true;
       this.#draw();
       const p = this.studio.pendingPlacement;
       this.studio.pendingPlacement = null;
@@ -293,6 +295,7 @@
     }
 
     deactivate() {
+      this.active = false;
       this.picking = null;
     }
 
@@ -1331,7 +1334,150 @@
       return section({ id: "at-sel", title: "Selección", extra: single ? `[${cells[0].join(", ")}]` : `${cells.length} celdas` },
         list,
         single ? this.#newTileForm(cells, null) : null,
+        this.#importControls(cells),
         h("button", { class: "danger", onclick: () => this.#emptySelection() }, "Vaciar celdas (Supr)"));
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Image into a cell: from a file, a link, the clipboard or a file dropped on the sheet. The picture is scaled to the
+    // cell (or to the rectangle the selection covers, for a multipart piece) and written into the colour sheet as one
+    // undo step; the maps (_n…) are left as they are.
+
+    #importOpts() {
+      this.importOpts ??= { fit: "contain", align: "center", scale: "auto", keyBg: false, tolerance: 40, ...prefs.get("atlas:import", {}) };
+      return this.importOpts;
+    }
+    #setImportOpt(key, value) {
+      this.#importOpts()[key] = value;
+      prefs.set("atlas:import", this.importOpts);
+    }
+
+    #importControls(cells) {
+      const o = this.#importOpts();
+      const file = h("input", { type: "file", accept: "image/*", hidden: true,
+        onchange: () => { const f = file.files?.[0]; file.value = ""; if (f) this.#importImage(f, cells); } });
+      const opt = (label, key, options, title = "") => select({ label, value: o[key], options, title, onChange: (v) => this.#setImportOpt(key, v) }).el;
+      const tol = h("input", { type: "number", min: 0, max: 255, step: 5, value: o.tolerance, title: "Cuánto puede diferir un color del de la esquina para borrarse",
+        onchange: () => this.#setImportOpt("tolerance", Math.max(0, Math.min(255, Number(tol.value) || 0))) });
+      const rect = this.#importRect(cells);
+      const where = rect.cols * rect.rows > 1 ? `${rect.cols}×${rect.rows} celdas` : "la celda";
+      return h("details", { class: "at-import", open: prefs.get("atlas:importOpen", false), ontoggle: (e) => prefs.set("atlas:importOpen", e.target.open) },
+        h("summary", null, "Poner una imagen en " + where),
+        h("div", { class: "row" },
+          h("button", { onclick: () => file.click(), title: "Una imagen de tu PC (PNG, JPG, WebP, GIF…)" }, "Desde archivo…"), file,
+          h("button", { onclick: () => this.#importFromLink(cells), title: "La dirección de una imagen en internet" }, "Desde link…")),
+        h("p", { class: "note" }, "También: ", h("b", null, "Ctrl+V"), " pega una imagen copiada, o arrastra un archivo sobre una celda de la hoja."),
+        opt("Ajuste", "fit", [["contain", "Encajar (entera)"], ["cover", "Llenar (recorta)"], ["stretch", "Estirar"]],
+          "Encajar: cabe entera y sobra borde transparente. Llenar: cubre la celda y recorta lo que sobra. Estirar: la deforma a la celda."),
+        opt("Alinear", "align", [["center", "Centro"], ["bottom", "Abajo (plantas, objetos en el suelo)"]]),
+        opt("Escalado", "scale", [["auto", "Auto"], ["pixel", "Pixel art (sin suavizar)"], ["smooth", "Suave (fotos)"]],
+          "Auto: suave al reducir una foto grande, sin suavizar al agrandar pixel art pequeño."),
+        checkbox({ label: "Quitar el fondo (el color de las esquinas)", value: o.keyBg, onChange: (v) => this.#setImportOpt("keyBg", v),
+          title: "Para fotos con fondo liso: ese color se vuelve transparente" }).el,
+        h("div", { class: "field" }, h("label", null, "Tolerancia del fondo"), tol));
+    }
+
+    /** The rectangle the image goes into: the selection when it is a full rectangle of cells, else its first cell. */
+    #importRect(cells) {
+      if (!cells.length) return { x: 0, y: 0, cols: 1, rows: 1 };
+      const xs = cells.map((c) => c[0]), ys = cells.map((c) => c[1]);
+      const x0 = Math.min(...xs), y0 = Math.min(...ys), cols = Math.max(...xs) - x0 + 1, rows = Math.max(...ys) - y0 + 1;
+      return cols * rows === cells.length ? { x: x0, y: y0, cols, rows } : { x: cells[0][0], y: cells[0][1], cols: 1, rows: 1 };
+    }
+
+    async #importFromLink(cells) {
+      const url = await this.studio.prompt({ title: "Imagen desde un link", message: "La dirección de la imagen (que acabe en .png, .jpg… o que abra solo la imagen).",
+        placeholder: "https://…", validate: (v) => (/^(https?:|data:image\/)/i.test(v) ? "" : "Una dirección que empiece por http:// o https://") });
+      if (url) this.#importImage(url, cells);
+    }
+
+    #bindImageImport() {
+      // A file dragged from the desktop onto a cell of the sheet.
+      this.canvas.addEventListener("dragover", (e) => {
+        if (!this.img || ![...(e.dataTransfer?.types ?? [])].includes("Files")) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      });
+      this.canvas.addEventListener("drop", (e) => {
+        const f = [...(e.dataTransfer?.files ?? [])].find((x) => x.type.startsWith("image/"));
+        if (!this.img || !f) return;
+        e.preventDefault();
+        const cell = this.#cellAt(e);
+        if (!this.#inside(cell)) return;
+        const inSel = this.selection.has(ck(...cell));
+        const cells = inSel ? this.#selectedCells() : [cell];
+        if (!inSel) this.#select([cell]);
+        this.#importImage(f, cells);
+      });
+      // Ctrl+V with an image on the clipboard, while the Atlas is showing and a cell is selected.
+      window.addEventListener("paste", (e) => {
+        if (!this.active || !this.img || !this.selection.size) return;
+        if (/^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName ?? "")) return;
+        const item = [...(e.clipboardData?.items ?? [])].find((i) => i.type.startsWith("image/"));
+        const blob = item?.getAsFile();
+        if (!blob) return;
+        e.preventDefault();
+        this.#importImage(blob, this.#selectedCells());
+      });
+    }
+
+    /** Reads a Blob or a link into an ImageBitmap. A link the site does not let the page read says so plainly. */
+    async #loadBitmap(source) {
+      if (source instanceof Blob) return createImageBitmap(source);
+      try {
+        const res = await fetch(source, { mode: "cors" });
+        if (!res.ok) throw new Error(`el servidor respondió ${res.status}`);
+        const blob = await res.blob();
+        if (!blob.type.startsWith("image/") && !/\.(png|jpe?g|gif|webp|bmp|avif)(\?|$)/i.test(source)) throw new Error("ese link no es una imagen");
+        return await createImageBitmap(blob);
+      } catch (err) {
+        // Many sites refuse other pages reading their images (CORS); a direct <img> load cannot be read back either.
+        throw new Error(`No pude leer la imagen de ese link (${err.message}). Muchos sitios no dejan que otra página la lea: ábrela, `
+          + "guárdala en tu PC y usa «Desde archivo…», o cópiala y pégala con Ctrl+V.");
+      }
+    }
+
+    async #importImage(source, cells) {
+      if (!this.img || !cells.length) return;
+      let bmp;
+      try {
+        bmp = await this.studio.busy(this.#loadBitmap(source));
+      } catch (err) {
+        this.studio.toast("No pude cargar la imagen.", { kind: "bad", detail: err.message });
+        return;
+      }
+      const o = this.#importOpts();
+      const rect = this.#importRect(cells);
+      const W = rect.cols * this.grid.w, H = rect.rows * this.grid.h;
+
+      // The source at its own size (capped), with its background keyed out before scaling so no fringe is left.
+      const cap = 2048, k0 = Math.min(1, cap / Math.max(bmp.width, bmp.height));
+      const sw = Math.max(1, Math.round(bmp.width * k0)), sh = Math.max(1, Math.round(bmp.height * k0));
+      const src = new OffscreenCanvas(sw, sh), sg = src.getContext("2d");
+      sg.drawImage(bmp, 0, 0, sw, sh);
+      bmp.close?.();
+      if (o.keyBg) {
+        const d = sg.getImageData(0, 0, sw, sh);
+        keyBackground(d.data, sw, sh, o.tolerance);
+        sg.putImageData(d, 0, 0);
+      }
+
+      let dw = W, dh = H;
+      if (o.fit !== "stretch") {
+        const k = o.fit === "cover" ? Math.max(W / sw, H / sh) : Math.min(W / sw, H / sh);
+        dw = Math.max(1, Math.round(sw * k)); dh = Math.max(1, Math.round(sh * k));
+      }
+      const dx = Math.round((W - dw) / 2), dy = o.align === "bottom" ? H - dh : Math.round((H - dh) / 2);
+      const out = new OffscreenCanvas(W, H), og = out.getContext("2d");
+      og.imageSmoothingEnabled = o.scale === "smooth" || (o.scale === "auto" && dw < sw);
+      og.imageSmoothingQuality = "high";
+      og.drawImage(src, dx, dy, dw, dh);
+      const after = og.getImageData(0, 0, W, H).data;
+      const color = this.img.color, px = rect.x * this.grid.w, py = rect.y * this.grid.h;
+      const before = this.img.read(color, px, py, W, H);
+      const where = rect.cols * rect.rows > 1 ? `${rect.cols}×${rect.rows} celdas desde [${rect.x}, ${rect.y}]` : `[${rect.x}, ${rect.y}]`;
+      this.#run(`Imagen en ${where}`, () => this.img.write(color, px, py, W, H, after), () => this.img.write(color, px, py, W, H, before));
+      this.studio.setStatus(`Imagen puesta en ${where} (${sw}×${sh} → ${dw}×${dh}). Ctrl+Z la quita; Ctrl+S guarda la hoja.`, "ok");
     }
 
     // "Bioma": the selected cells turned into the grey a biome_tinted tile needs, previewed on the sheet first.
@@ -2230,6 +2376,34 @@
         { group, title: "Añadir / quitar de la selección", keys: ["Shift+Clic", "Ctrl+Clic"] },
         { group, title: "Abrir el tile de la celda", keys: ["Doble clic"] },
       ];
+    }
+  }
+
+  /**
+   * Makes the background transparent: the colour most of the four corners share, and every pixel within tolerance of it
+   * (max channel difference) that is connected to the border — a white shirt in the middle of a white-background photo
+   * stays.
+   */
+  function keyBackground(rgba, w, h, tolerance) {
+    const at = (x, y) => (y * w + x) * 4;
+    const corners = [at(0, 0), at(w - 1, 0), at(0, h - 1), at(w - 1, h - 1)].map((i) => [rgba[i], rgba[i + 1], rgba[i + 2]]);
+    const near = (a, b) => Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2])) <= tolerance;
+    const bg = corners.reduce((best, c) => (corners.filter((d) => near(c, d)).length > corners.filter((d) => near(best, d)).length ? c : best), corners[0]);
+    const seen = new Uint8Array(w * h), stack = [];
+    for (let x = 0; x < w; x++) stack.push(x, (h - 1) * w + x);
+    for (let y = 0; y < h; y++) stack.push(y * w, y * w + w - 1);
+    while (stack.length) {
+      const p = stack.pop();
+      if (seen[p]) continue;
+      seen[p] = 1;
+      const i = p * 4;
+      if (!rgba[i + 3] || !near([rgba[i], rgba[i + 1], rgba[i + 2]], bg)) continue;
+      rgba[i + 3] = 0;
+      const x = p % w, y = (p - x) / w;
+      if (x > 0) stack.push(p - 1);
+      if (x < w - 1) stack.push(p + 1);
+      if (y > 0) stack.push(p - w);
+      if (y < h - 1) stack.push(p + w);
     }
   }
 
