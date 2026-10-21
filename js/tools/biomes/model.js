@@ -159,9 +159,30 @@
     return out;
   }
 
-  /** 0..1, how much of the tile's growth climate the biome's box covers; null when the tile sets none. */
+  /** The biome's id as BiomeData builds it: "id", or the name in lower case with "_" for spaces; no namespace. */
+  function biomeIdOf(root) {
+    const raw = String(root?.id ?? root?.name ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+    return raw.includes(":") ? raw.slice(raw.indexOf(":") + 1) : raw;
+  }
+
+  /** false when conditions.spawn rules this biome out, or asks for what the open surface never has. */
+  function spawnFitsSurface(spawn, root) {
+    const ids = (list) => (Array.isArray(list) ? list : list ? [list] : []).map((b) => shortId(String(b)).toLowerCase());
+    const id = kindOf(root) === "ocean" ? "ocean" : biomeIdOf(root);
+    const only = ids(spawn.biomes), never = ids(spawn.notBiomes);
+    if (only.length && !only.includes(id)) return false;
+    if (never.includes(id)) return false;
+    if (spawn.sky === "covered") return false;
+    if (Array.isArray(spawn.light) && Number(spawn.light[1]) < 1) return false;
+    const depthMin = Array.isArray(spawn.depth) ? Number(spawn.depth[0]) : Number(spawn.depth);
+    return !(depthMin > 0);
+  }
+
+  /** 0..1, how much of the tile's climate (conditions.spawn, else conditions.grow, else the old growth.climate) the biome's
+   * box covers; null when the tile sets none. */
   function climateFit(tile, box) {
-    const c = tile?.growth?.climate;
+    const cond = tile?.conditions?.spawn ?? tile?.conditions?.grow;
+    const c = cond && (cond.temperature || cond.humidity) ? cond : tile?.growth?.climate;
     if (!c || !box) return null;
     let fit = 1, any = false;
     for (const key of ["temperature", "humidity"]) {
@@ -220,6 +241,10 @@
           reasons.push(c.habitat === "emergent" ? "orillas" : "sobre el agua");
         }
       }
+      // conditions.spawn: what the game's Decorate also checks. Decorations go on the open surface (or the water), so a
+      // tile that wants a roof, darkness or depth never appears there.
+      const spawn = tile.conditions?.spawn;
+      if (spawn && !spawnFitsSurface(spawn, root)) continue;
       const fit = climateFit(tile, box);
       if (fit === 0) continue;
       if (fit !== null) { chance *= fit; reasons.push(`clima ${Math.round(fit * 100)} %`); }
