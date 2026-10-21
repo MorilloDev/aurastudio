@@ -31,6 +31,7 @@
   /** ctx: what render() hands over — options, voxels, textures, sprite size, depth buffer and its pixel writer. */
   function draw(ctx) {
     const { o, V, tex, S, H, zbuf, mask, faceN, put, project, BACK, FACE, quantAO, rng } = ctx;
+    const depthOf = ctx.depthOf ?? ((q) => dot(q, BACK));
     const hp = o.hair;
     const R = V.R;
     const random = rng(hp.seed);
@@ -125,7 +126,7 @@
         const t = s / steps;
         const p = pointAt(t);
         const [fx, fy] = project(p, S, H);
-        const d = dot(p, BACK);
+        const d = depthOf(p);
         const k = 1 + hp.tipShade * t;
         const base = colorAt(p);
         if (base[3] < 8) continue;
