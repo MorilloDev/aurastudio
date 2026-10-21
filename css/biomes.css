@@ -31,3 +31,11 @@
 .bm-thumb { width: 32px; height: 32px; image-rendering: pixelated; background: #2f3338; border-radius: 4px; }
 .bm-panel .note.bad { color: var(--bad); }
 .bm-panel .note.bad:empty { display: none; }
+
+/* Repartir decoraciones: suggestion rows (tick, sprite, name + reason, chance). */
+.bm-sugs { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; padding: 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.bm-sug { display: grid; grid-template-columns: 18px 32px 1fr 76px; gap: 6px; align-items: center; cursor: pointer; }
+.bm-sug input[type=number] { min-height: 26px; padding: 2px 5px; }
+.bm-sug .small { font-size: 11px; }
+/* The «Repartir» summary lists one biome per line. */
+.dialog p { white-space: pre-line; max-height: 50vh; overflow: auto; }
