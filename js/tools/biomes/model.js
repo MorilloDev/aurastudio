@@ -208,17 +208,15 @@
         if (ground === false) continue;
         if (ground === true) reasons.push("crece sobre " + shortId(root.materials?.surface));
         else if (!rocky && !grassy) continue;      // plants without spawnOn grow on grass, not on sand or stone
-        chance = rocky ? (c.tags.includes("needs_pickaxe") ? 0.0006 : 0.002)
-          : c.info.tinted ? 0.15 : tile.growth?.type === "column" ? 0.006 : 0.005;
+        chance = kindChance(c.info, "land", c.tags);
         reasons.push(rocky ? "roca" : c.info.tinted ? "hierba (se tiñe)" : "planta de tierra");
       } else {
+        chance = kindChance(c.info, c.habitat, c.tags);
         if (c.habitat === "submerged") {
-          chance = 0.07;
           reasons.push(kind === "ocean" ? "fondo del mar" : "fondo de ríos y lagos");
         } else {
           if (kind === "ocean") continue;          // the open sea has no shore and no calm water for lily pads
           if (kind !== "ocean" && !wet) continue;  // reeds and lily pads only where the biome is humid enough for water
-          chance = c.habitat === "emergent" ? 0.05 : 0.03;
           reasons.push(c.habitat === "emergent" ? "orillas" : "sobre el agua");
         }
       }
@@ -236,6 +234,57 @@
     return out.filter((d) => d.chance > 0);
   }
 
-  Aura.biomeModel = { PARAMS, SURFACES, HABITAT_LABEL, loadBiomes, serialize, isDirty, kindOf, boxOf, pick, inside, blank, tileRefs, newBiomePath,
+  /** Starting chance of a decoration by what it is: grass tufts common, plants and rocks rare, ore rocks rarer. */
+  function kindChance(info, habitat, tags) {
+    if (habitat === "submerged") return 0.07;
+    if (habitat === "emergent") return 0.05;
+    if (habitat === "floating") return 0.03;
+    if (tags.includes("rock") || tags.includes("pebble")) return tags.includes("needs_pickaxe") ? 0.0006 : 0.002;
+    if (info?.tinted) return 0.15;
+    return info?.tile?.growth?.type === "column" ? 0.006 : 0.005;
+  }
+
+  const qualify = (id) => (String(id).includes(":") ? String(id) : "aura:" + id);
+
+  /**
+   * «Auto-ajustar»: every entry's chance from what it is (as the suggestions) and how well its climate fits, scaled so
+   * the whole decoration adds up to target. Repeated tiles (same tile, same "on") are merged first, keeping the first.
+   * An entry whose tile does not exist keeps its share as it was.
+   */
+  function autoWeights(root, tiles, target) {
+    const box = kindOf(root) === "ocean" ? null : boxOf(root);
+    const seen = new Map(), out = [];
+    for (const d of root?.decoration ?? []) {
+      if (!d?.tile) { out.push({ ...d }); continue; }
+      const key = shortId(d.tile).toLowerCase() + "|" + (d.on ?? "");
+      if (seen.has(key)) continue;
+      seen.set(key, true);
+      out.push({ ...d });
+    }
+    const raw = out.map((d) => {
+      const info = d.tile ? tiles.get(qualify(d.tile)) : null;
+      if (!info) return Number(d.chance) || 0;
+      const on = d.on ? Object.entries(HABITAT_ON).find(([, v]) => v === d.on)?.[0] : null;
+      const hab = on ?? habitatOf(info.tile, d.tile).habitat;
+      const fit = climateFit(info.tile, box);
+      // A tile the person put there on purpose stays, even when its climate does not fit: just rarer.
+      return kindChance(info, hab, lowerTags(info.tile)) * (fit === null ? 1 : Math.max(0.1, fit));
+    });
+    const sum = raw.reduce((a, b) => a + b, 0);
+    const k = sum > 0 ? target / sum : 0;
+    out.forEach((d, i) => { if (d.tile) d.chance = Math.round(raw[i] * k * 100000) / 100000; });
+    return { decoration: out, merged: (root?.decoration?.length ?? 0) - out.length };
+  }
+
+  /** «Más» / «Menos»: every chance × f, never letting the total pass 0.99. */
+  function scaleWeights(root, f) {
+    const list = (root?.decoration ?? []).map((d) => ({ ...d }));
+    const sum = list.reduce((a, d) => a + (Number(d.chance) || 0), 0);
+    const k = sum * f > 0.99 ? 0.99 / Math.max(1e-9, sum) : f;
+    for (const d of list) d.chance = Math.round((Number(d.chance) || 0) * k * 100000) / 100000;
+    return list;
+  }
+
+  Aura.biomeModel = { PARAMS, SURFACES, HABITAT_LABEL, HABITAT_ON, habitatOf, autoWeights, scaleWeights, loadBiomes, serialize, isDirty, kindOf, boxOf, pick, inside, blank, tileRefs, newBiomePath,
     decorationCandidates, suggestDecoration };
 })(window.Aura ??= {});
