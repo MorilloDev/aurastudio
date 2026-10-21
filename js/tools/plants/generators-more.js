@@ -132,6 +132,34 @@
     }
   }
 
+  /**
+   * Mineral inclusions in a stone: 0 = plain stone, otherwise 0..1, how deep inside the ore the point is (its edge →
+   * its heart), so the ore can run from its base colour to its shine. Read from the point's place in the world, not the
+   * face, so a speck or a vein carries on round the corner of a block onto the next face.
+   */
+  function oreAt(q, p, seed) {
+    if (!(p.oreAmount > 0)) return 0;
+    const f = 1 / Math.max(0.01, p.oreSize);
+    const o = [seed * 1.7 + 37, seed * 0.9 + 11, seed * 0.3 + 5];
+    if (p.oreStyle === "VEINS") {
+      // Veins: the zero line of a smooth noise is a winding thread; its width grows with the amount.
+      const n = Math.abs(noise3([q[0] * f * 0.6 + o[0], q[1] * f * 0.6 + o[1], q[2] * f * 0.6 + o[2]]));
+      const w = p.oreAmount * 0.16;
+      return n < w ? clamp01(1 - n / w) : 0;
+    }
+    // Specks and nuggets: the tops of a noise. Nuggets add a second, coarser noise so the specks gather in clumps.
+    let n = noise3([q[0] * f + o[0], q[1] * f + o[1], q[2] * f + o[2]]);
+    if (p.oreStyle === "NUGGETS") n = n * 0.6 + noise3([q[0] * f * 0.35 + o[1], q[1] * f * 0.35 + o[2], q[2] * f * 0.35 + o[0]]) * 0.7;
+    const thr = 0.5 - p.oreAmount * 0.75;
+    return n > thr ? clamp01((n - thr) / 0.22) : 0;
+  }
+  /** The stone's colour with its ore laid over; t from oreAt, k the cube's own small shade. */
+  function withOre(col, t, p, k = 1) {
+    if (!(t > 0)) return col;
+    const ore = V.lerp(p.oreColorL, p.oreTipColorL, clamp01(t * p.oreShine * 1.6));
+    return V.mul(ore, k);
+  }
+
   function genPebbles(mb, p, r, pos) {
     const cv = p.colorVariation;
     const c0 = jitterColor(r, p.rockColorL, cv), c1 = jitterColor(r, p.rockTipColorL, cv);
@@ -142,6 +170,14 @@
     const crackDark = V.mul(c0, 1 - p.rockCrackDark);
     const moss = p.mossColorL;
     const squash = [r.uniform(0.9, 1.3), r.uniform(0.8, 1.1), flat];
+    if (p.rockShape === "BLOCK") {
+      // A whole block (an ore block, a stone block) made of the same cubes: always one, filling its cell, whatever
+      // «Cantidad» says — the other plants of the patch would only overlap it.
+      if (mb.oreBlockDone) return;
+      mb.oreBlockDone = true;
+      genStoneBlock(mb, p, r, seed, c0, c1, crackScale, crackDark, moss);
+      return;
+    }
     if (p.rockStyle === "VOXEL") {
       // Cubes on a grid, so the rock reads as pixel art: a noisy ellipsoid, surface cubes knocked out along cracks,
       // moss on patches of the upward faces, every cube its own small shade.
@@ -175,6 +211,7 @@
         const q = cellPos(c), k = shade.get(c.join(","));
         let col = V.mul(V.lerp(c0, c1, clamp01((q[2] - pos[2]) / span)), k);
         col = V.lerp(col, crackDark, crack(q, crackScale, p.rockCracks, seed) * 0.8);
+        col = withOre(col, oreAt(q, p, seed), p, k);
         if (di === 4 && p.mossAmount > 0) {
           const m = clamp01(0.5 + noise3(V.add(V.mul(q, 6 / Math.max(1e-4, sz)), [seed, 0, 0])) * 1.5 - (1 - p.mossAmount));
           if (m > 0.5) col = V.mul(moss, k);
@@ -189,9 +226,35 @@
       let c = V.lerp(c0, c1, clamp01((q[2] - pos[2]) / span));
       let m = clamp01((n[2] - (1 - p.mossAmount * 1.4)) * 3);
       m *= clamp01(0.5 + noise3(V.add(V.mul(q, 6 / Math.max(1e-4, sz)), [seed, 0, 0])) * 1.5);
+      c = withOre(c, oreAt(q, p, seed), p);
       if (p.mossAmount > 0) c = V.lerp(c, moss, m);
       return V.lerp(c, crackDark, crack(q, crackScale, p.rockCracks, seed));
     }, r, { subdiv: p.rockDetail, noise: p.rockNoise, squash, displace: (q) => -crack(q, crackScale, p.rockCracks, seed) * sz * p.rockCrackDepth });
+  }
+
+  /** The full-cell stone: cubes of «Tamaño cubito» from the floor to the block's height, cracks only darken (a block
+   *  never loses cubes), ore and moss as on a rock. */
+  function genStoneBlock(mb, p, r, seed, c0, c1, crackScale, crackDark, moss) {
+    const H = Aura.blockEngine.BLOCK_HEIGHT;
+    const n = Math.max(4, Math.round(1 / Math.max(0.01, p.rockVoxel)));
+    const vs = 1 / n, nz = Math.max(1, Math.round(H / vs));
+    const cells = new Set();
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) for (let k = 0; k < nz; k++) cells.add(`${i},${j},${k}`);
+    const origin = [-0.5, -0.5, 0];
+    const cellPos = (c) => [origin[0] + (c[0] + 0.5) * vs, origin[1] + (c[1] + 0.5) * vs, origin[2] + (c[2] + 0.5) * vs];
+    const shade = new Map([...cells].map((c) => [c, 1 + r.uniform(-p.rockDither, p.rockDither)]));
+    mb.voxels(cells, origin, vs, (c, di) => {
+      const q = cellPos(c), k = shade.get(c.join(","));
+      // A block reads lit from above by the camera's face light: a soft top-to-bottom ramp only, not the rock's.
+      let col = V.mul(V.lerp(c0, c1, 0.35 + 0.3 * clamp01(q[2] / H)), k);
+      col = V.lerp(col, crackDark, crack(q, crackScale, p.rockCracks, seed) * 0.8);
+      col = withOre(col, oreAt(q, p, seed), p, k);
+      if (di === 4 && p.mossAmount > 0) {
+        const m = clamp01(0.5 + noise3(V.add(V.mul(q, 6), [seed, 0, 0])) * 1.5 - (1 - p.mossAmount));
+        if (m > 0.5) col = V.mul(moss, k);
+      }
+      return col;
+    });
   }
 
   function genCrystal(mb, p, r, pos) {
@@ -560,7 +623,9 @@
     category: "fungi", label: "Piedras",
     params: {
       "Piedras": [
-        ["rockStyle", "Estilo", [["VOXEL", "Voxel (cubitos)"], ["SMOOTH", "Suave"]], "VOXEL"],
+        ["rockShape", "Forma", [["ROCK", "Rocas sueltas"], ["BLOCK", "Bloque entero"]], "ROCK", null, null, null,
+          "Bloque entero: un bloque de piedra de cubitos que llena la celda (para menas: carbón, hierro…). Ignora «Cantidad»"],
+        ["rockStyle", "Estilo", [["VOXEL", "Voxel (cubitos)"], ["SMOOTH", "Suave"]], "VOXEL", null, null, null, "Solo rocas sueltas: el bloque siempre es de cubitos"],
         ["rockVoxel", "Tamaño cubito", "num", 0.0625, 0.02, 0.2, 0.0025, "En bloques: 0.0625 = 1/16 de bloque, 4 px del sprite de 64"],
         ["rockDither", "Variación por cubito", "num", 0.06, 0, 0.4, 0.01], ["rockSize", "Tamaño", "num", 0.1, 0.02, 0.5, 0.005],
         ["rockVar", "Var. tamaño", "num", 0.4, 0, 1, 0.01], ["rockFlatten", "Aplanado", "num", 0.55, 0.1, 1, 0.01],
@@ -572,13 +637,30 @@
         ["rockCrackDepth", "Profundidad grietas", "num", 0.06, 0, 0.3, 0.005], ["rockCrackDark", "Oscuridad grietas", "num", 0.5, 0, 1, 0.01],
         ["mossAmount", "Musgo", "num", 0, 0, 1, 0.01], ["mossColor", "Color musgo", "color", L(0.25, 0.42, 0.15)],
       ],
+      "Minerales": [
+        ["oreAmount", "Cantidad", "num", 0, 0, 1, 0.01, "0 = piedra sin mineral"],
+        ["oreStyle", "Forma", [["SPECKS", "Motas"], ["NUGGETS", "Pepitas (en grupos)"], ["VEINS", "Vetas"]], "SPECKS"],
+        ["oreSize", "Tamaño", "num", 0.12, 0.03, 0.5, 0.005, "En bloques: lo grande que es cada mota o lo ancha que ondula la veta"],
+        ["oreColor", "Color", "color", L(0.02, 0.02, 0.025)],
+        ["oreTipColor", "Color brillo", "color", L(0.12, 0.12, 0.14)],
+        ["oreShine", "Brillo", "num", 0.5, 0, 1, 0.01, "Cuánto llega el color de brillo al centro de cada mota o veta"],
+      ],
     },
     defaults: { count: 6, distribution: "DISC", areaSize: 0.9, minDistance: 0.15 },
   }, genPebbles, [
-    { key: "GREY", label: "Gris", values: { rockColor: L(0.32, 0.31, 0.3), rockTipColor: L(0.55, 0.53, 0.5), mossAmount: 0 } },
-    { key: "SAND", label: "Arenisca", values: { rockColor: L(0.5, 0.36, 0.2), rockTipColor: L(0.8, 0.65, 0.42), mossAmount: 0 } },
-    { key: "DARK", label: "Oscura (basalto)", values: { rockColor: L(0.1, 0.1, 0.11), rockTipColor: L(0.28, 0.28, 0.3), mossAmount: 0 } },
-    { key: "MOSSY", label: "Con musgo", values: { rockColor: L(0.3, 0.3, 0.28), rockTipColor: L(0.5, 0.5, 0.46), mossAmount: 0.55 } },
+    { key: "GREY", label: "Gris", values: { rockColor: L(0.32, 0.31, 0.3), rockTipColor: L(0.55, 0.53, 0.5), mossAmount: 0, rockShape: "ROCK", oreAmount: 0 } },
+    { key: "SAND", label: "Arenisca", values: { rockColor: L(0.5, 0.36, 0.2), rockTipColor: L(0.8, 0.65, 0.42), mossAmount: 0, rockShape: "ROCK", oreAmount: 0 } },
+    { key: "DARK", label: "Oscura (basalto)", values: { rockColor: L(0.1, 0.1, 0.11), rockTipColor: L(0.28, 0.28, 0.3), mossAmount: 0, rockShape: "ROCK", oreAmount: 0 } },
+    { key: "MOSSY", label: "Con musgo", values: { rockColor: L(0.3, 0.3, 0.28), rockTipColor: L(0.5, 0.5, 0.46), mossAmount: 0.55, rockShape: "ROCK", oreAmount: 0 } },
+    { key: "COPPER_PEBBLES", label: "Guijarros con cobre", values: { rockShape: "ROCK", rockColor: L(0.3, 0.3, 0.29), rockTipColor: L(0.5, 0.49, 0.47), mossAmount: 0, oreAmount: 0.4, oreStyle: "SPECKS", oreSize: 0.04, oreColor: L(0.42, 0.13, 0.03), oreTipColor: L(0.95, 0.5, 0.18), oreShine: 0.6 } },
+    { key: "ORE_COAL", label: "Mena de carbón", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.3, oreStyle: "NUGGETS", oreSize: 0.08, oreColor: L(0.012, 0.012, 0.015), oreTipColor: L(0.06, 0.06, 0.07), oreShine: 0.3 } },
+    { key: "ORE_COPPER", label: "Mena de cobre", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.3, oreStyle: "SPECKS", oreSize: 0.08, oreColor: L(0.42, 0.13, 0.03), oreTipColor: L(0.95, 0.5, 0.18), oreShine: 0.6 } },
+    { key: "ORE_IRON", label: "Mena de hierro", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.28, oreStyle: "NUGGETS", oreSize: 0.08, oreColor: L(0.5, 0.26, 0.14), oreTipColor: L(0.85, 0.62, 0.45), oreShine: 0.55 } },
+    { key: "ORE_GOLD", label: "Mena de oro", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.3, oreStyle: "SPECKS", oreSize: 0.08, oreColor: L(0.7, 0.42, 0.03), oreTipColor: L(1, 0.9, 0.35), oreShine: 0.75 } },
+    { key: "ORE_TIN", label: "Mena de estaño", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.3, oreStyle: "SPECKS", oreSize: 0.08, oreColor: L(0.42, 0.44, 0.47), oreTipColor: L(0.8, 0.84, 0.88), oreShine: 0.55 } },
+    { key: "ORE_SILVER", label: "Mena de plata", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.25, oreStyle: "NUGGETS", oreSize: 0.08, oreColor: L(0.6, 0.63, 0.7), oreTipColor: L(1, 1, 1), oreShine: 0.7 } },
+    { key: "ORE_QUARTZ", label: "Vetas de cuarzo", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.15, 0.15, 0.145), rockTipColor: L(0.3, 0.295, 0.285), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.45, oreStyle: "VEINS", oreSize: 0.2, oreColor: L(0.78, 0.76, 0.74), oreTipColor: L(1, 1, 1), oreShine: 0.5 } },
+    { key: "ORE_COAL_DEEP", label: "Carbón en roca profunda", values: { rockShape: "BLOCK", sizeVariation: 0, scale: 1, rockColor: L(0.08, 0.08, 0.09), rockTipColor: L(0.2, 0.2, 0.22), rockCracks: 0.06, rockDither: 0.06, mossAmount: 0, oreAmount: 0.3, oreStyle: "NUGGETS", oreSize: 0.08, oreColor: L(0.006, 0.006, 0.008), oreTipColor: L(0.05, 0.05, 0.06), oreShine: 0.3 } },
   ]);
 
   G.register("CRYSTAL", {
