@@ -43,6 +43,18 @@
     { key: "luminosity", label: "Luz", kind: "number", hint: "0" },
   ];
 
+  // The item keys every kind of item has; the rest (effects, damage, equipSlot…) is edited in the JSON box.
+  const ITEM_FIELDS = [
+    { key: "name", label: "Nombre", kind: "text" },
+    { key: "id", label: "Id", kind: "text", hint: "del nombre" },
+    { key: "desc", label: "Descripción", kind: "text" },
+    { key: "type", label: "Tipo", kind: "select", options: ["MiscItem", "Material", "ConsumableItem", "TileItem", "ToolItem", "EquipItem", "MeleeWeapon", "RangedWeapon", "MagicWeapon", "RuneItem", "MagicPaperItem"] },
+    { key: "maxStack", label: "Pila máx.", kind: "number", hint: "1" },
+  ];
+
+  // What "Nuevo item" writes: a stackable material, the most common kind of icon added to a sheet.
+  const NEW_ITEM = { type: "MiscItem", maxStack: 64, itemType: "Material" };
+
   function atlasTool() {
     return new AtlasTool();
   }
@@ -146,7 +158,7 @@
       this.refs = T.collectRefs(this.docs);
       const broken = this.docs.filter((d) => d.error);
       if (broken.length) {
-        this.studio.toast(`${broken.length} archivo(s) de tiles no se pueden leer.`, {
+        this.studio.toast(`${broken.length} archivo(s) de tiles o items no se pueden leer.`, {
           kind: "bad", detail: broken.map((d) => `${d.name}: ${d.error}`).join(" · "),
         });
       }
@@ -905,7 +917,9 @@
       const doc = this.#docOf(tile);
       if (!doc || !(await this.studio.confirm({
         title: "Quitar tile", danger: true, confirm: "Quitar",
-        message: `«${T.tileLabel(tile)}» sale de ${doc.name}. Su arte se queda en la hoja. Si algo lo usa (estructuras, drops, crecimiento), el juego avisará al cargar.`,
+        message: T.isItemDoc(doc)
+          ? `«${T.tileLabel(tile)}» sale de ${doc.name}. Su icono se queda en la hoja. Si algo lo usa (recetas, drops, combustibles), el juego avisará al cargar.`
+          : `«${T.tileLabel(tile)}» sale de ${doc.name}. Su arte se queda en la hoja. Si algo lo usa (estructuras, drops, crecimiento), el juego avisará al cargar.`,
       }))) return;
       const list = doc.root.tiles, index = list.indexOf(tile);
       this.tile = null;
@@ -1066,7 +1080,8 @@
       this.panel.append(this.#sheetSection().el);
       if (this.placed) this.panel.append(this.#placedSection().el);
       this.panel.append(this.#selectionSection().el);
-      this.panel.append(this.#tintSection().el);
+      // Item icons are never tinted by the biome: the grey workflow only belongs on tile sheets.
+      if (!this.#isItemSheet()) this.panel.append(this.#tintSection().el);
       if (this.tile && this.#docOf(this.tile)) this.panel.append(this.#tileSection(this.tile).el);
       else this.tile = null;
       this.panel.append(this.#reviewSection().el);
@@ -1090,7 +1105,23 @@
         h("div", { class: "field" }, h("label", null, "Cuadrícula"), h("div", { class: "pair" }, gw, gh)),
         h("div", { class: "row" },
           h("button", { class: "grow", onclick: () => this.#growSheet(0, 1) }, "Añadir fila"),
-          h("button", { class: "grow", onclick: () => this.#growSheet(1, 0) }, "Añadir columna")));
+          h("button", { class: "grow", onclick: () => this.#growSheet(1, 0) }, "Añadir columna")),
+        h("button", { onclick: () => this.#sortDocsByY(),
+          title: "Reordena los JSON que usan esta hoja por la Y de su arte (la más pequeña primero, luego la X). Cambia el orden de los ids en tiempo de ejecución; los mundos guardados no se ven afectados (se guardan por id)." },
+          "Ordenar JSON por Y"));
+    }
+
+    // One undo step for every file that has art on this sheet. Entries with no art keep their order, at the end.
+    #sortDocsByY() {
+      const key = T.sheetKey(this.sheet.id);
+      const docs = this.docs.filter((d) => d.root && this.refs.some((r) => r.doc === d && r.sheet === key));
+      const changes = docs.map((doc) => ({ doc, before: [...doc.root.tiles], after: T.orderByCoord(doc, this.refs) })).filter((c) => c.after);
+      if (!changes.length) { this.studio.toast("Ya están ordenados por Y."); return; }
+      const put = (list, order) => { list.length = 0; list.push(...order); };
+      this.#run(`Ordenar por Y (${changes.map((c) => c.doc.name).join(", ")})`,
+        () => { for (const c of changes) put(c.doc.root.tiles, c.after); },
+        () => { for (const c of changes) put(c.doc.root.tiles, c.before); });
+      this.studio.setStatus(`${changes.length} archivo(s) reordenado(s) por Y. Guarda para escribirlos (Ctrl+S).`, "ok");
     }
 
     #selectionSection() {
@@ -1114,6 +1145,13 @@
     }
 
     // "Bioma": the selected cells turned into the grey a biome_tinted tile needs, previewed on the sheet first.
+    // A sheet an item file draws from, or whose every reference is an item icon.
+    #isItemSheet() {
+      const key = T.sheetKey(this.sheet.id);
+      if (this.docs.some((d) => T.isItemDoc(d) && d.root && T.docSheet(d) === key)) return true;
+      return this.#sheetRefs.length > 0 && this.#sheetRefs.every((r) => T.isItemDoc(r.doc));
+    }
+
     #tintSection() {
       const cells = this.#selectedCells();
       const ui = TP.tintSection({ id: "at-tint", title: "Bioma · pasar a gris", state: this.tint, biomes: this.biomes, withToggle: false,
@@ -1165,7 +1203,7 @@
       const key = T.sheetKey(this.sheet.id);
       const ok = this.docs.filter((d) => d.root);
       ok.sort((a, b) => (T.docSheet(b) === key) - (T.docSheet(a) === key) || a.name.localeCompare(b.name));
-      return ok.map((d) => [d.path, d.name + (T.docSheet(d) === key ? "" : " (con sheetId)")]);
+      return ok.map((d) => [d.path, (T.isItemDoc(d) ? "Items/" : "") + d.name + (T.docSheet(d) === key ? "" : " (con sheetId)")]);
     }
 
     /**
@@ -1175,7 +1213,7 @@
     #newTileForm(cells, placement) {
       const details = h("details", { class: "at-new", open: !!placement });
       const opts = this.#docOptions();
-      if (!opts.length) return h("p", { class: "note" }, "No hay archivos de tiles (Data/Tiles/*.json) donde crear uno.");
+      if (!opts.length) return h("p", { class: "note" }, "No hay archivos de tiles ni de items (Data/Tiles, Data/Items) donde crear uno.");
       const base = placement?.p.name ?? "";
       const nameIn = h("input", { type: "text", value: base, placeholder: "Nombre (p. ej. Oak Leaves)", spellcheck: false });
       const idIn = h("input", { type: "text", value: placement?.p.id ?? "", placeholder: "id: del nombre", spellcheck: false });
@@ -1196,6 +1234,14 @@
         const id = idIn.value.trim() || T.deriveIdPath(name);
         if (!/^[a-z0-9_]+(:[a-z0-9_/]+)?$/.test(id)) throw new Error("El id solo lleva minúsculas, números y _ .");
         const onOtherSheet = T.docSheet(doc) !== T.sheetKey(this.sheet.id);
+        if (T.isItemDoc(doc)) {
+          if (placement?.p.buildTiles || placement?.p.buildTile) throw new Error("Esto es arte de tiles: elige un archivo de Data/Tiles.");
+          // [0, 0] means "no icon" to the game: a real icon can never live there.
+          if (coords[0][0] === 0 && coords[0][1] === 0) throw new Error("La celda [0, 0] queda vacía en las hojas de items: el juego la lee como «sin icono».");
+          const item = { id, name, ...structuredClone(NEW_ITEM), iconCoord: coords[0] };
+          if (onOtherSheet) item.sheetId = this.sheet.id;
+          return { doc, tiles: [item] };
+        }
         // A growth export is a whole set (every stage, or base / middle / top), each built complete by its sender.
         if (placement?.p.buildTiles) {
           const tiles = placement.p.buildTiles(coords, { id, name });
@@ -1211,8 +1257,11 @@
         try {
           const { tiles } = build();
           preview.textContent = tiles.length === 1 ? T.formatJson(tiles[0]) : T.formatJson(tiles);
-          const taken = tiles.find((tile) => this.docs.some((d) => d.root?.tiles.some((t) => t && T.tileId(t) === T.tileId(tile))));
-          error.textContent = taken ? `Ya existe un tile «${T.tileId(taken)}».` : "";
+          const doc = this.docs.find((d) => d.path === fileSel.get());
+          const sameKind = (d) => T.isItemDoc(d) === T.isItemDoc(doc);
+          const taken = tiles.find((tile) => this.docs.some((d) => sameKind(d) && d.root?.tiles.some((t) => t && T.tileId(t) === T.tileId(tile))));
+          error.textContent = taken ? `Ya existe ${T.isItemDoc(doc) ? "un item" : "un tile"} «${T.tileId(taken)}».` : "";
+          kindSel.el.hidden = T.isItemDoc(doc);
         } catch (err) {
           preview.textContent = "";
           error.textContent = err.message;
@@ -1228,19 +1277,20 @@
         const list = doc.root.tiles;
         this.tile = tiles[0];
         if (placement) this.placed = null;
-        this.#run(tiles.length === 1 ? `Nuevo tile ${tiles[0].name}` : `${tiles.length} tiles nuevos`,
+        const what = T.isItemDoc(doc) ? "item" : "tile";
+        this.#run(tiles.length === 1 ? `Nuevo ${what} ${tiles[0].name}` : `${tiles.length} ${what}s nuevos`,
           () => list.push(...tiles), () => list.splice(list.indexOf(tiles[0]), tiles.length));
         this.studio.setStatus(`${tiles.map((t) => "«" + t.id + "»").join(", ")} añadido(s) a ${doc.name}. Guarda para escribirlo (Ctrl+S).`, "ok");
       };
       refresh();
       details.append(
-        h("summary", null, placement ? "Crear su tile" : "Nuevo tile en esta celda"),
+        h("summary", null, placement ? "Crear su tile" : "Nuevo tile o item en esta celda"),
         h("div", { class: "field" }, h("label", null, "Nombre"), nameIn),
         h("div", { class: "field" }, h("label", null, "Id"), idIn),
         h("div", { class: "field" }, h("label", null, "Archivo"), fileSel.el),
         placement?.p.buildTiles ? null : h("div", { class: "field" }, h("label", null, "Clase"), kindSel.el),
         preview, error,
-        h("button", { class: "primary", onclick: create }, "Crear tile"));
+        h("button", { class: "primary", onclick: create }, "Crear"));
       return details;
     }
 
@@ -1259,10 +1309,13 @@
 
     #tileSection(tile) {
       const doc = this.#docOf(tile);
-      const fields = FORM_FIELDS.map((f) => this.#formField(tile, f));
+      const isItem = T.isItemDoc(doc);
+      const fields = (isItem ? ITEM_FIELDS : FORM_FIELDS).map((f) => this.#formField(tile, f));
 
-      // The art: every state and side of the tile and its parts, with their cells.
-      const rows = T.collectRefs([{ ...doc, root: { ...doc.root, tiles: [tile] } }]);
+      // The art: every state and side of the tile and its parts, with their cells. Built from the file's own sheet and
+      // cell size (a spread of the root would drop the item file's hidden list and default sheet).
+      const root = { sheetId: doc.root.sheetId, tileWidth: doc.root.tileWidth, tileHeight: doc.root.tileHeight, tiles: [tile] };
+      const rows = T.collectRefs([{ ...doc, root }]);
       const artRows = rows.map((r) => {
         const xIn = h("input", { type: "number", min: 0, value: r.coord[0] });
         const yIn = h("input", { type: "number", min: 0, value: r.coord[1] });
@@ -1291,7 +1344,7 @@
           rawErr.textContent = "JSON no válido: " + err.message;
           return;
         }
-        const problems = T.validateTile(next);
+        const problems = isItem ? T.validateItem(next) : T.validateTile(next);
         if (problems.length) { rawErr.textContent = problems.join(" "); return; }
         rawErr.textContent = "";
         this.#replaceTile(tile, next, `${T.tileLabel(tile)}: JSON`);
@@ -1302,18 +1355,18 @@
         if (tinted.checked) tags.push(TINT_TAG);
         this.#setField(tile, "tags", tags.length ? tags : undefined);
       } });
-      return section({ id: "at-tile", title: "Tile", extra: T.tileId(tile) },
-        h("p", { class: "note" }, "En ", h("b", null, doc.name), "."),
+      return section({ id: "at-tile", title: isItem ? "Item" : "Tile", extra: T.tileId(tile) },
+        h("p", { class: "note" }, "En ", h("b", null, (isItem ? "Items/" : "") + doc.name), "."),
         fields,
-        h("label", { class: "field check", title: "El juego tiñe sus pixeles grises con el color del bioma" }, tinted, h("span", null, "Teñido por bioma (biome_tinted)")),
-        h("div", { class: "at-sub" }, "Arte ", h("span", { class: "faint" }, "(x, y en celdas del archivo)")),
-        artRows.length ? artRows : h("p", { class: "note" }, "Sin arte."),
-        this.#addArtRow(tile, doc),
-        this.#partsBlock(tile, doc),
+        isItem ? null : h("label", { class: "field check", title: "El juego tiñe sus pixeles grises con el color del bioma" }, tinted, h("span", null, "Teñido por bioma (biome_tinted)")),
+        h("div", { class: "at-sub" }, isItem ? "Icono " : "Arte ", h("span", { class: "faint" }, "(x, y en celdas del archivo)")),
+        artRows.length ? artRows : h("p", { class: "note" }, isItem ? "Sin icono propio ([0, 0])." : "Sin arte."),
+        isItem ? this.#itemIconRow(tile, doc) : this.#addArtRow(tile, doc),
+        isItem ? null : this.#partsBlock(tile, doc),
         h("div", { class: "at-sub" }, "JSON"),
         raw, rawErr,
         h("div", { class: "row" },
-          h("button", { class: "grow", onclick: applyRaw, title: "Sustituye el tile por este JSON (se puede deshacer)" }, "Aplicar JSON"),
+          h("button", { class: "grow", onclick: applyRaw, title: "Sustituye la entrada por este JSON (se puede deshacer)" }, "Aplicar JSON"),
           h("button", { onclick: () => this.#openTile(tile, true), title: "Seleccionar sus celdas" }, "Ver celdas"),
           h("button", { class: "danger", onclick: () => this.#deleteTile(tile) }, "Quitar")));
     }
@@ -1325,7 +1378,8 @@
         if (f.key === "id" || f.key === "name") {
           const next = { ...tile, [f.key]: value };
           if (!next.id && !next.name) { this.studio.toast("Un tile necesita id o nombre.", { kind: "warn" }); this.#renderPanel(); return; }
-          const clash = this.docs.some((d) => d.root?.tiles.some((t) => t && t !== tile && T.tileId(t) === T.tileId(next)));
+          const kindOf = T.isItemDoc(this.#docOf(tile));
+          const clash = this.docs.some((d) => T.isItemDoc(d) === kindOf && d.root?.tiles.some((t) => t && t !== tile && T.tileId(t) === T.tileId(next)));
           if (clash) { this.studio.toast(`Ya existe «${T.tileId(next)}».`, { kind: "bad" }); this.#renderPanel(); return; }
           if (f.key === "id" || !tile.id) {
             this.studio.toast("Id cambiado: lo que lo nombre (estructuras, crecimiento, biomas, drops) hay que cambiarlo a mano.", { kind: "warn" });
@@ -1472,6 +1526,29 @@
       }
       if (!placed) out.push(...entries);
       return Object.fromEntries(out);
+    }
+
+    // An item without an icon of its own ([0, 0] or none) takes the selected cell; one with an icon can drop it again.
+    #itemIconRow(tile, doc) {
+      const c = tile.iconCoord;
+      const hasIcon = T.isCoord(c) && (c[0] !== 0 || c[1] !== 0);
+      const assign = () => {
+        const cell = this.#selectedCells()[0];
+        if (!cell) { this.studio.toast("Selecciona antes la celda en la hoja.", { kind: "warn" }); return; }
+        const [tw, th] = T.docCell(doc);
+        const coord = [(cell[0] * this.grid.w) / tw, (cell[1] * this.grid.h) / th];
+        if (!coord.every(Number.isInteger)) { this.studio.toast("Esa celda no cae en la cuadrícula del archivo.", { kind: "warn" }); return; }
+        if (coord[0] === 0 && coord[1] === 0) { this.studio.toast("[0, 0] es «sin icono» para el juego: usa otra celda.", { kind: "warn" }); return; }
+        if (T.docSheet(doc, tile) !== T.sheetKey(this.sheet.id)) {
+          this.studio.toast(`El icono de este item se lee de «${T.docSheet(doc, tile) || T.DEFAULT_ITEM_SHEET}», no de esta hoja.`, { kind: "warn",
+            detail: "Abre esa hoja, o pon \"sheetId\" en el item desde el JSON." });
+          return;
+        }
+        this.#setField(tile, "iconCoord", coord);
+      };
+      return h("div", { class: "row" },
+        h("button", { class: "grow", onclick: assign, title: "Usa la celda seleccionada como icono" }, hasIcon ? "Mover icono a la selección" : "Usar la selección como icono"),
+        hasIcon ? h("button", { onclick: () => this.#setField(tile, "iconCoord", [0, 0]), title: "Vuelve a [0, 0]: sin icono propio" }, "Quitar icono") : null);
     }
 
     // Adds a state the tile has no art for yet, on the selected cell.
