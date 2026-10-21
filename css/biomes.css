@@ -25,7 +25,7 @@
 .bm-range { position: relative; height: 6px; background: var(--panel-3); border-radius: 3px; }
 .bm-range i { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 3px; }
 .bm-row { display: grid; grid-template-columns: 32px 1fr 76px 26px; gap: 5px; align-items: center; margin-bottom: 4px; }
-.bm-row.with-on { grid-template-columns: 32px 1fr 70px 96px 26px; }
+.bm-row.with-on { grid-template-columns: 32px 1fr 108px 92px 22px; }
 .bm-row input, .bm-row select { min-height: 26px; padding: 2px 5px; }
 .bm-row input.bad { border-color: var(--bad); color: var(--bad); }
 .bm-thumb { width: 32px; height: 32px; image-rendering: pixelated; background: #2f3338; border-radius: 4px; }
@@ -39,3 +39,11 @@
 .bm-sug .small { font-size: 11px; }
 /* The «Repartir» summary lists one biome per line. */
 .dialog p { white-space: pre-line; max-height: 50vh; overflow: auto; }
+
+/* Weights: auto-adjust + coverage, less / more; − / + around each decoration chance. */
+.bm-weights { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.bm-weights input { width: 58px; min-height: 26px; padding: 2px 5px; }
+.bm-chance { display: grid; grid-template-columns: 20px 1fr 20px; gap: 2px; align-items: center; }
+.bm-chance input { min-width: 0; }
+.bm-nudge { width: 20px; min-width: 20px; padding: 0; min-height: 26px; }
+.bad-text { color: var(--warn, #f0b45a); }
