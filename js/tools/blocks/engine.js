@@ -3,7 +3,7 @@
 // Block generator engine: builds a piece (cube, slab, stair, fence…) out of voxels from the textures of its faces and
 // renders it with the game's camera into a sprite, with its normal map, depth, ambient occlusion and a grayscale pass.
 // No DOM, no canvas: plain arrays in, plain arrays out, so the same code runs in the page, in a worker or under Node.
-// Needs shapes.js (Aura.blockShapes); hair.js (Aura.blockHair) is optional and draws the fringe strands.
+// Needs shapes.js (Aura.blockShapes); hair.js (Aura.blockHair) is optional and draws the fringe strands...
 (function (Aura) {
   const Shapes = Aura.blockShapes;
 
