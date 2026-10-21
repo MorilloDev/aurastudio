@@ -42,11 +42,28 @@
       return !V.isBase(i + d[0], j + d[1], k + d[2]);
     };
 
+    // Groups are written for an upright piece. A piece whose textures turn with it (a log lying down, a slab on its side,
+    // an isometric rotation) carries its top texture on another face: the groups turn the same way, so the hairs grow
+    // from the edges of that face and lean out of it, not from whatever happens to face the sky.
+    const rot = V.tf.texRot;
+    const turn = (v) => [0, 1, 2].map((r) => rot[r][0] * v[0] + rot[r][1] * v[1] + rot[r][2] * v[2]);
+    const dirIdx = (v) => DIRS.findIndex((d) => Math.abs(d[0] - v[0]) < 1e-6 && Math.abs(d[1] - v[1]) < 1e-6 && Math.abs(d[2] - v[2]) < 1e-6);
+    const up = turn([0, 0, 1]);
+    const groups = GROUPS.map((g) => {
+      const axis = [0, 0, 0]; axis[g.along] = 1;
+      const a = turn(axis);
+      const texDir = dirIdx(turn(DIRS[g.texDir]));
+      const face = texDir === 4 ? "TOP" : texDir === 3 ? "LEFT" : texDir === 0 ? "RIGHT"
+        : Math.abs(up[2]) >= 0.5 ? "TOP" : up[1] < 0 ? "LEFT" : "RIGHT";
+      return { ...g, open: g.open.map((wd) => dirIdx(turn(DIRS[wd]))), along: a.findIndex((x) => Math.abs(x) > 0.5),
+        out: turn(g.out), texDir, face };
+    });
+
     const strands = [];
     for (let k = 0; k < R; k++) for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
       if (!V.isBase(i, j, k) || !V.solid(i, j, k)) continue;
       const sloped = V.isSloped?.(i, j, k);
-      for (const g of GROUPS) {
+      for (const g of groups) {
         if (!hp.edges[g.key] || (sloped && g.open.includes(4))) continue;
         if (!isOpen(i, j, k, g.open[0]) || !isOpen(i, j, k, g.open[1])) continue;
         // The edge line: the voxel's corner shared by its two open sides, running along g.along.
@@ -69,7 +86,9 @@
       const root = [-0.5 + cell[0] / R, -0.5 + cell[1] / R, cell[2] * vz];
       // Direction: between straight out of the face (lean 1) and straight up / down (lean 0), turned at random.
       const vert = g.vertical === 0 ? (random() - 0.5) * 0.6 : g.vertical;
-      let dir = [g.out[0] * hp.lean, g.out[1] * hp.lean, g.out[2] * hp.lean + vert * (1 - hp.lean)];
+      // "Up" is the piece's own up: away from its top face, whichever way that face now looks.
+      const rise = 1 - hp.lean;
+      let dir = [g.out[0] * hp.lean + up[0] * vert * rise, g.out[1] * hp.lean + up[1] * vert * rise, g.out[2] * hp.lean + up[2] * vert * rise];
       dir = norm([dir[0] + (random() - 0.5) * hp.spread * 2, dir[1] + (random() - 0.5) * hp.spread * 2, dir[2] + (random() - 0.5) * hp.spread]);
       let len = hp.length * (1 - hp.lengthVar * random()) * pxWorld;
       if (len < pxWorld * 0.75) continue;
