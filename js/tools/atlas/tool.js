@@ -127,13 +127,87 @@
     ] },
   ];
 
-  // The item keys every kind of item has; the rest (effects, damage, equipSlot…) is edited in the JSON box.
-  const ITEM_FIELDS = [
-    { key: "name", label: "Nombre", kind: "text" },
-    { key: "id", label: "Id", kind: "text", hint: "del nombre" },
-    { key: "desc", label: "Descripción", kind: "text" },
-    { key: "type", label: "Tipo", kind: "select", options: ["MiscItem", "Material", "ConsumableItem", "TileItem", "ToolItem", "EquipItem", "MeleeWeapon", "RangedWeapon", "MagicWeapon", "RuneItem", "MagicPaperItem"] },
-    { key: "maxStack", label: "Pila máx.", kind: "number", hint: "1" },
+  // Every key ItemRegistry.ParseItem reads, by item type ("types": the groups that only apply to some). Enum lists hold
+  // the values the project uses; the selects marked free take any other a mod or a new enum value needs.
+  const ITEM_TYPES = ["MiscItem", "Material", "ConsumableItem", "TileItem", "ToolItem", "EquipItem", "MeleeWeapon", "RangedWeapon", "MagicWeapon", "RuneItem", "MagicPaperItem"];
+  const WEAPONS = ["MeleeWeapon", "RangedWeapon", "MagicWeapon"];
+  const ITEM_GROUPS = [
+    { id: "common", title: "Básico", open: true, fields: [
+      { path: "name", label: "Nombre", kind: "text" },
+      { path: "id", label: "Id", kind: "text", hint: "del nombre" },
+      { path: "desc", label: "Descripción", kind: "text" },
+      { path: "type", label: "Tipo", kind: "select", options: ITEM_TYPES, required: true },
+      { path: "maxStack", label: "Pila máx.", kind: "number", hint: "1", def: 1 },
+      { path: "sheetId", label: "Hoja del icono", kind: "text", hint: "la del archivo" },
+    ] },
+    { id: "misc", title: "Material", types: ["MiscItem", "Material"], fields: [
+      { path: "itemType", label: "Clase", kind: "select", options: ["", "Material", "None", "Key", "Quest"], free: true },
+    ] },
+    { id: "tile", title: "Coloca", types: ["TileItem"], open: true, fields: [
+      { path: "tile", label: "Tile", kind: "text", hint: "id del tile" },
+      { path: "tileType", label: "tileType", kind: "text", title: "Grupo del tile (antiguo; se sigue leyendo)" },
+    ] },
+    { id: "consumable", title: "Consumible", types: ["ConsumableItem"], open: true, fields: [
+      { path: "consumableType", label: "Clase", kind: "select", options: ["Food", "Potion"], free: true, required: true },
+      { path: "consumeDuration", label: "Tarda (s)", kind: "number", hint: "0", def: 0 },
+      { path: "effects", label: "Efectos", kind: "effects" },
+    ] },
+    { id: "tool", title: "Herramienta", types: ["ToolItem"], open: true, fields: [
+      { path: "toolType", label: "Herramienta", kind: "select", options: ["Pickaxe", "Axe", "Shovel", "Hoe", "Hammer"], free: true, required: true },
+      { path: "tier", label: "Tier", kind: "number", hint: "0", def: 0 },
+      { path: "maxDurability", label: "Durabilidad", kind: "number", hint: "0 = infinita", def: 0 },
+    ] },
+    { id: "weapon", title: "Arma", types: WEAPONS, open: true, fields: [
+      { path: "meleeType", label: "Cuerpo a cuerpo", kind: "select", options: ["Dagger", "Sword", "Spear", "Greatsword"], free: true, onlyFor: ["MeleeWeapon"], required: true },
+      { path: "rangedType", label: "A distancia", kind: "select", options: ["Bow", "Longbow", "Crossbow"], free: true, onlyFor: ["RangedWeapon"], required: true },
+      { path: "magicType", label: "Mágica", kind: "select", options: ["Staff", "Grimoire", "Wand"], free: true, onlyFor: ["MagicWeapon"], required: true },
+      { path: "baseDamage", label: "Daño", kind: "number", required: true },
+      { path: "grip", label: "Agarre", kind: "select", options: ["", "OneHanded", "TwoHanded", "Versatile", "Bow"], labels: { "": "(según el tipo)" } },
+      { path: "material", label: "Material", kind: "text", hint: "wood" },
+      { path: "maxDurability", label: "Durabilidad", kind: "number", hint: "0", def: 0 },
+      { path: "attackSpeed", label: "Velocidad", kind: "number", hint: "1", def: 1, onlyFor: ["MeleeWeapon"] },
+      { path: "basePenetration", label: "Penetración", kind: "number", def: 0, onlyFor: ["MeleeWeapon"] },
+      { path: "baseCritChance", label: "Prob. crítico", kind: "number", def: 0, onlyFor: ["MeleeWeapon"] },
+      { path: "baseCritDamage", label: "Daño crítico", kind: "number", def: 0, onlyFor: ["MeleeWeapon"] },
+      { path: "baseAttackRange", label: "Alcance extra", kind: "number", def: 0, onlyFor: ["MeleeWeapon"] },
+      { path: "baseKnockbackForce", label: "Empuje", kind: "number", def: 0, onlyFor: ["MeleeWeapon"] },
+      { path: "baseMagicDamageBonus", label: "Bonus mágico", kind: "number", def: 0, onlyFor: ["MeleeWeapon"] },
+      { path: "baseRuneAmplification", label: "Amplif. de runas", kind: "number", def: 0, onlyFor: ["MeleeWeapon"] },
+      { path: "maxAmmo", label: "Munición máx.", kind: "number", def: 0, onlyFor: ["RangedWeapon"] },
+      { path: "spellPower", label: "Poder mágico", kind: "number", def: 0, onlyFor: ["MagicWeapon"] },
+      { path: "spellSlotCount", label: "Hechizos", kind: "number", hint: "1", def: 1, onlyFor: ["MagicWeapon"] },
+    ] },
+    { id: "equip", title: "Equipo", types: ["EquipItem"], open: true, fields: [
+      { path: "equipSlot", label: "Ranura", kind: "select", options: ["Head", "Chest", "Legs", "Feet", "Hands", "Arms", "Necklace", "Earring", "Bag"], free: true, required: true },
+      { path: "maxDurability", label: "Durabilidad", kind: "number", def: 0 },
+      { path: "runeSlotCount", label: "Ranuras de runa", kind: "number", def: 0 },
+      { path: "modSlotCount", label: "Ranuras de mod", kind: "number", def: 0 },
+      { path: "baseDefense", label: "Defensa", kind: "number", def: 0 },
+      { path: "basePhysicalResist", label: "Resist. física", kind: "number", def: 0 },
+      { path: "baseMagicResist", label: "Resist. mágica", kind: "number", def: 0 },
+      { path: "baseMovementSpeed", label: "Velocidad", kind: "number", def: 0 },
+      { path: "baseStaminaRegenBonus", label: "Regen. estamina", kind: "number", def: 0 },
+      { path: "baseManaRegenBonus", label: "Regen. maná", kind: "number", def: 0 },
+    ] },
+    { id: "rune", title: "Runa", types: ["RuneItem"], open: true, fields: [
+      { path: "categories", label: "Categorías", kind: "list", hint: "Fire, Area…" },
+      { path: "role", label: "Rol", kind: "select", options: ["", "Effect", "Modifier"], labels: { "": "(Effect)" } },
+      { path: "isPassive", label: "Pasiva", kind: "check", def: false },
+      { path: "adjective", label: "Adjetivo", kind: "text", hint: "Mighty…" },
+      { path: "effectData.amount", label: "Cantidad", kind: "number" },
+      { path: "effectData.duration", label: "Duración (s)", kind: "number" },
+      { path: "effectData.tickInterval", label: "Cada (s)", kind: "number" },
+    ] },
+    { id: "hold", title: "En la mano y modelo", fields: [
+      { path: "model", label: "Modelo", kind: "list", hint: "archivo.glb|Nodo, …", single: true },
+      { path: "textureSheet", label: "Textura del modelo", kind: "text", hint: "materials" },
+      { path: "offhand", label: "Va en la mano secundaria", kind: "check", def: false },
+      { path: "holdPose", label: "Pose", kind: "text", hint: "TorchInHand…" },
+      { path: "heldEffect.node", label: "Efecto: nodo", kind: "text", hint: "Torch_Flame" },
+      { path: "heldEffect.effect", label: "Efecto: nombre", kind: "text", hint: "el del tile" },
+      { path: "heldEffect.offset", label: "Efecto: desplazamiento", kind: "vec3" },
+      { path: "light", label: "Luz en la mano", kind: "json", title: "La de su tile en los items de tile" },
+    ] },
   ];
 
   // What "Nuevo item" writes: a stackable material, the most common kind of icon added to a sheet.
@@ -1423,7 +1497,7 @@
     #tileSection(tile) {
       const doc = this.#docOf(tile);
       const isItem = T.isItemDoc(doc);
-      const fields = isItem ? ITEM_FIELDS.map((f) => this.#formField(tile, f)) : this.#tileGroups(tile);
+      const fields = isItem ? this.#itemGroups(tile) : this.#tileGroups(tile);
 
       // The art: every state and side of the tile and its parts, with their cells. Built from the file's own sheet and
       // cell size (a spread of the root would drop the item file's hidden list and default sheet).
@@ -1498,6 +1572,24 @@
       });
     }
 
+    // Item inspector: the common groups, plus the one for its type. Fields of other types are not shown, but stay in the
+    // file if they are there (the JSON box shows everything).
+    #itemGroups(item) {
+      const type = item.type;
+      return ITEM_GROUPS.filter((g) => !g.types || g.types.includes(type)).map((g) => {
+        const fields = g.fields.filter((f) => !f.onlyFor || f.onlyFor.includes(type));
+        const used = fields.some((f) => getPath(item, f.path) !== undefined);
+        const body = fields.map((f) => (f.path === "name" || f.path === "id"
+          ? this.#formField(item, { key: f.path, label: f.label, kind: f.kind, hint: f.hint })
+          : this.#tileField(item, f)));
+        const missing = fields.filter((f) => f.required && getPath(item, f.path) === undefined);
+        return h("details", { class: "at-group", open: g.open || used || undefined },
+          h("summary", null, g.title, used && !g.open ? h("span", { class: "faint" }, " ●") : null,
+            missing.length ? h("span", { class: "badge bad", title: "El juego lo necesita: " + missing.map((f) => f.label).join(", ") }, "falta") : null),
+          body);
+      });
+    }
+
     // Writes one (possibly dotted) key. Objects emptied by the edit are removed, so the file never keeps "growth": {}.
     #setPath(tile, path, value) {
       const keys = path.split(".");
@@ -1539,15 +1631,23 @@
         case "select": {
           const opts = f.options.map((o) => [o, f.labels?.[o] ?? (o || "(por defecto)")]);
           if (current !== undefined && !f.options.includes(current)) opts.push([String(current), String(current)]);
+          if (current === undefined && !f.options.includes("")) opts.unshift(["", "— elige —"]);
           const sel = select({ options: opts, value: current === undefined ? "" : String(current), onChange: (v) => commit(v || undefined) }).input;
           if (!f.free) return field(sel);
           // Free selects: the list for the usual values, a text box for anything else a mod uses.
           const other = textInput(f.options.includes(current ?? "") ? "" : current, "otro…", (t) => commit(t.trim() || undefined));
           return field(h("div", { class: "at-pair" }, sel, other));
         }
-        case "list":
-          return field(textInput(Array.isArray(current) ? current.join(", ") : "", f.hint,
-            (t) => commit(t.trim() ? t.split(",").map((x) => x.trim()).filter(Boolean) : undefined)));
+        case "list": {
+          const shown = Array.isArray(current) ? current.join(", ") : typeof current === "string" ? current : "";
+          return field(textInput(shown, f.hint, (t) => {
+            const list = t.trim() ? t.split(",").map((x) => x.trim()).filter(Boolean) : [];
+            // "single": one value is written as a plain string, the way the files write a one-node "model".
+            commit(!list.length ? undefined : f.single && list.length === 1 ? list[0] : list);
+          }));
+        }
+        case "effects":
+          return field(this.#effectsEditor(current, commit), "wide");
         case "color": {
           const hex = typeof current === "string" ? current : "";
           const picker = h("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(hex) ? hex : "#ffffff",
@@ -1665,6 +1765,28 @@
     }
 
     #dropsListSeq = 0;
+
+    // A consumable's effects: one row each, a type and an amount (plus a duration for the ones over time).
+    #effectsEditor(current, commit) {
+      const TYPES = ["AddHunger", "AddHealth", "AddStamina", "AddRegen", "AddManaRegen", "AddSpeed", "AddResist"];
+      const list = Array.isArray(current) ? current : [];
+      const write = (next) => commit(next);
+      const rows = list.map((e, i) => {
+        const set = (key, value) => write(list.map((x, j) => (j === i ? { ...x, [key]: value } : x)));
+        const opts = TYPES.map((t) => [t, t]);
+        if (e.type && !TYPES.includes(e.type)) opts.push([e.type, e.type]);
+        const type = select({ options: opts, value: e.type ?? TYPES[0], onChange: (v) => set("type", v) }).input;
+        const n = (key, value, hint) => {
+          const el = h("input", { type: "number", value: value ?? "", placeholder: hint, step: "any" });
+          el.onchange = () => set(key, el.value === "" ? undefined : Number(el.value));
+          return el;
+        };
+        return h("div", { class: "at-effect" }, type, n("amount", e.amount, "cant."), n("duration", e.duration, "dur."),
+          h("button", { class: "icon danger", title: "Quitar", onclick: () => write(list.filter((_, j) => j !== i)) }, "✕"));
+      });
+      return h("div", { class: "at-drops" }, rows,
+        h("button", { onclick: () => write([...list, { type: "AddHunger", amount: 5 }]) }, "+ Añadir efecto"));
+    }
 
     #formField(tile, f) {
       const current = tile[f.key];
