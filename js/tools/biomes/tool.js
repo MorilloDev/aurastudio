@@ -39,7 +39,7 @@
     current = null;
     view = prefs.get("biomes:view", "climate");
     slice = prefs.get("biomes:slice", { continentalness: 0.8, erosion: 0.5, pv: 0.5 });
-    sample = { seed: 1, density: 4 };
+    sample = { seed: 1, density: 1, size: prefs.get("biomes:sampleSize", 16), relief: prefs.get("biomes:relief", true), water: prefs.get("biomes:water", true) };
     history = new History({ limit: 200 });
     #tiles = new Map();      // qualified tile id -> { tile, doc, sheet, coord, tw, th, parts, tinted, habitat }
     #sheets = new Map();     // sheet key -> Promise<canvas | null>
@@ -199,10 +199,20 @@
           this.toolbarExtra.append(h("label", { class: "bm-slice", title: `${label} del corte del mapa` }, label.split(" ")[0], input, out));
         }
       } else {
-        const dens = h("input", { type: "range", min: 1, max: 30, step: 1, value: this.sample.density,
-          oninput: () => { this.sample.density = Number(dens.value); this.#draw(); } });
+        const densOut = h("span", { class: "mono faint" }, "×" + this.sample.density);
+        const dens = h("input", { type: "range", min: 0.5, max: 10, step: 0.5, value: this.sample.density,
+          oninput: () => { this.sample.density = Number(dens.value); densOut.textContent = "×" + this.sample.density; this.#draw(); } });
+        const size = select({ value: String(this.sample.size), options: [["9", "9×9"], ["16", "16×16"], ["24", "24×24"], ["32", "32×32"]], title: "Tamaño de la muestra",
+          onChange: (v) => { this.sample.size = Number(v); prefs.set("biomes:sampleSize", this.sample.size); this.#draw(); } });
+        const flag = (label, key, title) => {
+          const c = h("input", { type: "checkbox", checked: this.sample[key], onchange: () => { this.sample[key] = c.checked; prefs.set("biomes:" + key, c.checked); this.#draw(); } });
+          return h("label", { class: "bm-slice", title }, c, label);
+        };
         this.toolbarExtra.append(
-          h("label", { class: "bm-slice", title: "Multiplica las probabilidades de decoración para ver también lo raro" }, "Densidad ×", dens),
+          size.input ?? size.el,
+          flag("Relieve", "relief", "Lomas suaves de 1–3 bloques, como el terreno real"),
+          flag("Agua", "water", "Un estanque en lo más bajo, con las plantas de agua del bioma"),
+          h("label", { class: "bm-slice", title: "×1 = las probabilidades reales; más para ver también lo raro" }, "Densidad", dens, densOut),
           h("button", { title: "Otra muestra", onclick: () => { this.sample.seed++; this.#draw(); } }, "⟳ Otra"));
       }
     }
@@ -352,10 +362,14 @@
         onchange: () => edit((list) => { list[i].chance = Number(chance.value); }) });
       const tile = this.#tileInput(entry.tile, (v) => edit((list) => { list[i].tile = v; }));
       const on = withOn ? select({ value: entry.on ?? "", options: B.SURFACES, title: "Dónde crece", onChange: (v) => edit((list) => { if (v) list[i].on = v; else delete list[i].on; }) }).input : null;
+      // Decoration rows get − / + around the chance: ×0.8 / ×1.25, so "a bit more of this" needs no typing.
+      const nudge = (f, label, title) => h("button", { class: "icon ghost bm-nudge", title,
+        onclick: () => edit((list) => { list[i].chance = Math.round(Math.min(1, (Number(list[i].chance) || 0) * f) * 100000) / 100000; }) }, label);
+      const chanceCell = withOn ? h("div", { class: "bm-chance" }, nudge(0.8, "−", "Menos (×0,8)"), chance, nudge(1.25, "+", "Más (×1,25)")) : chance;
       const info = this.#tileInfo(entry.tile);
       const thumb = h("canvas", { class: "bm-thumb", width: 32, height: 32 });
       if (info) this.#paintThumb(thumb, info);
-      return h("div", { class: ["bm-row", withOn && "with-on"] }, thumb, tile, chance, on,
+      return h("div", { class: ["bm-row", withOn && "with-on"] }, thumb, tile, chanceCell, on,
         h("button", { class: "icon ghost", title: "Quitar", onclick: () => edit((list) => { list.splice(i, 1); }) }, "×"));
     }
 
@@ -363,7 +377,21 @@
       const list = r.decoration ?? [];
       const rows = list.map((d, i) => this.#chanceRow(d, i, (fn) => this.#edit("Decoración", (x) => fn(x.decoration)), true));
       const total = list.reduce((s, d) => s + (Number(d.chance) || 0), 0);
+      this.decoTarget ??= 0.6;
+      const target = h("input", { type: "number", min: 0.05, max: 0.95, step: 0.05, value: this.decoTarget,
+        title: "Cuánto suelo cubre la decoración en total (0..0,95): «Auto-ajustar» reparte esto entre las entradas",
+        onchange: () => { this.decoTarget = Math.min(0.95, Math.max(0.05, Number(target.value) || 0.6)); } });
+      const dupes = list.length - new Set(list.map((d) => String(d.tile ?? "").replace(/^aura:/, "").toLowerCase() + "|" + (d.on ?? ""))).size;
+      const weights = h("div", { class: "bm-weights" },
+        h("button", { title: "Recalcula todos los pesos según qué es cada tile (hierba común, flores y rocas raras, menas más raras, plantas de agua) y su clima, para que sumen la cobertura de al lado. Junta las entradas repetidas.",
+          onclick: () => this.#edit("Auto-ajustar pesos", (x) => { x.decoration = B.autoWeights(x, this.#tiles, this.decoTarget).decoration; }) }, "Auto-ajustar"),
+        h("label", { class: "faint", title: "Cobertura total" }, "a ", target),
+        h("span", { class: "grow" }),
+        h("button", { title: "Todas las probabilidades ×0,8", onclick: () => this.#edit("Menos decoración", (x) => { x.decoration = B.scaleWeights(x, 0.8); }) }, "− Menos"),
+        h("button", { title: "Todas las probabilidades ×1,25 (sin pasar de 0,99 en total)", onclick: () => this.#edit("Más decoración", (x) => { x.decoration = B.scaleWeights(x, 1.25); }) }, "+ Más"));
       return section({ id: "bm-deco", title: "Decoración", extra: `${list.length} · Σ ${total.toFixed(3)}` },
+        list.length ? weights : null,
+        dupes ? h("div", { class: "at-issue warn" }, `${dupes} entrada${dupes > 1 ? "s" : ""} repetida${dupes > 1 ? "s" : ""} (mismo tile y mismo «dónde»): «Auto-ajustar» las junta.`) : null,
         ...rows,
         h("div", { class: "row" },
           h("button", { onclick: () => this.#edit("Decoración", (x) => { (x.decoration ??= []).push({ tile: "", chance: 0.01 }); }) }, "+ Decoración"),
@@ -569,6 +597,12 @@
 
     // A patch of the biome: GRID × GRID columns of its surface (with variants), decoration on top, the foliage colour on
     // what is biome_tinted. Chances are multiplied by the density so rare entries show up.
+    /**
+     * A patch of the biome as the game would build it: gentle hills of its surface over its intermediate material,
+     * variants, a pond in the lowest ground (when asked) with the water plants where they grow — on the bottom, along
+     * the shore, on the surface — and the land decoration rolled per column the way the generator does it (chances
+     * summed in order, one roll), biome_tinted tiles in the biome's foliage colour.
+     */
     #drawSample(g, W, H) {
       clear(this.legend);
       const r = this.current?.root;
@@ -580,42 +614,16 @@
         g.fillText(kind === "ocean" ? "La decoración del mar se ve en el juego (no hay suelo que dibujar)." : "Falta el tile de superficie (o no existe).", 20, 30);
         return;
       }
-      const need = new Set([surface, ...(r.materials?.surfaceVariants ?? []).map((v) => this.#tileInfo(v.tile)), ...(r.decoration ?? []).map((d) => this.#tileInfo(d.tile))].filter(Boolean).map((i) => i.sheet));
+      const shallow = this.#tileInfo(r.materials?.shallow ?? "dirt") ?? surface;
+      const waterTile = this.#tileInfo("water");
+      const decoInfos = (r.decoration ?? []).map((d) => this.#tileInfo(d.tile));
+      const need = new Set([surface, shallow, waterTile, ...(r.materials?.surfaceVariants ?? []).map((v) => this.#tileInfo(v.tile)), ...decoInfos].filter(Boolean).map((i) => i.sheet));
       const pending = [...need].filter((k) => !this.#sheets.has(k) || this.#sheets.get(k).value === undefined);
       if (pending.length) {
         for (const k of pending) this.#sheetCanvas(k).then(() => this.#draw());
         g.fillStyle = "#98a0aa"; g.fillText("Cargando hojas…", 20, 30);
         return;
       }
-      const S = surface.tw, E = Aura.blockEngine, BH = E.BLOCK_HEIGHT;
-      const o = E.project([0, 0, 0], S, BH), px = E.project([1, 0, 0], S, BH), py = E.project([0, 1, 0], S, BH), pz = E.project([0, 0, BH], S, BH);
-      const at = (i, j, l) => [i * (px[0] - o[0]) + j * (py[0] - o[0]) + l * (pz[0] - o[0]), i * (px[1] - o[1]) + j * (py[1] - o[1]) + l * (pz[1] - o[1])];
-      const foliage = Tint.hexToRgb(r.colors?.foliage) ?? Tint.hexToRgb(Tint.DEFAULT_TINT.hex);
-      const draws = [];
-      const seed = this.sample.seed;
-      for (let i = 0; i < GRID; i++) {
-        for (let j = 0; j < GRID; j++) {
-          let top = surface;
-          let roll = hash(i, j, seed * 3 + 1), acc = 0;
-          for (const v of r.materials?.surfaceVariants ?? []) {
-            acc += (Number(v.chance) || 0) * this.sample.density;
-            if (roll < acc) { top = this.#tileInfo(v.tile) ?? top; break; }
-          }
-          const shift = (hash(i, j, 99) * 2 - 1) * 10;
-          draws.push({ info: top, i, j, l: 0, shift });
-          roll = hash(i, j, seed * 7 + 5); acc = 0;
-          for (const d of r.decoration ?? []) {
-            const info = this.#tileInfo(d.tile);
-            acc += (Number(d.chance) || 0) * this.sample.density;
-            if (roll < acc) {
-              // Water plants need water; the sample is dry land, so they are left out (counted in the legend).
-              if (info && (info.habitat === "land" || !info.habitat) && (!d.on || d.on === "surface")) draws.push({ info, i, j, l: 1, shift });
-              break;
-            }
-          }
-        }
-      }
-      // A sheet that did not load (no png for its atlases.json entry) would leave the sample blank without a word.
       const missingSheets = [...need].filter((k) => !this.#sheets.get(k)?.value);
       if (missingSheets.length) {
         g.fillStyle = "#f0b45a"; g.font = "13px system-ui";
@@ -623,33 +631,149 @@
         g.fillText("Abre la carpeta Content (o la del proyecto) para que las rutas de atlases.json se encuentren.", 20, 50);
         return;
       }
-      const pieces = [];
-      for (const d of draws) {
-        const parts = d.info.parts.length ? d.info.parts : [{ x: 0, y: 0, z: 0, coord: d.info.coord }];
-        for (const p of parts) if (p.coord) pieces.push({ ...d, coord: p.coord, i: d.i + p.x, j: d.j + p.z, l: d.l + p.y });
+
+      const N = this.sample.size, seed = this.sample.seed, dens = this.sample.density;
+      const S = surface.tw, E = Aura.blockEngine, BH = E.BLOCK_HEIGHT;
+      const o = E.project([0, 0, 0], S, BH), px = E.project([1, 0, 0], S, BH), py = E.project([0, 1, 0], S, BH), pz = E.project([0, 0, BH], S, BH);
+      const at = (i, j, l) => [i * (px[0] - o[0]) + j * (py[0] - o[0]) + l * (pz[0] - o[0]), i * (px[1] - o[1]) + j * (py[1] - o[1]) + l * (pz[1] - o[1])];
+      const foliage = Tint.hexToRgb(r.colors?.foliage) ?? Tint.hexToRgb(Tint.DEFAULT_TINT.hex);
+
+      // Smooth value noise over the grid for the hills; the pond takes the lowest part.
+      const noise = (x, y, sd) => {
+        const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+        const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+        const v = (a, b) => hash(a, b, sd);
+        return (v(x0, y0) * (1 - sx) + v(x0 + 1, y0) * sx) * (1 - sy) + (v(x0, y0 + 1) * (1 - sx) + v(x0 + 1, y0 + 1) * sx) * sy;
+      };
+      const field = [];
+      for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) field.push(noise(i / 5, j / 5, seed * 13 + 3) * 0.7 + noise(i / 2.2, j / 2.2, seed * 17 + 9) * 0.3);
+      const sorted = [...field].sort((a, b) => a - b);
+      const waterCut = this.sample.water ? sorted[Math.floor(sorted.length * 0.16)] : -1;
+      const lo = sorted[0], hi = sorted[sorted.length - 1];
+      const heightAt = (i, j) => {
+        const f = field[i * N + j];
+        if (f <= waterCut) return -1;                       // pond floor, one under the water
+        return this.sample.relief ? Math.round(((f - lo) / Math.max(1e-6, hi - lo)) * 2.4) : 0;
+      };
+      const isWater = (i, j) => i >= 0 && j >= 0 && i < N && j < N && field[i * N + j] <= waterCut;
+
+      // Which kind of column a decoration entry may land on: the game's "on", or the tile's habitat for Auto.
+      const placeOf = (d, info) => {
+        if (d.on) return { surface: "land", seafloor: "bottom", shallows: "shore", watersurface: "top" }[d.on] ?? "land";
+        const hab = info ? B.habitatOf(info.tile, d.tile).habitat : "land";
+        return { land: "land", submerged: "bottom", emergent: "shore", floating: "top" }[hab];
+      };
+
+      const pieces = [];      // { info, coord, i, j, l, sub, tint }
+      const put = (info, i, j, l, sub, shift) => {
+        if (!info) return;
+        const parts = info.parts.length ? info.parts : [{ x: 0, y: 0, z: 0, coord: info.coord }];
+        for (const p of parts) if (p.coord) pieces.push({ info, coord: p.coord, i: i + p.x, j: j + p.z, l: l + p.y, sub, shift });
+      };
+      const counts = new Map();
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < N; j++) {
+          const h0 = heightAt(i, j), water = isWater(i, j);
+          const shift = (hash(i, j, 99) * 2 - 1) * 10;
+          // Ground: the visible blocks of the column (the front rows show their sides down to the lowest level).
+          let top = surface;
+          let roll = hash(i, j, seed * 3 + 1), acc = 0;
+          for (const v of r.materials?.surfaceVariants ?? []) {
+            acc += Number(v.chance) || 0;
+            if (roll < acc) { top = this.#tileInfo(v.tile) ?? top; break; }
+          }
+          for (let l = -1; l <= h0; l++) put(l === h0 && !water ? top : shallow, i, j, l, 0, shift);
+          const shore = !water && h0 === 0 && [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, b]) => isWater(i + a, j + b));
+          // Decoration: one roll over the summed chances, as the generator does; an entry that cannot grow here is a miss.
+          roll = hash(i, j, seed * 7 + 5); acc = 0;
+          for (let k = 0; k < (r.decoration ?? []).length; k++) {
+            const d = r.decoration[k], info = decoInfos[k];
+            acc += (Number(d.chance) || 0) * dens;
+            if (roll >= acc) continue;
+            const where = placeOf(d, info);
+            const ok = water ? where === "bottom" || where === "top" : where === "land" || (where === "shore" && shore);
+            if (ok && info) {
+              if (where === "bottom") put(info, i, j, 0, 1, shift);            // under the water, on the floor
+              else if (where === "top") put(info, i, j, 1, 3, shift);          // on the water: the cell above it
+              else put(info, i, j, h0 + 1, 1, shift);
+              counts.set(d.tile, (counts.get(d.tile) ?? 0) + 1);
+            }
+            break;
+          }
+          if (water) pieces.push({ water: true, i, j, l: 0, sub: 2 });
+        }
       }
-      pieces.sort((a, b) => a.i + a.j - (b.i + b.j) || a.l - b.l);
+      // Painter's order: +i comes toward the camera and +j goes away from it, so nearer is larger i − j; then upward.
+      pieces.sort((a, b) => a.i - a.j - (b.i - b.j) || a.l - b.l || a.sub - b.sub);
       const pos = pieces.map((p) => at(p.i, p.j, p.l));
       const minX = Math.min(...pos.map((p) => p[0])), minY = Math.min(...pos.map((p) => p[1]));
       const maxX = Math.max(...pos.map((p) => p[0])) + S, maxY = Math.max(...pos.map((p) => p[1])) + S;
       const scene = new OffscreenCanvas(Math.ceil(maxX - minX), Math.ceil(maxY - minY));
       const sg = scene.getContext("2d");
+      const waterSprite = this.#waterSprite(waterTile, S);
       pieces.forEach((p, k) => {
+        const x = Math.round(pos[k][0] - minX), y = Math.round(pos[k][1] - minY);
+        if (p.water) { sg.drawImage(waterSprite, x, y); return; }
         const img = this.#sprite(p.info, p.coord, p.info.tinted ? shiftRgb(foliage, p.shift) : null);
-        if (img) sg.drawImage(img, Math.round(pos[k][0] - minX), Math.round(pos[k][1] - minY));
+        if (img) sg.drawImage(img, x, y);
       });
-      g.fillStyle = "#3d4a55";
+
+      // Sky-ish backdrop from the biome's atmosphere, so a desert reads warm and a taiga cold.
+      const atm = Tint.hexToRgb(r.colors?.atmosphere);
+      const grad = g.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, atm ? `rgb(${atm.map((c) => Math.round(c * 0.35 + 40)).join(",")})` : "#3d4a55");
+      grad.addColorStop(1, "#1c2127");
+      g.fillStyle = grad;
       g.fillRect(0, 0, W, H);
-      const z = Math.max(1, Math.floor(Math.min((W - 40) / scene.width, (H - 60) / scene.height) * 2) / 2);
-      g.imageSmoothingEnabled = false;
-      g.drawImage(scene, Math.round((W - scene.width * z) / 2), Math.round((H - 30 - scene.height * z) / 2), scene.width * z, scene.height * z);
+      const zRaw = Math.min((W - 40) / scene.width, (H - 50) / scene.height);
+      const z = zRaw >= 1 ? Math.floor(zRaw * 2) / 2 : zRaw;
+      g.imageSmoothingEnabled = zRaw < 1;
+      g.drawImage(scene, Math.round((W - scene.width * z) / 2), Math.round((H - 26 - scene.height * z) / 2), scene.width * z, scene.height * z);
       const problems = [...need].map((k) => this.#sheets.get(k)?.reason).filter(Boolean);
       if (problems.length) {
         g.fillStyle = "#f0b45a"; g.font = "13px system-ui";
         problems.slice(0, 6).forEach((t, i) => g.fillText(t, 16, 24 + i * 18));
       }
-      const water = (r.decoration ?? []).filter((d) => { const info = this.#tileInfo(d.tile); return info && ((d.on && d.on !== "surface") || (!d.on && info.habitat !== "land")); }).length;
-      this.legend.append(h("span", { class: "faint" }, `${GRID}×${GRID} columnas · decoración ×${this.sample.density}` + (water ? ` · ${water} de agua no se dibujan` : "")));
+      // Grey art without biome_tinted: the game draws it grey too, which is almost always a missing tag.
+      const grey = [surface, ...decoInfos].filter((info, k, all) => info && !info.tinted && all.indexOf(info) === k && this.#looksGrey(info)).map((i) => i.tile.id ?? i.tile.name);
+      this.legend.append(h("span", { class: "faint" },
+        `${N}×${N} columnas · densidad ×${dens} · ${[...counts.values()].reduce((a, b) => a + b, 0)} decoraciones` + (waterTile ? "" : this.sample.water ? " · agua dibujada (no hay tile «water»)" : "")));
+      if (grey.length) this.legend.append(h("span", { class: "bad-text", title: "Se ven grises porque su arte es gris y no tienen el tag biome_tinted: el juego tampoco los tiñe." },
+        ` · grises sin biome_tinted: ${grey.slice(0, 6).join(", ")}${grey.length > 6 ? "…" : ""}`));
+    }
+
+    /** The water block: the project's "water" tile when it has one, else a see-through blue cube top. */
+    #waterSprite(info, S) {
+      const key = "__water|" + S + "|" + (info ? info.sheet + info.coord : "");
+      let c = this.#spriteCache.get(key);
+      if (c) return c;
+      if (info?.coord) {
+        const src = this.#sprite(info, info.coord, null);
+        c = new OffscreenCanvas(S, S);
+        const cg = c.getContext("2d");
+        cg.globalAlpha = 0.75;
+        if (src) cg.drawImage(src, 0, 0);
+      } else {
+        c = new OffscreenCanvas(S, S);
+        const cg = c.getContext("2d");
+        // The top diamond, a little under the block's top: the water's surface.
+        const d = S / 16;
+        cg.fillStyle = "rgba(52, 118, 196, 0.62)";
+        cg.beginPath(); cg.moveTo(S / 2, d); cg.lineTo(S, S / 4 + d); cg.lineTo(S / 2, S / 2 + d); cg.lineTo(0, S / 4 + d); cg.closePath(); cg.fill();
+        cg.strokeStyle = "rgba(170, 215, 255, 0.35)";
+        cg.beginPath(); cg.moveTo(0, S / 4 + d); cg.lineTo(S / 2, d); cg.lineTo(S, S / 4 + d); cg.stroke();
+      }
+      this.#spriteCache.set(key, c);
+      return c;
+    }
+
+    /** Most of the opaque pixels without colour: art made for biome_tinted. */
+    #looksGrey(info) {
+      const coord = info.coord ?? info.parts[0]?.coord;
+      const img = coord && this.#sprite(info, coord, null);
+      if (!img) return false;
+      const a = Tint.analyze(img.getContext("2d").getImageData(0, 0, img.width, img.height).data);
+      return a.total > 20 && a.full / a.total > 0.85;
     }
 
     // The sheet of a tile as a canvas, decoded once.
