@@ -248,6 +248,16 @@
         if (!byTile.has(r.tile)) byTile.set(r.tile, []);
         byTile.get(r.tile).push(r);
       }
+      // Items of this sheet without an "iconCoord" have no ref, but they belong here: listed last, so they can be opened
+      // and given a cell. Tile items are left out — without an icon of their own they show their tile.
+      const key = T.sheetKey(this.sheet.id);
+      for (const doc of this.docs) {
+        if (!T.isItemDoc(doc) || !doc.root) continue;
+        for (const it of doc.root.tiles) {
+          if (!it || byTile.has(it) || it.type === "TileItem" || T.docSheet(doc, it) !== key) continue;
+          byTile.set(it, []);
+        }
+      }
       const rows = [...byTile].filter(([tile]) => !q || T.tileId(tile).includes(q) || T.tileLabel(tile).toLowerCase().includes(q));
       if (!rows.length) {
         this.tileList.appendChild(h("div", { class: "empty-state" }, q ? "Ningún tile coincide." : "Ningún tile usa esta hoja todavía."));
@@ -255,12 +265,15 @@
       }
       for (const [tile, refs] of rows) {
         const broken = refs.some((r) => !this.#refHasArt(r));
+        const noIcon = !refs.length;
         this.tileList.appendChild(h("div", {
-          class: ["at-tile", tile === this.tile && "active"], title: `${T.tileId(tile)} · ${refs[0].doc.name}`,
+          class: ["at-tile", tile === this.tile && "active"],
+          title: `${T.tileId(tile)} · ${this.#docOf(tile)?.name ?? ""}` + (noIcon ? " · sin iconCoord" : ""),
           onclick: () => this.#openTile(tile, true),
-        }, h("span", { class: "grow" }, T.tileLabel(tile)),
+        }, h("span", { class: ["grow", noIcon && "faint"] }, T.tileLabel(tile)),
           broken ? h("span", { class: "badge bad", title: "Apunta a una celda vacía" }, "!") : null,
-          h("span", { class: "faint" }, refs.length)));
+          noIcon ? h("span", { class: "badge warn", title: "Sin \"iconCoord\": el juego muestra el cuadrado de color. Selecciona una celda y usa «Usar la selección como icono»." }, "sin icono")
+            : h("span", { class: "faint" }, refs.length)));
       }
     }
 
@@ -1252,8 +1265,6 @@
         const onOtherSheet = T.docSheet(doc) !== T.sheetKey(this.sheet.id);
         if (T.isItemDoc(doc)) {
           if (placement?.p.buildTiles || placement?.p.buildTile) throw new Error("Esto es arte de tiles: elige un archivo de Data/Tiles.");
-          // [0, 0] means "no icon" to the game: a real icon can never live there.
-          if (coords[0][0] === 0 && coords[0][1] === 0) throw new Error("La celda [0, 0] queda vacía en las hojas de items: el juego la lee como «sin icono».");
           const item = { id, name, ...structuredClone(NEW_ITEM), iconCoord: coords[0] };
           if (onOtherSheet) item.sheetId = this.sheet.id;
           return { doc, tiles: [item] };
@@ -1376,7 +1387,7 @@
         fields,
         isItem ? null : h("label", { class: "field check", title: "El juego tiñe sus pixeles grises con el color del bioma" }, tinted, h("span", null, "Teñido por bioma (biome_tinted)")),
         h("div", { class: "at-sub" }, isItem ? "Icono " : "Arte ", h("span", { class: "faint" }, "(x, y en celdas del archivo)")),
-        artRows.length ? artRows : h("p", { class: "note" }, isItem ? "Sin icono propio ([0, 0])." : "Sin arte."),
+        artRows.length ? artRows : h("p", { class: "note" }, isItem ? "Sin icono propio (no tiene \"iconCoord\")." : "Sin arte."),
         isItem ? this.#itemIconRow(tile, doc) : this.#addArtRow(tile, doc),
         isItem ? null : this.#partsBlock(tile, doc),
         h("div", { class: "at-sub" }, "JSON"),
@@ -1544,17 +1555,15 @@
       return Object.fromEntries(out);
     }
 
-    // An item without an icon of its own ([0, 0] or none) takes the selected cell; one with an icon can drop it again.
+    // An item without an icon of its own (no "iconCoord") takes the selected cell; one with an icon can drop it again.
     #itemIconRow(tile, doc) {
-      const c = tile.iconCoord;
-      const hasIcon = T.isCoord(c) && (c[0] !== 0 || c[1] !== 0);
+      const hasIcon = T.isCoord(tile.iconCoord);
       const assign = () => {
         const cell = this.#selectedCells()[0];
         if (!cell) { this.studio.toast("Selecciona antes la celda en la hoja.", { kind: "warn" }); return; }
         const [tw, th] = T.docCell(doc);
         const coord = [(cell[0] * this.grid.w) / tw, (cell[1] * this.grid.h) / th];
         if (!coord.every(Number.isInteger)) { this.studio.toast("Esa celda no cae en la cuadrícula del archivo.", { kind: "warn" }); return; }
-        if (coord[0] === 0 && coord[1] === 0) { this.studio.toast("[0, 0] es «sin icono» para el juego: usa otra celda.", { kind: "warn" }); return; }
         if (T.docSheet(doc, tile) !== T.sheetKey(this.sheet.id)) {
           this.studio.toast(`El icono de este item se lee de «${T.docSheet(doc, tile) || T.DEFAULT_ITEM_SHEET}», no de esta hoja.`, { kind: "warn",
             detail: "Abre esa hoja, o pon \"sheetId\" en el item desde el JSON." });
@@ -1564,7 +1573,7 @@
       };
       return h("div", { class: "row" },
         h("button", { class: "grow", onclick: assign, title: "Usa la celda seleccionada como icono" }, hasIcon ? "Mover icono a la selección" : "Usar la selección como icono"),
-        hasIcon ? h("button", { onclick: () => this.#setField(tile, "iconCoord", [0, 0]), title: "Vuelve a [0, 0]: sin icono propio" }, "Quitar icono") : null);
+        hasIcon ? h("button", { onclick: () => this.#setField(tile, "iconCoord", undefined), title: "Quita \"iconCoord\": el juego mostrará el cuadrado de color (o el tile, en un item de tile)" }, "Quitar icono") : null);
     }
 
     // Adds a state the tile has no art for yet, on the selected cell.
@@ -1615,7 +1624,10 @@
       const errors = this.docs.filter((d) => d.error);
       const item = (text, cells, kind) => h("div", { class: ["at-issue", kind], onclick: cells ? () => { this.#select(cells); this.#reveal(cells); } : null }, text);
       const list = [
-        ...broken.map((r) => item(`${T.tileLabel(r.tile)} (${T.refLabel(r)}) → [${r.coord.join(", ")}] vacía`, this.#cellsOf(r), "bad")),
+        // An item pointing at an empty cell only lacks its art (the game shows the colour square); a tile there is broken.
+        ...broken.map((r) => T.isItemDoc(r.doc)
+          ? item(`${T.tileLabel(r.tile)}: su icono [${r.coord.join(", ")}] está vacío (sale el cuadrado de color)`, this.#cellsOf(r), "warn")
+          : item(`${T.tileLabel(r.tile)} (${T.refLabel(r)}) → [${r.coord.join(", ")}] vacía`, this.#cellsOf(r), "bad")),
         orphans.length ? item(`${orphans.length} celda(s) con arte que ningún tile usa`, orphans.map(pk), "warn") : null,
         ...this.#tintIssues().map(([text, cells]) => item(text, cells, "warn")),
         ...dupes.map((id) => item(`Id repetido: ${id} (el juego no carga)`, null, "bad")),
