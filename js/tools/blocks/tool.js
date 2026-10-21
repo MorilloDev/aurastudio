@@ -24,6 +24,27 @@
   const MAPS = [["color", ""], ["normal", "_n"], ["depth", "_depth"], ["ao", "_ao"], ["gray", "_gray"]];
   const PREFS_KEY = "blocks:settings";
 
+  // Mineral presets: they only set the mineral's look; the stone is the face textures or the base colours.
+  const ORE_PRESETS = [
+    ["coal", "Carbón", { style: "NUGGETS", amount: 0.3, size: 0.07, color: "#1a1a1c", tip: "#45454b", shine: 0.3 }],
+    ["copper", "Cobre", { style: "SPECKS", amount: 0.3, size: 0.06, color: "#b05a1c", tip: "#f7b36b", shine: 0.6 }],
+    ["iron", "Hierro", { style: "NUGGETS", amount: 0.28, size: 0.07, color: "#bb8a68", tip: "#efcfb5", shine: 0.55 }],
+    ["gold", "Oro", { style: "SPECKS", amount: 0.25, size: 0.05, color: "#dbaa1c", tip: "#fff3a0", shine: 0.75 }],
+    ["tin", "Estaño", { style: "SPECKS", amount: 0.3, size: 0.06, color: "#a9adb3", tip: "#e9edf1", shine: 0.55 }],
+    ["silver", "Plata", { style: "NUGGETS", amount: 0.25, size: 0.06, color: "#cdd2db", tip: "#ffffff", shine: 0.7 }],
+    ["quartz", "Cuarzo", { style: "VEINS", amount: 0.4, size: 0.15, color: "#e4e1de", tip: "#ffffff", shine: 0.5 }],
+    ["diamond", "Diamante", { style: "SPECKS", amount: 0.18, size: 0.05, color: "#3fc6cf", tip: "#d8fbff", shine: 0.8 }],
+    ["emerald", "Esmeralda", { style: "SPECKS", amount: 0.15, size: 0.05, color: "#1ea64a", tip: "#9ff5b5", shine: 0.8 }],
+    ["lapis", "Lapislázuli", { style: "NUGGETS", amount: 0.25, size: 0.06, color: "#1d3c9e", tip: "#5f86e8", shine: 0.5 }],
+  ];
+  const BASE_PRESETS = [
+    ["stone", "Piedra", { color: "#5d5d5a", color2: "#8a8984" }],
+    ["deep", "Roca profunda", { color: "#2c2c31", color2: "#4b4b52" }],
+    ["sandstone", "Arenisca", { color: "#a8875a", color2: "#d8c08f" }],
+    ["granite", "Granito", { color: "#7a5548", color2: "#a98073" }],
+    ["basalt", "Basalto", { color: "#262628", color2: "#3d3d42" }],
+  ];
+
   const PIECE_DEFAULTS = {
     shape: "cube",
     params: { ...Sh.PARAM_DEFAULTS },
@@ -50,6 +71,21 @@
     pixel: ["edgeLight", "outline", "cleanup", "grayFromTexture"],
   };
 
+  const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+  const hexToRgb = (hex) => {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+    const v = m ? parseInt(m[1], 16) : 0x808080;
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  };
+  function mulberry(a) {
+    return () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
   function blocksTool() {
     return new BlocksTool();
   }
@@ -64,6 +100,7 @@
       top: { key: null, cx: 0, cy: 0, rot: 0, flip: false },
       left: { key: null, cx: 0, cy: 0, rot: 0, flip: false },
       right: { key: null, cx: 0, cy: 0, rot: 0, flip: false },
+      ore: { key: null, cx: 0, cy: 0, rot: 0, flip: false },   // the mineral's texture (optional)
     };
     activeSlot = "all";
     view = "color";
@@ -127,7 +164,7 @@
       this.listEl = h("div", { class: "bk-items scroll" });
       this.slotSeg = segmented({
         label: "Cara a asignar", value: "all",
-        options: [["all", "Todas"], ...SLOTS.map(([k, t]) => [k, t])],
+        options: [["all", "Todas"], ["top", "Arriba"], ["left", "Izq."], ["right", "Der."], ["ore", "Mineral"]],
         onChange: (v) => { this.activeSlot = v; this.#updateSlotControls(); },
       });
       this.cellInput = h("input", { type: "number", min: 0, max: 1024, value: this.cellSize, title: "0 = la imagen entera es una cara",
@@ -199,9 +236,9 @@
     #check(label, path, title = "") {
       return checkbox({ label, value: this.#get(path), title, onChange: (v) => this.#set(path, v) }).el;
     }
-    #choice(label, path, options) {
+    #choice(label, path, options, rebuild = false) {
       return h("div", { class: "field" }, h("label", null, label),
-        segmented({ label, value: this.#get(path), options, onChange: (v) => this.#set(path, v) }).el);
+        segmented({ label, value: this.#get(path), options, onChange: (v) => { this.#set(path, v); if (rebuild) this.#rebuildPanel(); } }).el);
     }
 
     // Piece controls: same idea, bound to this.piece.
@@ -229,6 +266,67 @@
         axis("x", "X", "Gira alrededor del eje hacia el que mira la cara derecha"),
         axis("y", "Y", "Gira alrededor del eje vertical"),
         axis("z", "Z", "Gira alrededor del eje hacia el que mira la cara izquierda"));
+    }
+
+    #colorField(label, path, title = "") {
+      const input = h("input", { type: "color", value: this.#get(path), title,
+        oninput: (e) => this.#set(path, e.target.value) });
+      return h("div", { class: "field" }, h("label", null, label), input);
+    }
+
+    /** Piedra y mineral: what the stone is made of (atlas textures or two colours) and the mineral in it, from a colour or
+     *  from its own texture («Mineral» in «Cara a asignar»). */
+    #stoneSection() {
+      const b = this.o.base, ore = this.o.ore;
+      const items = [
+        this.#choice("Piedra", "base.mode", [["texture", "Texturas"], ["color", "Colores"]], true),
+      ];
+      if (b.mode === "color") {
+        items.push(
+          select({ label: "Tipo", value: "", options: [["", "Elegir…"], ...BASE_PRESETS.map(([k, t]) => [k, t])],
+            onChange: (v) => {
+              const pr = BASE_PRESETS.find(([k]) => k === v);
+              if (!pr) return;
+              Object.assign(this.o.base, pr[2]);
+              this.#save(); this.#rebuildPanel(); this.#schedule();
+            } }).el,
+          this.#colorField("Color oscuro", "base.color"), this.#colorField("Color claro", "base.color2"),
+          this.#slider("Grano", "base.grain", 0, 1, 0.01, "0 = manchas suaves; 1 = ruido pixel a pixel"),
+          this.#slider("Semilla", "base.seed", 1, 99, 1));
+      } else {
+        items.push(h("p", { class: "note" }, "Las texturas de cada cara se eligen a la izquierda (Arriba / Izquierda / Derecha)."));
+      }
+      items.push(h("div", { class: "bk-sep" }),
+        checkbox({ label: "Mineral (mena)", value: ore.enabled, onChange: (v) => { this.o.ore.enabled = v; this.#save(); this.#rebuildPanel(); this.#schedule(); } }).el);
+      if (ore.enabled) {
+        items.push(
+          select({ label: "Preset", value: "", options: [["", "Elegir…"], ...ORE_PRESETS.map(([k, t]) => [k, t])],
+            onChange: (v) => {
+              const pr = ORE_PRESETS.find(([k]) => k === v);
+              if (!pr) return;
+              Object.assign(this.o.ore, pr[2], { mode: "pattern", fill: "color" });
+              this.#save(); this.#rebuildPanel(); this.#schedule();
+            } }).el,
+          h("div", { class: "field" }, h("label", null, "Dibujo"),
+            segmented({ value: ore.mode, options: [["pattern", "Patrón"], ["overlay", "Textura encima"]],
+              onChange: (v) => { this.o.ore.mode = v; this.#save(); this.#rebuildPanel(); this.#schedule(); } }).el));
+        if (ore.mode === "overlay") {
+          items.push(h("p", { class: "note" }, "Elige «Mineral» en «Cara a asignar» y haz clic en la celda con el mineral: se pinta donde esa textura no es transparente."));
+        } else {
+          items.push(
+            this.#choice("Relleno", "ore.fill", [["color", "Color"], ["texture", "Textura del mineral"]], true),
+            this.#choice("Forma", "ore.style", [["SPECKS", "Motas"], ["NUGGETS", "Pepitas"], ["VEINS", "Vetas"]]),
+            this.#slider("Cantidad", "ore.amount", 0, 1, 0.01),
+            this.#slider("Tamaño", "ore.size", 0.03, 0.5, 0.005, "En bloques: lo grande de cada mota o lo ancho que ondula la veta"),
+            this.#colorField("Color", "ore.color"), this.#colorField("Color brillo", "ore.tip"),
+            this.#slider("Brillo", "ore.shine", 0, 1, 0.01, "Cuánto llega el color de brillo al centro de cada mota o veta"),
+            this.#slider("Semilla", "ore.seed", 1, 99, 1));
+          if (ore.fill === "texture") items.push(h("p", { class: "note" }, "Elige «Mineral» en «Cara a asignar» y haz clic en su celda: el patrón se rellena con esa textura."));
+        }
+      }
+      return section({ id: "bk-stone", title: "Piedra y mineral",
+        extra: this.#sectionReset(() => { this.o.ore = { ...E.ORE_DEFAULTS }; this.o.base = { ...E.BASE_DEFAULTS }; this.#save(); this.#rebuildPanel(); this.#schedule(); }) },
+        ...items);
     }
 
     /** The small ↺ in a section header: puts only that section back to its defaults. */
@@ -289,6 +387,8 @@
         this.#choice("Ajuste", "uvMode", [["world", "Mundo"], ["fit", "Estirar"]]),
         h("p", { class: "note" }, h("b", null, "Auto:"), " la textura gira con la pieza en «horizontal» (troncos tumbados). La rotación 3D siempre lleva las texturas con ella. ",
           h("b", null, "Mundo:"), " el lado de una losa muestra media textura, como Minecraft; ", h("b", null, "Estirar"), " la aplasta entera."));
+
+      const stone = this.#stoneSection();
 
       // Variants: which sprites the art map gets.
       const variantControls = [];
@@ -411,7 +511,7 @@
 
       this.tintUi = TP.tintSection({ id: "bk-tint", state: this.tint, biomes: this.biomes,
         onChange: () => { this.#save(); this.#schedule(); } });
-      this.panelScroll = h("div", { class: "scroll" }, shape.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
+      this.panelScroll = h("div", { class: "scroll" }, shape.el, stone.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
       for (const sec of [maskSection, cover, hair, light, pixel]) sec.el.classList.add("adv");
       const detail = h("span");
       this.panel = h("div", { class: "bk-panel" },
@@ -517,6 +617,7 @@
       const x = (e.clientX - r.left) * scale, y = (e.clientY - r.top) * scale;
       // Cell size 0: the whole image is one face, so a click anywhere assigns it.
       const cx = this.cellSize ? Math.floor(x / this.cellSize) : 0, cy = this.cellSize ? Math.floor(y / this.cellSize) : 0;
+      // «Todas» is the three faces; the mineral only when picked on its own.
       const targets = this.activeSlot === "all" ? SLOTS.map(([k]) => k) : [this.activeSlot];
       for (const k of targets) Object.assign(this.slots[k], { key: img.key, cx, cy });
       this.#renderList();
@@ -530,7 +631,7 @@
         this.faceRot[k].rot.set(String(this.slots[k].rot));
         this.faceRot[k].flip.set(this.slots[k].flip);
       }
-      this.slotInfo.replaceChildren(...SLOTS.map(([k, t, c]) => {
+      this.slotInfo.replaceChildren(...[...SLOTS, ["ore", "Mineral", "#e0b040"]].map(([k, t, c]) => {
         const sl = this.slots[k];
         const img = sl.key ? this.images.get(sl.key) : null;
         return h("div", { class: "row" }, h("span", { class: "swatch", style: { background: c } }),
@@ -585,13 +686,51 @@
 
     #textures() {
       const tex = {};
+      const fromColors = this.o.base.mode === "color";
       for (const [k] of SLOTS) {
         const sl = this.slots[k];
+        if (fromColors) {
+          tex[k] = E.faceTexture(this.#baseImage(k), { x: 0, y: 0, w: 16, h: 16 }, sl.rot, sl.flip);
+          continue;
+        }
         const img = sl.key ? this.images.get(sl.key) : null;
         if (!img) return null;
         tex[k] = E.faceTexture(img, this.#cellRect(img, sl.cx, sl.cy), sl.rot, sl.flip);
       }
+      const ore = this.slots.ore, oreImg = ore.key ? this.images.get(ore.key) : null;
+      if (oreImg) tex.ore = E.faceTexture(oreImg, this.#cellRect(oreImg, ore.cx, ore.cy), ore.rot, ore.flip);
       return tex;
+    }
+
+    /** A 16 × 16 stone texture from the base colours: a few steps between the two, in soft patches plus grain. Each face
+     *  gets its own seed so the three faces do not repeat each other. */
+    #baseImage(face) {
+      const b = this.o.base;
+      const key = [face, b.color, b.color2, b.grain, b.seed].join("|");
+      this.baseCache ??= new Map();
+      const cached = this.baseCache.get(key);
+      if (cached) return cached;
+      if (this.baseCache.size > 24) this.baseCache.clear();
+      const a = hexToRgb(b.color), c = hexToRgb(b.color2);
+      const rnd = mulberry([...key].reduce((h, ch) => Math.imul(h ^ ch.charCodeAt(0), 16777619), 2166136261) >>> 0);
+      const coarse = Array.from({ length: 25 }, () => rnd());
+      const at = (x, y) => {
+        // Soft patches: bilinear over a 5 × 5 lattice that wraps, so the face tiles with its neighbours.
+        const gx = x / 4, gy = y / 4, x0 = Math.floor(gx), y0 = Math.floor(gy), fx = gx - x0, fy = gy - y0;
+        const g = (i, j) => coarse[((j % 4) * 5 + (i % 4))];
+        return (g(x0, y0) * (1 - fx) + g(x0 + 1, y0) * fx) * (1 - fy) + (g(x0, y0 + 1) * (1 - fx) + g(x0 + 1, y0 + 1) * fx) * fy;
+      };
+      const rgba = new Uint8ClampedArray(16 * 16 * 4);
+      for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+        const t = clamp01(at(x, y) * (1 - b.grain) + rnd() * b.grain);
+        const s = Math.round(t * 3) / 3;     // four tones: reads as pixel art, not as a gradient
+        const i = (y * 16 + x) * 4;
+        for (let ch = 0; ch < 3; ch++) rgba[i + ch] = Math.round(a[ch] + (c[ch] - a[ch]) * s);
+        rgba[i + 3] = 255;
+      }
+      const img = { key: "__base:" + face, name: "base", w: 16, h: 16, rgba };
+      this.baseCache.set(key, img);
+      return img;
     }
 
     /** The variants of the current shape, with the game's front pointed at the chosen camera face. */
