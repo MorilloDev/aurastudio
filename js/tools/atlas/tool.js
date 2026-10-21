@@ -50,6 +50,22 @@
   const KNOWN_TAGS = ["fragile", "stackable", "transparent", "see_through", "no_collision", "liquid", "requires_solid_ground",
     "leaf", "log", "slab", "flammable", "biome_tinted", "herb", "wood", "snow", "flicker", "needs_pickaxe", "needs_axe",
     "needs_shovel", "gravity", "anchor", "heat", "danger"];
+  // "conditions" (TileConditions.cs): the same rules for each moment — place, spawn (world generation), grow and work
+  // (stations). Every rule is optional; together they must all hold.
+  const conditionFields = (moment) => [
+    { path: `conditions.${moment}.light`, label: "Luz (0–1)", kind: "range", hint: ["mín", "máx"], title: "1 = cielo abierto. Una seta quiere poca: 0 – 0,3" },
+    { path: `conditions.${moment}.sky`, label: "Cielo", kind: "select", options: ["", "open", "covered"], labels: { "": "da igual", open: "abierto encima", covered: "con techo encima" } },
+    { path: `conditions.${moment}.temperature`, label: "Temperatura", kind: "range", hint: ["mín", "máx"], title: "La del bioma, 0–1" },
+    { path: `conditions.${moment}.humidity`, label: "Humedad", kind: "range", hint: ["mín", "máx"], title: "La del bioma, 0–1" },
+    { path: `conditions.${moment}.water`, label: "Agua a ≤ celdas", kind: "number", hint: "1–8", title: "Agua en ese radio, a su nivel o el de abajo" },
+    { path: `conditions.${moment}.on`, label: "Sobre (bloque de abajo)", kind: "list", hint: "ids o #tags" },
+    { path: `conditions.${moment}.notOn`, label: "Nunca sobre", kind: "list", hint: "ids o #tags" },
+    { path: `conditions.${moment}.height`, label: "Altura (tiles)", kind: "levels", hint: ["mín", "máx"], title: "El nivel de la celda. Solo mínimo = «al menos»" },
+    { path: `conditions.${moment}.depth`, label: "Techo encima (tiles)", kind: "levels", hint: ["mín", "máx"], title: "Tiles entre la celda y el cielo abierto: 0 = a cielo abierto; una cueva profunda, 10 o más" },
+    { path: `conditions.${moment}.biomes`, label: "Solo en biomas", kind: "list", hint: "ids; «ocean» = mar abierto" },
+    { path: `conditions.${moment}.notBiomes`, label: "Nunca en biomas", kind: "list", hint: "ids" },
+    { path: `conditions.${moment}.seasons`, label: "Estaciones", kind: "seasons", title: "Velocidad por estación: vacío = 1 (normal), 0,5 = la mitad, 0 = no. Sin estaciones en el juego todavía, cuenta como 1" },
+  ];
   const TILE_GROUPS = [
     { id: "basic", title: "Básico", open: true, fields: [
       { path: "name", label: "Nombre", kind: "text" },
@@ -93,15 +109,19 @@
       { path: "growth.maxHeight", label: "Altura máx.", kind: "number", hint: "0 = hasta topar" },
       { path: "growth.into", label: "Se convierte en", kind: "text", hint: "revertir" },
       { path: "growth.days", label: "Días por paso", kind: "range", hint: ["mín", "máx"] },
-      { path: "growth.light", label: "Luz (0–1)", kind: "range", hint: ["mín", "máx"] },
-      { path: "growth.climate.temperature", label: "Temperatura", kind: "range", hint: ["mín", "máx"] },
-      { path: "growth.climate.humidity", label: "Humedad", kind: "range", hint: ["mín", "máx"] },
+      { path: "growth.light", label: "Luz (0–1)", kind: "range", hint: ["mín", "máx"], title: "Forma antigua: mejor en «Condiciones: crecer»" },
+      { path: "growth.climate.temperature", label: "Temperatura", kind: "range", hint: ["mín", "máx"], title: "Forma antigua: mejor en «Condiciones: crecer»" },
+      { path: "growth.climate.humidity", label: "Humedad", kind: "range", hint: ["mín", "máx"], title: "Forma antigua: mejor en «Condiciones: crecer»" },
       { path: "growth.nearWater", label: "Agua a ≤ celdas", kind: "number" },
       { path: "growth.waterBoost", label: "Acelera con agua ×", kind: "number" },
       { path: "growth.fertilizer", label: "Abonos", kind: "list", hint: "ids de items" },
       { path: "growth.unlessPlanted", label: "No revierte si tiene planta", kind: "check", def: false },
       { path: "growth.unlessWater", label: "No revierte con agua a ≤", kind: "number" },
     ] },
+    { id: "cond-place", title: "Condiciones: colocar", fields: conditionFields("place") },
+    { id: "cond-spawn", title: "Condiciones: generar", fields: conditionFields("spawn") },
+    { id: "cond-grow", title: "Condiciones: crecer", fields: conditionFields("grow") },
+    { id: "cond-work", title: "Condiciones: funcionar", fields: conditionFields("work") },
     { id: "station", title: "Estación y almacén", fields: [
       { path: "interactable", label: "Se puede usar (clic)", kind: "check", def: false },
       { path: "stationType", label: "Estación", kind: "select", options: ["", "workbench", "furnace", "crucible", "cauldron", "campfire", "engraving_table", "scribe_table", "smithing_table", "storage"], free: true },
@@ -1811,6 +1831,33 @@
           };
           a.onchange = write; b.onchange = write;
           return field(h("div", { class: "at-pair" }, a, b));
+        }
+        case "levels": {
+          // Tiles, not 0–1: one number means "at least" in the game, so a lone minimum is written as a number; a lone
+          // maximum starts at 0, the bottom of the world.
+          const pair = Array.isArray(current) ? current : typeof current === "number" ? [current] : [];
+          const a = textInput(pair[0], f.hint?.[0], null, "number"), b = textInput(pair[1], f.hint?.[1], null, "number");
+          const write = () => {
+            const x = num(a.value), y = num(b.value);
+            commit(x === undefined && y === undefined ? undefined : y === undefined ? Math.round(x) : [Math.round(x ?? 0), Math.round(y)]);
+          };
+          a.onchange = write; b.onchange = write;
+          return field(h("div", { class: "at-pair" }, a, b));
+        }
+        case "seasons": {
+          // A list in the file means "only these" (the rest 0); the editor always writes the speed form, leaving out 1.
+          const names = [["spring", "Prim."], ["summer", "Ver."], ["autumn", "Otoño"], ["winter", "Inv."]];
+          const rateOf = (key) => (Array.isArray(current)
+            ? (current.map((s) => String(s).toLowerCase()).includes(key) || (key === "autumn" && current.includes("fall")) ? undefined : 0)
+            : current && typeof current === "object" ? current[key] : undefined);
+          const ins = names.map(([key, label]) => textInput(rateOf(key), label, null, "number"));
+          const write = () => {
+            const out = {};
+            names.forEach(([key], i) => { const v = num(ins[i].value); if (v !== undefined && v !== 1) out[key] = Math.max(0, v); });
+            commit(Object.keys(out).length ? out : undefined);
+          };
+          for (const el of ins) el.onchange = write;
+          return field(h("div", { class: "at-quad" }, ...ins), "wide");
         }
         case "vec3": {
           const v = Array.isArray(current) ? current : [];
