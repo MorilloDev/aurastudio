@@ -1274,6 +1274,7 @@
       if (this.tile && this.#docOf(this.tile)) this.panel.append(this.#tileSection(this.tile).el);
       else this.tile = null;
       this.panel.append(this.#reviewSection().el);
+      this.panel.append(this.#missingItemsSection().el);
       this.panel.scrollTop = top;
       this.#renderBanner();
     }
@@ -2005,6 +2006,95 @@
         else if (s.partial) out.push([`${T.tileLabel(tile)}: ${s.partial} px teñidos a medias`, s.cells]);
       }
       return out;
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Tiles without an item: every tile a player could hold but no TileItem places. Global (all files), not per sheet.
+
+    /**
+     * { missing: [{ tile, doc }], skipped } — tiles of every tile file that no item places. Skipped: air, and the tiles
+     * only reached by growing (a later stage, a column's middle or top): the seed or the base places those.
+     */
+    #tilesWithoutItem() {
+      const tileDocs = this.docs.filter((d) => !T.isItemDoc(d) && d.root);
+      const itemDocs = this.docs.filter((d) => T.isItemDoc(d) && d.root);
+
+      // What items place, as the game resolves "tile": an id (bare or qualified) or, during migration, a display name.
+      const placed = new Set();
+      for (const d of itemDocs) for (const it of d.root.tiles) {
+        if (!it || it.type !== "TileItem") continue;
+        const key = String(it.tile ?? it.name ?? "").trim();
+        if (!key) continue;
+        placed.add(key.includes(":") ? key : `${T.NAMESPACE ?? "aura"}:${key}`);
+        placed.add("name:" + key.toLowerCase());
+      }
+
+      const grown = new Set();
+      for (const d of tileDocs) for (const t of d.root.tiles) {
+        const g = t?.growth;
+        if (!g) continue;
+        for (const k of [g.next, g.middle, g.top]) if (k) grown.add(k.includes(":") ? k : `${T.NAMESPACE ?? "aura"}:${k}`);
+      }
+
+      const missing = [];
+      let skipped = 0;
+      for (const d of tileDocs) for (const t of d.root.tiles) {
+        if (!t) continue;
+        const id = T.tileId(t);
+        if (placed.has(id) || placed.has("name:" + String(t.name ?? "").toLowerCase())) continue;
+        if (t.type === "air" || grown.has(id)) { skipped++; continue; }
+        missing.push({ tile: t, doc: d, id });
+      }
+      return { missing, skipped, target: itemDocs.find((d) => d.name.toLowerCase() === "placeables.json") ?? null };
+    }
+
+    #missingItemsSection() {
+      const { missing, skipped, target } = this.#tilesWithoutItem();
+      const chosen = new Set(missing.map((m) => m.id));
+      const rows = missing.map((m) => {
+        const box = h("input", { type: "checkbox", checked: true, onchange: (e) => { if (e.target.checked) chosen.add(m.id); else chosen.delete(m.id); } });
+        return h("label", { class: "field check at-missing", title: `${m.id} · ${m.doc.name}` }, box,
+          h("span", { class: "grow" }, T.tileLabel(m.tile)), h("span", { class: "faint" }, m.doc.name));
+      });
+      const create = () => {
+        if (!target) { this.studio.toast("No hay Data/Items/placeables.json donde crearlos.", { kind: "warn" }); return; }
+        const picked = missing.filter((m) => chosen.has(m.id));
+        if (!picked.length) return;
+        const ids = new Set(this.docs.filter((d) => T.isItemDoc(d) && d.root).flatMap((d) => d.root.tiles.filter(Boolean).map((it) => T.tileId(it))));
+        const clashes = [];
+        const items = [];
+        for (const m of picked) {
+          const path = m.id.split(":").pop();
+          // An item already uses that id for something else: left for a hand-made name instead of guessing one.
+          if (ids.has(m.id)) { clashes.push(m.id); continue; }
+          items.push({
+            id: path,
+            name: m.tile.name ?? path,
+            type: "TileItem",
+            maxStack: 256,
+            tileType: m.tile.type ?? m.doc.root.category ?? "solid",
+            tile: path,
+          });
+        }
+        if (items.length) {
+          const list = target.root.tiles;
+          this.#run(`${items.length} item(s) de tile en placeables.json`,
+            () => list.push(...items),
+            () => list.splice(list.length - items.length, items.length));
+          this.studio.setStatus(`Creados ${items.length} item(s) en placeables.json. Guarda para escribirlo (Ctrl+S).`, "ok");
+        }
+        if (clashes.length) this.studio.toast(`${clashes.length} no se crearon: ya hay un item con ese id.`, { kind: "warn", detail: clashes.join(", ") });
+        this.#renderPanel();
+      };
+      return section({ id: "at-missing", title: "Tiles sin item", extra: missing.length ? String(missing.length) : "todos tienen", collapsed: !missing.length },
+        missing.length
+          ? [h("p", { class: "note" }, "Tiles que ningún item coloca. Se saltan el aire y las etapas que solo se alcanzan creciendo" + (skipped ? ` (${skipped})` : "") + "."),
+            h("div", { class: "row" },
+              h("button", { onclick: () => { for (const m of missing) chosen.add(m.id); this.panel.querySelectorAll(".at-missing input").forEach((c) => { c.checked = true; }); } }, "Todos"),
+              h("button", { onclick: () => { chosen.clear(); this.panel.querySelectorAll(".at-missing input").forEach((c) => { c.checked = false; }); } }, "Ninguno")),
+            h("div", { class: "at-missing-list" }, rows),
+            h("button", { class: "primary", onclick: create, disabled: !target, title: target ? "" : "Falta Data/Items/placeables.json" }, "Crear los marcados en placeables.json")]
+          : h("p", { class: "note" }, "Cada tile tiene un item que lo coloca" + (skipped ? ` (sin contar ${skipped} etapas o aire).` : ".")));
     }
 
     #reviewSection() {
