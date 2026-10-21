@@ -31,11 +31,13 @@
     back: true,
     combos: false,
     frontSide: "left",          // which camera face the game's "front" art looks at
+    iso: { x: 0, y: 0, z: 0 },  // isometric rotation of the whole piece, quarter turns about its own axes
   };
   const mergePiece = (p = {}) => ({
     ...PIECE_DEFAULTS, ...p,
     params: { ...PIECE_DEFAULTS.params, ...(p.params || {}) },
     states: { ...PIECE_DEFAULTS.states, ...(p.states || {}) },
+    iso: { ...PIECE_DEFAULTS.iso, ...(p.iso || {}) },
   });
 
   // Option keys each panel section owns, for its own reset button.
@@ -129,7 +131,7 @@
       });
       this.cellInput = h("input", { type: "number", min: 0, max: 1024, value: this.cellSize, title: "0 = la imagen entera es una cara",
         onchange: () => { this.cellSize = Math.max(0, Number(this.cellInput.value) || 0); this.#save(); this.#drawPicker(); this.#schedule(); } });
-      this.rotSel = select({ label: "Girar", value: "0", options: [["0", "0°"], ["90", "90°"], ["180", "180°"], ["270", "270°"]],
+      this.rotSel = select({ label: "Girar textura", value: "0", options: [["0", "0°"], ["90", "90°"], ["180", "180°"], ["270", "270°"]],
         onChange: (v) => this.#forSlots((s) => { s.rot = Number(v); }) });
       this.flipChk = checkbox({ label: "Espejo", value: false, onChange: (v) => this.#forSlots((s) => { s.flip = v; }) });
       this.pickerCanvas = h("canvas", { class: "bk-picker", onclick: (e) => this.#pickCell(e) });
@@ -207,6 +209,20 @@
       return checkbox({ label, value: get(), title, onChange: (v) => this.#setPiece(() => put(v)) }).el;
     }
 
+    /** Rotación isométrica: the whole piece turned on its own axes, like a 3D model — not the textures (that is «Girar
+     *  textura» on each face). */
+    #isoControls() {
+      const turns = [["0", "0°"], ["1", "90°"], ["2", "180°"], ["3", "270°"]];
+      const axis = (key, label, title) => select({ label, value: String(this.piece.iso[key] | 0), options: turns, title,
+        onChange: (v) => { this.#resetPreview(); this.#setPiece((p) => { p.iso = { ...p.iso, [key]: Number(v) }; }); } }).el;
+      return h("div", { class: "bk-iso" },
+        h("div", { class: "at-sub" }, "Rotación isométrica ", h("span", { class: "faint" }, "(todo el tile)")),
+        h("div", { class: "pair3" },
+          axis("x", "Eje X", "Vuelca la pieza hacia delante o atrás (de izquierda a derecha como eje)"),
+          axis("y", "Eje vertical", "Gira la pieza sobre sí misma, mirando a otro lado"),
+          axis("z", "Eje Z", "Vuelca la pieza hacia un lado (de delante a atrás como eje)")));
+    }
+
     /** The small ↺ in a section header: puts only that section back to its defaults. */
     #sectionReset(run) {
       return h("span", { class: "bk-reset", role: "button", tabindex: 0, title: "Restablecer esta sección",
@@ -260,9 +276,10 @@
         }) },
         shapeSel.el, ...params,
         this.#slider("Resolución", "res", 16, 64, 16, "Cubitos por lado del bloque: 32 = uno cada 2 px de un sprite de 64; 64 = uno por pixel (bordes y formas más finos)"),
+        this.#isoControls(),
         this.#choice("Texturas", "texMode", [["auto", "Auto"], ["follow", "Giran"], ["world", "Fijas"]]),
         this.#choice("Ajuste", "uvMode", [["world", "Mundo"], ["fit", "Estirar"]]),
-        h("p", { class: "note" }, h("b", null, "Auto:"), " la textura gira con la pieza solo en «horizontal» (troncos tumbados). ",
+        h("p", { class: "note" }, h("b", null, "Auto:"), " la textura gira con la pieza en «horizontal» (troncos tumbados) y con la rotación isométrica. ",
           h("b", null, "Mundo:"), " el lado de una losa muestra media textura, como Minecraft; ", h("b", null, "Estirar"), " la aplasta entera."));
 
       // Variants: which sprites the art map gets.
@@ -293,7 +310,8 @@
         h("div", { class: "bk-zones" },
           this.#check("Atrás izq.", "mask.zones.backLeft"), this.#check("Atrás der.", "mask.zones.backRight"),
           this.#check("Delante izq.", "mask.zones.frontLeft"), this.#check("Delante der.", "mask.zones.frontRight"),
-          this.#check("Abajo izq.", "mask.zones.bottomLeft"), this.#check("Abajo der.", "mask.zones.bottomRight")),
+          this.#check("Abajo izq.", "mask.zones.bottomLeft"), this.#check("Abajo der.", "mask.zones.bottomRight"),
+          this.#check("Lado izq.", "mask.zones.sideLeft"), this.#check("Lado der.", "mask.zones.sideRight")),
         this.#choice("Forma", "mask.style", [["spikes", "Fibras"], ["waves", "Ondas"], ["blocks", "Dientes"]]),
         this.#slider("Largo", "mask.length", 0, 10, 1, "En cubitos (con resolución 64, un cubito ≈ un pixel)"),
         this.#slider("Densidad", "mask.density", 0, 1, 0.01, "Cuánto del borde sale"),
