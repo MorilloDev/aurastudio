@@ -31,13 +31,14 @@
     back: true,
     combos: false,
     frontSide: "left",          // which camera face the game's "front" art looks at
-    iso: { x: 0, y: 0, z: 0 },  // isometric rotation of the whole piece, quarter turns about its own axes
+    rot3d: { x: 0, y: 0, z: 0 },  // the whole tile turned like a 3D model, degrees about the isometric axes
   };
-  const mergePiece = (p = {}) => ({
+  // "iso" (quarter turns, an earlier version) is dropped from saved settings: rot3d replaces it.
+  const mergePiece = ({ iso, ...p } = {}) => ({
     ...PIECE_DEFAULTS, ...p,
     params: { ...PIECE_DEFAULTS.params, ...(p.params || {}) },
     states: { ...PIECE_DEFAULTS.states, ...(p.states || {}) },
-    iso: { ...PIECE_DEFAULTS.iso, ...(p.iso || {}) },
+    rot3d: { ...PIECE_DEFAULTS.rot3d, ...(p.rot3d || {}) },
   });
 
   // Option keys each panel section owns, for its own reset button.
@@ -131,9 +132,17 @@
       });
       this.cellInput = h("input", { type: "number", min: 0, max: 1024, value: this.cellSize, title: "0 = la imagen entera es una cara",
         onchange: () => { this.cellSize = Math.max(0, Number(this.cellInput.value) || 0); this.#save(); this.#drawPicker(); this.#schedule(); } });
-      this.rotSel = select({ label: "Girar textura", value: "0", options: [["0", "0°"], ["90", "90°"], ["180", "180°"], ["270", "270°"]],
-        onChange: (v) => this.#forSlots((s) => { s.rot = Number(v); }) });
-      this.flipChk = checkbox({ label: "Espejo", value: false, onChange: (v) => this.#forSlots((s) => { s.flip = v; }) });
+      // One row per face, so each face's texture is turned on its own; «Cara a asignar» only decides where a click goes.
+      this.faceRot = {};
+      const faceRows = SLOTS.map(([k, t, c]) => {
+        const rot = select({ label: t, value: String(this.slots[k].rot),
+          options: [["0", "0°"], ["90", "90°"], ["180", "180°"], ["270", "270°"]],
+          title: "Gira la textura dentro de esta cara (no el tile)",
+          onChange: (v) => { this.slots[k].rot = Number(v); this.#schedule(); } });
+        const flip = checkbox({ label: "Espejo", value: this.slots[k].flip, onChange: (v) => { this.slots[k].flip = v; this.#schedule(); } });
+        this.faceRot[k] = { rot, flip };
+        return h("div", { class: "pair2 bk-facerow", style: { borderLeft: "3px solid " + c, paddingLeft: "6px" } }, rot.el, flip.el);
+      });
       this.pickerCanvas = h("canvas", { class: "bk-picker", onclick: (e) => this.#pickCell(e) });
       this.slotInfo = h("div", { class: "bk-slotinfo" });
       const left = h("div", { class: "bk-list" },
@@ -146,7 +155,8 @@
           this.slotSeg.el,
           h("div", { class: "bk-picker-wrap scroll" }, this.pickerCanvas),
           this.slotInfo,
-          h("div", { class: "pair2" }, this.rotSel.el, this.flipChk.el)));
+          h("div", { class: "at-sub" }, "Orientación de cada cara"),
+          ...faceRows));
 
       // Centre: the preview, its maps and the variants.
       this.viewSeg = segmented({ label: "Vista", value: this.view, options: VIEWS, onChange: (v) => { this.view = v; this.#drawPreview(); this.#drawStrip(); } });
@@ -209,18 +219,16 @@
       return checkbox({ label, value: get(), title, onChange: (v) => this.#setPiece(() => put(v)) }).el;
     }
 
-    /** Rotación isométrica: the whole piece turned on its own axes, like a 3D model — not the textures (that is «Girar
-     *  textura» on each face). */
-    #isoControls() {
-      const turns = [["0", "0°"], ["1", "90°"], ["2", "180°"], ["3", "270°"]];
-      const axis = (key, label, title) => select({ label, value: String(this.piece.iso[key] | 0), options: turns, title,
-        onChange: (v) => { this.#resetPreview(); this.#setPiece((p) => { p.iso = { ...p.iso, [key]: Number(v) }; }); } }).el;
+    /** Rotación 3D: the whole tile turned like a model in a 3D editor (the engine turns the camera rays, so masks, hairs,
+     *  AO and textures turn with it). Per-face texture orientation is a separate thing: «Orientación de cada cara». */
+    #rot3dControls() {
+      const axis = (key, label, title) => slider({ label, min: -180, max: 180, step: 1, value: this.piece.rot3d[key] ?? 0, defaultValue: 0,
+        unit: "°", title, onInput: (v) => this.#setPiece((p) => { p.rot3d = { ...p.rot3d, [key]: v }; }) }).el;
       return h("div", { class: "bk-iso" },
-        h("div", { class: "at-sub" }, "Rotación isométrica ", h("span", { class: "faint" }, "(todo el tile)")),
-        h("div", { class: "pair3" },
-          axis("x", "Eje X", "Vuelca la pieza hacia delante o atrás (de izquierda a derecha como eje)"),
-          axis("y", "Eje vertical", "Gira la pieza sobre sí misma, mirando a otro lado"),
-          axis("z", "Eje Z", "Vuelca la pieza hacia un lado (de delante a atrás como eje)")));
+        h("div", { class: "at-sub" }, "Rotación 3D ", h("span", { class: "faint" }, "(todo el tile, en sus ejes isométricos)")),
+        axis("x", "X", "Gira alrededor del eje hacia el que mira la cara derecha"),
+        axis("y", "Y", "Gira alrededor del eje vertical"),
+        axis("z", "Z", "Gira alrededor del eje hacia el que mira la cara izquierda"));
     }
 
     /** The small ↺ in a section header: puts only that section back to its defaults. */
@@ -276,10 +284,10 @@
         }) },
         shapeSel.el, ...params,
         this.#slider("Resolución", "res", 16, 64, 16, "Cubitos por lado del bloque: 32 = uno cada 2 px de un sprite de 64; 64 = uno por pixel (bordes y formas más finos)"),
-        this.#isoControls(),
+        this.#rot3dControls(),
         this.#choice("Texturas", "texMode", [["auto", "Auto"], ["follow", "Giran"], ["world", "Fijas"]]),
         this.#choice("Ajuste", "uvMode", [["world", "Mundo"], ["fit", "Estirar"]]),
-        h("p", { class: "note" }, h("b", null, "Auto:"), " la textura gira con la pieza en «horizontal» (troncos tumbados) y con la rotación isométrica. ",
+        h("p", { class: "note" }, h("b", null, "Auto:"), " la textura gira con la pieza en «horizontal» (troncos tumbados). La rotación 3D siempre lleva las texturas con ella. ",
           h("b", null, "Mundo:"), " el lado de una losa muestra media textura, como Minecraft; ", h("b", null, "Estirar"), " la aplasta entera."));
 
       // Variants: which sprites the art map gets.
@@ -517,16 +525,11 @@
       this.#schedule();
     }
 
-    #forSlots(fn) {
-      const targets = this.activeSlot === "all" ? SLOTS.map(([k]) => k) : [this.activeSlot];
-      for (const k of targets) fn(this.slots[k]);
-      this.#schedule();
-    }
-
     #updateSlotControls() {
-      const s = this.slots[this.activeSlot === "all" ? "top" : this.activeSlot];
-      this.rotSel.set(String(s.rot));
-      this.flipChk.set(s.flip);
+      for (const [k] of SLOTS) {
+        this.faceRot[k].rot.set(String(this.slots[k].rot));
+        this.faceRot[k].flip.set(this.slots[k].flip);
+      }
       this.slotInfo.replaceChildren(...SLOTS.map(([k, t, c]) => {
         const sl = this.slots[k];
         const img = sl.key ? this.images.get(sl.key) : null;
@@ -595,6 +598,7 @@
     #variants() {
       try {
         const list = Sh.variants(this.piece);
+        for (const v of list) v.rot3d = this.piece.rot3d;
         if (this.piece.frontSide === "right") {
           const turn = { front: "right", back: "left", right: "back", left: "front" };
           for (const v of list) v.facing = turn[v.facing];
