@@ -41,13 +41,24 @@
   };
   const FACING_LABEL = { front: "Frente", right: "Derecha", back: "Atrás", left: "Izquierda" };
 
+  // Isometric rotation of the whole piece, in quarter turns about its own axes (local x right, y up, z depth), before
+  // its state and facing: the piece is turned like a 3D model — a stair on its side, a slab standing up the other way —
+  // and, when textures follow, each face takes its texture along.
+  const ROT_X = [[1, 0, 0], [0, 0, -1], [0, 1, 0]];
+  const ROT_Y = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]];
+  const ROT_Z = [[0, -1, 0], [1, 0, 0], [0, 0, 1]];
+  const power = (R, n) => { let out = I; for (let s = 0; s < (n & 3); s++) out = mul(R, out); return out; };
+  /** iso: { x, y, z } quarter turns (missing = 0). */
+  const isoMatrix = (iso) => mul(power(ROT_Z, iso?.z | 0), mul(power(ROT_Y, iso?.y | 0), power(ROT_X, iso?.x | 0)));
+  const hasIso = (iso) => !!iso && ((iso.x | 0) & 3 || (iso.y | 0) & 3 || (iso.z | 0) & 3) !== 0;
+
   /**
    * Local → world mapping of one variant. toWorld / toLocal take unit coordinates (0..1 on every axis);
    * dirToLocal turns a world direction index into the local one, for picking a voxel face's texture.
    * texFollow false keeps textures fixed to the world (top texture always on top) whatever the state or facing.
    */
-  function transform(state, facing, texFollow = true) {
-    const M = mul(FACING[facing] ?? I, mul(BASE, STATE[state] ?? I));
+  function transform(state, facing, texFollow = true, iso = null) {
+    const M = mul(FACING[facing] ?? I, mul(BASE, mul(STATE[state] ?? I, isoMatrix(iso))));
     const Mi = transpose(M);
     // Texture frame: the piece's own frame, or the plain front-facing one when textures stay put.
     const T = texFollow ? M : BASE;
@@ -59,6 +70,11 @@
       toLocal: (p) => back(apply(Mi, centred(p))),
       texLocal: (p) => back(apply(Ti, centred(p))),
       texDir: (wd) => dirIndex(apply(Ti, DIRS[wd])),
+      // World rotation taking the upright piece's texture frame to this one's: identity when textures stay put. Hairs
+      // use it so they grow from the face that carries the top texture, wherever the piece has turned it.
+      texRot: mul(T, transpose(BASE)),
+      // The same as a direction-index map (world index → world index).
+      texDirWorld: (wd) => dirIndex(apply(mul(T, transpose(BASE)), DIRS[wd])),
     };
   }
 
@@ -259,12 +275,16 @@
       return out;
     }
     const boxes = def.boxes(p);
+    const iso = hasIso(opts.iso) ? { x: opts.iso.x | 0, y: opts.iso.y | 0, z: opts.iso.z | 0 } : null;
     for (const st of def.states) {
       if (!(opts.states?.[st] ?? st === "default")) continue;
-      out.push({ id: st + "_front", label: STATE_LABEL[st] + " · frente", boxes, state: st, facing: "front", art: { key: st, side: "front" } });
-      if (opts.back !== false) {
-        out.push({ id: st + "_back", label: STATE_LABEL[st] + " · atrás", boxes, state: st, facing: "back", art: { key: st, side: "back" } });
-      }
+      const front = { id: st + "_front", label: STATE_LABEL[st] + " · frente", boxes, state: st, facing: "front", iso, art: { key: st, side: "front" } };
+      const back = { id: st + "_back", label: STATE_LABEL[st] + " · atrás", boxes, state: st, facing: "back", iso, art: { key: st, side: "back" } };
+      if (opts.back === false) { out.push(front); continue; }
+      // The project's sheets keep a vertical slab's far half before its near half (back, then front); every other state
+      // reads front first. Save order is sheet order, so this is where that convention lives.
+      if (st === "vertical") out.push(back, front);
+      else out.push(front, back);
     }
     return out;
   }
@@ -289,6 +309,6 @@
 
   Aura.blockShapes = {
     SHAPES, PARAM_DEFAULTS, STATE_LABEL, FACING_LABEL, DIRS,
-    transform, boxesToWorld, variants, artSnippet, parseCustom, turnLocal,
+    transform, boxesToWorld, variants, artSnippet, parseCustom, turnLocal, isoMatrix, hasIso,
   };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));
