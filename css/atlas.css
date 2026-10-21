@@ -83,3 +83,10 @@
 .at-missing-list { max-height: 260px; overflow: auto; margin: 4px 0 6px; }
 .at-missing { display: flex; gap: 6px; align-items: center; margin: 0; padding: 2px 0; }
 .at-missing .faint { font-size: 11px; }
+
+/* «Poner una imagen»: the import options under the selection. */
+.at-import { margin: 8px 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.at-import summary { cursor: pointer; color: var(--text); font-weight: 600; }
+.at-import .row { display: flex; gap: 6px; margin: 8px 0 4px; }
+.at-import .row button { flex: 1; }
+.at-import .field { margin-bottom: 4px; }
