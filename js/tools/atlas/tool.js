@@ -43,6 +43,90 @@
     { key: "luminosity", label: "Luz", kind: "number", hint: "0" },
   ];
 
+  // Every key TileInfo reads from a tile (TileData.ParseTileList), grouped like the game thinks of them. "path" is the key,
+  // dotted for objects ("placement.on"); a value equal to "def" is left out of the file, as the game falls back to it.
+  // kinds: text · number · check · select · tags · list (strings) · color · range ([a, b]) · vec3 · attach · drops ·
+  // collision · json (the rare structured keys: layers, flow, colour variants, snowfall).
+  const KNOWN_TAGS = ["fragile", "stackable", "transparent", "see_through", "no_collision", "liquid", "requires_solid_ground",
+    "leaf", "log", "slab", "flammable", "biome_tinted", "herb", "wood", "snow", "flicker", "needs_pickaxe", "needs_axe",
+    "needs_shovel", "gravity", "anchor", "heat", "danger"];
+  const TILE_GROUPS = [
+    { id: "basic", title: "Básico", open: true, fields: [
+      { path: "name", label: "Nombre", kind: "text" },
+      { path: "id", label: "Id", kind: "text", hint: "del nombre" },
+      { path: "type", label: "Tipo", kind: "select", options: ["", "solid", "liquid", "air"], free: true, title: "«liquid» fluye; el resto es libre (se usa para polvo y sonidos)" },
+      { path: "hardness", label: "Dureza", kind: "number", hint: "-1 = irrompible", def: -1 },
+      { path: "harvestTier", label: "Tier mínimo", kind: "number", hint: "0", def: 0, title: "Tier de herramienta necesario para que suelte sus drops" },
+      { path: "tags", label: "Etiquetas", kind: "tags" },
+      { path: "drops", label: "Suelta", kind: "drops" },
+    ] },
+    { id: "light", title: "Luz", fields: [
+      { path: "luminosity", label: "Luz", kind: "number", hint: "0", def: 0 },
+      { path: "lightColor", label: "Color", kind: "color" },
+      { path: "lightRadius", label: "Radio", kind: "number", hint: "400", def: 400 },
+      { path: "lightVerticalFalloff", label: "Caída vertical", kind: "number", hint: "4", def: 4 },
+      { path: "lightOpacity", label: "Opacidad a luz", kind: "number", hint: "auto", title: "Cuánto frena la luz de antorchas (0–15). Vacío = según el tile" },
+      { path: "sunOpacity", label: "Opacidad al sol", kind: "number", hint: "auto", title: "Cuánto frena el sol (0–15). Vacío = según el tile" },
+    ] },
+    { id: "shape", title: "Forma y dibujo", fields: [
+      { path: "collision", label: "Colisión", kind: "collision" },
+      { path: "rotatable", label: "Se puede girar (R)", kind: "check", def: false },
+      { path: "rotatableVertical", label: "Se puede poner boca abajo", kind: "check", def: false },
+      { path: "shaderEffect", label: "Efecto", kind: "select", options: ["", "none", "wind", "wind_tall", "water", "glass"] },
+      { path: "sheetId", label: "Hoja propia", kind: "text", hint: "la del archivo", title: "Atlas de este tile si no es el de su archivo" },
+      { path: "pathMalus", label: "Coste al pisar (IA)", kind: "number", hint: "0", def: 0 },
+    ] },
+    { id: "place", title: "Colocación y hábitat", fields: [
+      { path: "placement.attach", label: "Se apoya en", kind: "attach" },
+      { path: "placement.on", label: "Solo sobre", kind: "list", hint: "ids o #tags; vacío = cualquier sólido" },
+      { path: "placement.notOn", label: "Nunca sobre", kind: "list", hint: "ids o #tags" },
+      { path: "placement.dropsWithoutSupport", label: "Se rompe si pierde el apoyo", kind: "check", def: true },
+      { path: "habitat", label: "Hábitat", kind: "select", options: ["", "land", "submerged", "emergent", "floating"] },
+      { path: "spawnOn", label: "Aparece sobre", kind: "list", hint: "ids o #tags (generación)" },
+      { path: "tillsTo", label: "La azada lo convierte en", kind: "text", hint: "id de tile" },
+    ] },
+    { id: "growth", title: "Crecimiento", fields: [
+      { path: "growth.type", label: "Tipo", kind: "select", options: ["", "column", "revert"], labels: { "": "por etapas", column: "columna", revert: "revertir" } },
+      { path: "growth.next", label: "Siguiente etapa", kind: "text", hint: "id de tile" },
+      { path: "growth.middle", label: "Tile del medio", kind: "text", hint: "columna" },
+      { path: "growth.top", label: "Tile de arriba", kind: "text", hint: "columna" },
+      { path: "growth.maxHeight", label: "Altura máx.", kind: "number", hint: "0 = hasta topar" },
+      { path: "growth.into", label: "Se convierte en", kind: "text", hint: "revertir" },
+      { path: "growth.days", label: "Días por paso", kind: "range", hint: ["mín", "máx"] },
+      { path: "growth.light", label: "Luz (0–1)", kind: "range", hint: ["mín", "máx"] },
+      { path: "growth.climate.temperature", label: "Temperatura", kind: "range", hint: ["mín", "máx"] },
+      { path: "growth.climate.humidity", label: "Humedad", kind: "range", hint: ["mín", "máx"] },
+      { path: "growth.nearWater", label: "Agua a ≤ celdas", kind: "number" },
+      { path: "growth.waterBoost", label: "Acelera con agua ×", kind: "number" },
+      { path: "growth.fertilizer", label: "Abonos", kind: "list", hint: "ids de items" },
+      { path: "growth.unlessPlanted", label: "No revierte si tiene planta", kind: "check", def: false },
+      { path: "growth.unlessWater", label: "No revierte con agua a ≤", kind: "number" },
+    ] },
+    { id: "station", title: "Estación y almacén", fields: [
+      { path: "interactable", label: "Se puede usar (clic)", kind: "check", def: false },
+      { path: "stationType", label: "Estación", kind: "select", options: ["", "workbench", "furnace", "crucible", "cauldron", "campfire", "engraving_table", "scribe_table", "smithing_table", "storage"], free: true },
+      { path: "stationSlots", label: "Ranuras", kind: "number", def: 0 },
+      { path: "openSound", label: "Sonido al abrir", kind: "text", hint: "id de sonido" },
+      { path: "closeSound", label: "Sonido al cerrar", kind: "text", hint: "id de sonido" },
+      { path: "storage.columns", label: "Almacén: columnas", kind: "number" },
+      { path: "storage.rows", label: "Almacén: filas", kind: "number" },
+      { path: "storage.double", label: "Cofre doble", kind: "double" },
+    ] },
+    { id: "emitter", title: "Emisor (llama, sonido)", fields: [
+      { path: "emitter.effect", label: "Efecto", kind: "text", hint: "sprite_effects.json" },
+      { path: "emitter.sound", label: "Sonido en bucle", kind: "text", hint: "id de sonido" },
+      { path: "emitter.default", label: "Punto", kind: "vec3" },
+      { path: "emitter.wall", label: "Punto en pared", kind: "vec3" },
+    ] },
+    { id: "more", title: "Avanzado", fields: [
+      { path: "layers", label: "Capas (nieve…)", kind: "json", title: "[{ \"name\", \"height\", \"art\", \"drops\" }, …]" },
+      { path: "snowfall", label: "Nevada", kind: "json" },
+      { path: "flow", label: "Flujos (líquidos)", kind: "json" },
+      { path: "colorVariants", label: "Variantes de color", kind: "json" },
+      { path: "allowedTiles", label: "allowedTiles (antiguo)", kind: "list", title: "Forma antigua de placement.on: muévelo allí" },
+    ] },
+  ];
+
   // The item keys every kind of item has; the rest (effects, damage, equipSlot…) is edited in the JSON box.
   const ITEM_FIELDS = [
     { key: "name", label: "Nombre", kind: "text" },
@@ -54,6 +138,8 @@
 
   // What "Nuevo item" writes: a stackable material, the most common kind of icon added to a sheet.
   const NEW_ITEM = { type: "MiscItem", maxStack: 64, itemType: "Material" };
+
+  const getPath = (obj, path) => path.split(".").reduce((o, k) => (o && typeof o === "object" ? o[k] : undefined), obj);
 
   function atlasTool() {
     return new AtlasTool();
@@ -1337,7 +1423,7 @@
     #tileSection(tile) {
       const doc = this.#docOf(tile);
       const isItem = T.isItemDoc(doc);
-      const fields = (isItem ? ITEM_FIELDS : FORM_FIELDS).map((f) => this.#formField(tile, f));
+      const fields = isItem ? ITEM_FIELDS.map((f) => this.#formField(tile, f)) : this.#tileGroups(tile);
 
       // The art: every state and side of the tile and its parts, with their cells. Built from the file's own sheet and
       // cell size (a spread of the root would drop the item file's hidden list and default sheet).
@@ -1397,6 +1483,188 @@
           h("button", { onclick: () => this.#openTile(tile, true), title: "Seleccionar sus celdas" }, "Ver celdas"),
           h("button", { class: "danger", onclick: () => this.#deleteTile(tile) }, "Quitar")));
     }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Tile inspector: every key the game reads, in groups. A group opens by itself when the tile uses any of its keys.
+
+    #tileGroups(tile) {
+      return TILE_GROUPS.map((g) => {
+        const used = g.fields.some((f) => getPath(tile, f.path) !== undefined);
+        const body = g.fields.map((f) => (f.path === "name" || f.path === "id"
+          ? this.#formField(tile, { key: f.path, label: f.label, kind: f.kind, hint: f.hint })
+          : this.#tileField(tile, f)));
+        return h("details", { class: "at-group", open: g.open || used || undefined },
+          h("summary", null, g.title, used && !g.open ? h("span", { class: "faint" }, " ●") : null), body);
+      });
+    }
+
+    // Writes one (possibly dotted) key. Objects emptied by the edit are removed, so the file never keeps "growth": {}.
+    #setPath(tile, path, value) {
+      const keys = path.split(".");
+      if (keys.length === 1) { this.#setField(tile, path, value); return; }
+      const root = structuredClone(tile[keys[0]] ?? {});
+      let node = root;
+      const trail = [root];
+      for (let i = 1; i < keys.length - 1; i++) {
+        node = node[keys[i]] = typeof node[keys[i]] === "object" && node[keys[i]] !== null ? node[keys[i]] : {};
+        trail.push(node);
+      }
+      if (value === undefined) delete node[keys[keys.length - 1]];
+      else node[keys[keys.length - 1]] = value;
+      for (let i = trail.length - 1; i > 0; i--) if (!Object.keys(trail[i]).length) delete trail[i - 1][keys[i]];
+      this.#setField(tile, keys[0], Object.keys(root).length ? root : undefined);
+    }
+
+    #tileField(tile, f) {
+      const current = getPath(tile, f.path);
+      const commit = (v) => this.#setPath(tile, f.path, v === f.def ? undefined : v);
+      const num = (text) => (text.trim() === "" ? undefined : Number(text));
+      const field = (input, extraClass) => h("div", { class: ["field", extraClass], title: f.title ?? "" }, h("label", null, f.label), input);
+      const textInput = (value, hint, onChange, type = "text") => {
+        const el = h("input", { type, value: value ?? "", placeholder: hint ?? "", spellcheck: false, step: "any" });
+        if (onChange) el.addEventListener("change", () => onChange(el.value));
+        return el;
+      };
+
+      switch (f.kind) {
+        case "check": {
+          const value = current ?? f.def ?? false;
+          return h("label", { class: "field check", title: f.title ?? "" },
+            h("input", { type: "checkbox", checked: !!value, onchange: (e) => commit(e.target.checked) }), h("span", null, f.label));
+        }
+        case "number":
+          return field(textInput(current, f.hint, (t) => commit(num(t)), "number"));
+        case "text":
+          return field(textInput(current, f.hint, (t) => commit(t.trim() || undefined)));
+        case "select": {
+          const opts = f.options.map((o) => [o, f.labels?.[o] ?? (o || "(por defecto)")]);
+          if (current !== undefined && !f.options.includes(current)) opts.push([String(current), String(current)]);
+          const sel = select({ options: opts, value: current === undefined ? "" : String(current), onChange: (v) => commit(v || undefined) }).input;
+          if (!f.free) return field(sel);
+          // Free selects: the list for the usual values, a text box for anything else a mod uses.
+          const other = textInput(f.options.includes(current ?? "") ? "" : current, "otro…", (t) => commit(t.trim() || undefined));
+          return field(h("div", { class: "at-pair" }, sel, other));
+        }
+        case "list":
+          return field(textInput(Array.isArray(current) ? current.join(", ") : "", f.hint,
+            (t) => commit(t.trim() ? t.split(",").map((x) => x.trim()).filter(Boolean) : undefined)));
+        case "color": {
+          const hex = typeof current === "string" ? current : "";
+          const picker = h("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(hex) ? hex : "#ffffff",
+            onchange: (e) => commit(e.target.value.toUpperCase()) });
+          const clearBtn = h("button", { class: "icon", title: "Sin color (luz blanca)", onclick: () => commit(undefined) }, "✕");
+          return field(h("div", { class: "at-pair" }, picker, h("span", { class: "faint mono" }, hex || "—"), clearBtn));
+        }
+        case "range": {
+          const pair = Array.isArray(current) ? current : [];
+          const a = textInput(pair[0], f.hint?.[0], null, "number"), b = textInput(pair[1], f.hint?.[1], null, "number");
+          const write = () => {
+            const x = num(a.value), y = num(b.value);
+            commit(x === undefined && y === undefined ? undefined : [x ?? y, y ?? x]);
+          };
+          a.onchange = write; b.onchange = write;
+          return field(h("div", { class: "at-pair" }, a, b));
+        }
+        case "vec3": {
+          const v = Array.isArray(current) ? current : [];
+          const ins = [0, 1, 2].map((i) => textInput(v[i], ["x", "y", "z"][i], null, "number"));
+          const write = () => {
+            const vals = ins.map((el) => num(el.value));
+            commit(vals.every((x) => x === undefined) ? undefined : vals.map((x) => x ?? 0.5));
+          };
+          for (const el of ins) el.onchange = write;
+          return field(h("div", { class: "at-trio" }, ...ins));
+        }
+        case "attach": {
+          const list = Array.isArray(current) ? current : ["floor", "wall"];
+          const box = (key, label) => h("label", { class: "check" },
+            h("input", { type: "checkbox", checked: list.includes(key), onchange: (e) => {
+              const next = ["floor", "wall"].filter((k) => (k === key ? e.target.checked : list.includes(k)));
+              if (!next.length) { this.studio.toast("Tiene que apoyarse en algo.", { kind: "warn" }); this.#renderPanel(); return; }
+              commit(next.length === 2 ? undefined : next);
+            } }), h("span", null, label));
+          return field(h("div", { class: "at-pair" }, box("floor", "suelo"), box("wall", "pared")));
+        }
+        case "tags": {
+          const tags = Array.isArray(current) ? current : [];
+          const lower = tags.map((t) => String(t).toLowerCase());
+          const chips = KNOWN_TAGS.map((t) => h("button", { class: ["at-chip", lower.includes(t) && "on"], title: t,
+            onclick: () => commit(lower.includes(t) ? (tags.filter((x) => String(x).toLowerCase() !== t).length ? tags.filter((x) => String(x).toLowerCase() !== t) : undefined) : [...tags, t]) }, t));
+          const extra = tags.filter((t) => !KNOWN_TAGS.includes(String(t).toLowerCase()));
+          const free = textInput(extra.join(", "), "otras, separadas por coma", (t) => {
+            const known = tags.filter((x) => KNOWN_TAGS.includes(String(x).toLowerCase()));
+            const next = [...known, ...t.split(",").map((x) => x.trim()).filter(Boolean)];
+            commit(next.length ? next : undefined);
+          });
+          return field(h("div", null, h("div", { class: "at-chips" }, chips), free), "wide");
+        }
+        case "drops":
+          return field(this.#dropsEditor(tile, current, commit), "wide");
+        case "collision": {
+          const mode = current === undefined ? "" : typeof current === "string" ? current : "boxes";
+          const area = h("textarea", { class: "at-raw small", rows: 3, spellcheck: false, hidden: mode !== "boxes",
+            value: mode === "boxes" ? JSON.stringify(current) : "[ { \"min\": [0, 0, 0], \"max\": [1, 0.5, 1] } ]" });
+          area.onchange = () => {
+            try { commit(JSON.parse(area.value)); } catch (err) { this.studio.toast("Cajas no válidas: " + err.message, { kind: "warn" }); }
+          };
+          const sel = select({ options: [["", "completa (por defecto)"], ["none", "ninguna"], ["boxes", "cajas…"]], value: mode === "full" ? "" : mode,
+            onChange: (v) => { if (v === "boxes") { area.hidden = false; area.onchange(); } else commit(v || undefined); } }).input;
+          return field(h("div", null, sel, area), "wide");
+        }
+        case "double": {
+          const mode = current === undefined ? "" : current === true ? "true" : typeof current === "string" ? "id" : "parts";
+          const idIn = textInput(typeof current === "string" ? current : "", "id del tile doble", (t) => commit(t.trim() || undefined));
+          idIn.hidden = mode !== "id";
+          const sel = select({ options: [["", "no"], ["true", "sí, mismo arte"], ["id", "otro tile…"], ...(mode === "parts" ? [["parts", "con partes (JSON)"]] : [])],
+            value: mode, onChange: (v) => {
+              if (v === "id") { idIn.hidden = false; idIn.focus(); return; }
+              if (v === "parts") return;
+              commit(v === "true" ? true : undefined);
+            } }).input;
+          return field(h("div", { class: "at-pair" }, sel, idIn));
+        }
+        case "json": {
+          const area = h("textarea", { class: "at-raw small", rows: current === undefined ? 2 : 5, spellcheck: false,
+            placeholder: "vacío = no tiene", value: current === undefined ? "" : JSON.stringify(current, null, 1) });
+          area.onchange = () => {
+            const text = area.value.trim();
+            if (!text) { commit(undefined); return; }
+            try { commit(JSON.parse(text)); } catch (err) { this.studio.toast(`${f.label}: JSON no válido (${err.message})`, { kind: "warn" }); }
+          };
+          return field(area, "wide");
+        }
+        default:
+          return null;
+      }
+    }
+
+    // What a tile leaves when broken: one row per item, with its chance and amount. The item list offers every item id
+    // the open item files declare.
+    #dropsEditor(tile, current, commit) {
+      const list = Array.isArray(current) ? current : [];
+      const listId = "at-items-" + (this.#dropsListSeq = (this.#dropsListSeq ?? 0) + 1);
+      const ids = [...new Set(this.docs.filter((d) => T.isItemDoc(d) && d.root).flatMap((d) => d.root.tiles.filter(Boolean).map((it) => it.id ?? T.deriveIdPath(it.name ?? ""))))].sort();
+      const dataList = h("datalist", { id: listId }, ids.map((id) => h("option", { value: id })));
+      const write = (next) => commit(next.length ? next : undefined);
+      const rows = list.map((d, i) => {
+        const set = (key, value) => write(list.map((x, j) => (j === i ? { ...x, [key]: value } : x)));
+        const item = h("input", { type: "text", value: d.item ?? "", list: listId, placeholder: "item", spellcheck: false });
+        item.onchange = () => set("item", item.value.trim());
+        const n = (key, value, hint) => {
+          const el = h("input", { type: "number", value: value ?? "", placeholder: hint, step: "any" });
+          el.onchange = () => set(key, el.value === "" ? undefined : Number(el.value));
+          return el;
+        };
+        return h("div", { class: "at-drop" }, item, n("chance", d.chance, "1"), n("minQty", d.minQty, "1"), n("maxQty", d.maxQty, "1"),
+          h("button", { class: "icon danger", title: "Quitar", onclick: () => write(list.filter((_, j) => j !== i)) }, "✕"));
+      });
+      return h("div", { class: "at-drops" },
+        list.length ? h("div", { class: "at-drop head faint" }, h("span", null, "item"), h("span", null, "prob."), h("span", null, "mín"), h("span", null, "máx"), h("span")) : null,
+        rows, dataList,
+        h("button", { onclick: () => write([...list, { item: "", chance: 1, minQty: 1, maxQty: 1 }]) }, "+ Añadir drop"));
+    }
+
+    #dropsListSeq = 0;
 
     #formField(tile, f) {
       const current = tile[f.key];
