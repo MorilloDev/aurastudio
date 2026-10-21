@@ -80,3 +80,6 @@
 .at-effect { display: grid; grid-template-columns: 1fr 56px 56px 26px; gap: 3px; align-items: center; }
 .at-effect input { min-height: 24px; padding: 2px 4px; }
 .at-group > summary .badge { margin-left: 6px; }
+.at-missing-list { max-height: 260px; overflow: auto; margin: 4px 0 6px; }
+.at-missing { display: flex; gap: 6px; align-items: center; margin: 0; padding: 2px 0; }
+.at-missing .faint { font-size: 11px; }
