@@ -136,7 +136,9 @@
       this.canvas.addEventListener("mousemove", (e) => this.#hoverClimate(e));
       this.canvas.addEventListener("click", (e) => this.#clickClimate(e));
       const stage = h("div", { class: "bm-stage" },
-        h("div", { class: "bm-toolbar" }, this.viewSeg.el, this.toolbarExtra, h("span", { class: "grow" }), this.undoBtn, this.redoBtn, this.saveBtn),
+        h("div", { class: "bm-toolbar" }, this.viewSeg.el, this.toolbarExtra, h("span", { class: "grow" }),
+          h("button", { title: "Añade a cada bioma las decoraciones que le tocan por hábitat, suelo y clima (se revisa antes)", onclick: () => this.#distributeAll() }, "Repartir"),
+          this.undoBtn, this.redoBtn, this.saveBtn),
         this.viewEl);
       this.panel = h("div", { class: "bm-panel scroll" });
       return h("div", { class: "bm" }, left, stage, this.panel);
@@ -180,6 +182,7 @@
 
     #select(doc) {
       this.current = doc;
+      this.suggestOpen = false;
       this.#renderAll();
     }
 
@@ -362,8 +365,77 @@
       const total = list.reduce((s, d) => s + (Number(d.chance) || 0), 0);
       return section({ id: "bm-deco", title: "Decoración", extra: `${list.length} · Σ ${total.toFixed(3)}` },
         ...rows,
-        h("button", { onclick: () => this.#edit("Decoración", (x) => { (x.decoration ??= []).push({ tile: "", chance: 0.01 }); }) }, "+ Decoración"),
+        h("div", { class: "row" },
+          h("button", { onclick: () => this.#edit("Decoración", (x) => { (x.decoration ??= []).push({ tile: "", chance: 0.01 }); }) }, "+ Decoración"),
+          h("button", { title: "Propone las plantas y rocas que le tocan a este bioma por su hábitat, su suelo y su clima",
+            onclick: () => { this.suggestOpen = !this.suggestOpen; this.suggestPick = null; this.#renderPanel(); } }, this.suggestOpen ? "Cerrar sugerencias" : "Sugerir por hábitat")),
+        this.suggestOpen ? this.#suggestions(r) : null,
         h("p", { class: "note" }, "Por columna se tira una vez y las probabilidades se suman en orden, así que el total debería quedar por debajo de 1. «Automático» decide por el hábitat del tile (las algas en el fondo, los nenúfares sobre el agua)."));
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Repartir decoraciones
+
+    #tagsOf = (id) => (this.#tileInfo(id)?.tile?.tags ?? []).map((t) => String(t).toLowerCase());
+
+    /** The suggestions for this biome, each with a tick and its chance; ticked ones are added in one step. */
+    #suggestions(r) {
+      const list = B.suggestDecoration(r, this.#tiles, this.#tagsOf);
+      if (!list.length) {
+        return h("p", { class: "note" }, "Nada que añadir: lo que le toca a este bioma ya está, o no hay tiles con hábitat, tags de planta o roca (herb, flower, rock…) o categoría foliage.");
+      }
+      this.suggestPick ??= new Map(list.map((d) => [d.tile, { on: true, chance: d.chance }]));
+      const rows = list.map((d) => {
+        const pick = this.suggestPick.get(d.tile) ?? { on: true, chance: d.chance };
+        this.suggestPick.set(d.tile, pick);
+        const thumb = h("canvas", { class: "bm-thumb", width: 32, height: 32 });
+        this.#paintThumb(thumb, d.info);
+        const tick = h("input", { type: "checkbox", checked: pick.on, onchange: () => { pick.on = tick.checked; } });
+        const chance = h("input", { type: "number", min: 0, max: 1, step: 0.0001, value: pick.chance, title: "Probabilidad por columna",
+          onchange: () => { pick.chance = Math.max(0, Number(chance.value) || 0); } });
+        return h("label", { class: "bm-sug" }, tick, thumb,
+          h("span", { class: "grow" }, h("b", null, d.tile), " ",
+            h("span", { class: ["badge", d.habitat !== "land" && "accent"] }, B.HABITAT_LABEL[d.habitat] + (d.guessed ? "?" : "")),
+            h("div", { class: "faint small" }, d.reason + (d.guessed ? " · hábitat deducido del nombre: se escribe «on»" : ""))),
+          chance);
+      });
+      return h("div", { class: "bm-sugs" }, ...rows,
+        h("button", { class: "primary", onclick: () => this.#addSuggestions(list) }, "Añadir marcadas"));
+    }
+
+    #addSuggestions(list) {
+      const picked = list.filter((d) => this.suggestPick?.get(d.tile)?.on).map((d) => this.#entryOf(d, this.suggestPick.get(d.tile).chance));
+      if (!picked.length) return;
+      this.suggestOpen = false;
+      this.suggestPick = null;
+      this.#edit(`Decoración sugerida (${picked.length})`, (x) => { (x.decoration ??= []).push(...picked); });
+      this.studio.setStatus(`Añadidas ${picked.length} decoraciones. Revisa la muestra y guarda con Ctrl+S.`, "ok");
+    }
+
+    #entryOf(d, chance = d.chance) {
+      const e = { tile: d.tile, chance };
+      if (d.on) e.on = d.on;
+      return e;
+    }
+
+    /** Every biome at once: a summary to confirm, then one undo step for all of them. */
+    async #distributeAll() {
+      const plan = this.docs.filter((doc) => doc.root)
+        .map((doc) => ({ doc, add: B.suggestDecoration(doc.root, this.#tiles, this.#tagsOf) }))
+        .filter((p) => p.add.length);
+      if (!plan.length) { this.studio.toast("Cada bioma ya tiene lo que le toca.", { kind: "ok" }); return; }
+      const total = plan.reduce((n, p) => n + p.add.length, 0);
+      const lines = plan.map((p) => `${p.doc.root.name ?? p.doc.name}: ${p.add.map((d) => d.tile).join(", ")}`).join("\n");
+      const ok = await this.studio.confirm({ title: "Repartir decoraciones",
+        message: `Añadir ${total} decoraciones en ${plan.length} biomas (se puede deshacer y no se guarda hasta Ctrl+S):\n\n${lines}`,
+        confirm: "Añadir" });
+      if (!ok) return;
+      const steps = plan.map((p) => ({ doc: p.doc, before: JSON.stringify(p.doc.root),
+        after: JSON.stringify({ ...p.doc.root, decoration: [...(p.doc.root.decoration ?? []), ...p.add.map((d) => this.#entryOf(d))] }) }));
+      this.history.run({ label: `Repartir decoraciones (${total})`,
+        redo: () => { for (const st of steps) st.doc.root = JSON.parse(st.after); },
+        undo: () => { for (const st of steps) st.doc.root = JSON.parse(st.before); } });
+      this.studio.setStatus(`Repartidas ${total} decoraciones en ${plan.length} biomas. Guarda con Ctrl+S.`, "ok");
     }
 
     #colorsSection(r) {
