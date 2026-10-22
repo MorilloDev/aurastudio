@@ -49,7 +49,7 @@
   // collision · json (the rare structured keys: layers, flow, colour variants, snowfall).
   const KNOWN_TAGS = ["fragile", "stackable", "transparent", "see_through", "no_collision", "liquid", "requires_solid_ground",
     "leaf", "log", "slab", "flammable", "biome_tinted", "herb", "wood", "snow", "flicker", "needs_pickaxe", "needs_axe",
-    "needs_shovel", "gravity", "anchor", "heat", "danger", "tiny"];
+    "needs_shovel", "gravity", "anchor", "heat", "danger", "tiny", "door"];
   // "conditions" (TileConditions.cs): the same rules for each moment — place, spawn (world generation), grow and work
   // (stations). Every rule is optional; together they must all hold.
   const conditionFields = (moment) => [
