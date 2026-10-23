@@ -47,3 +47,12 @@
 .bm-chance input { min-width: 0; }
 .bm-nudge { width: 20px; min-width: 20px; padding: 0; min-height: 26px; }
 .bad-text { color: var(--warn, #f0b45a); }
+
+/* 3D view: the WebGL canvas over the same area as the 2D one; the inspector's structure rows. */
+.bm-gl { cursor: grab; touch-action: none; }
+.bm-gl:active { cursor: grabbing; }
+.bm-srow { display: grid; grid-template-columns: 1fr 64px 64px 22px; gap: 5px; align-items: center; margin-bottom: 2px; }
+.bm-srow input { min-height: 26px; padding: 2px 5px; min-width: 0; }
+.bm-srow input.bad { border-color: var(--bad); color: var(--bad); }
+.bm-sinfo { grid-column: 1 / -1; margin: -1px 0 6px 2px; font-size: 11px; }
+.bm-shead { margin-bottom: 4px; }

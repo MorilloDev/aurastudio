@@ -3,8 +3,10 @@
 // Biomas: create, edit and look at the biomes of Data/Worldgen/Biomes. The climate map shows which biome the generator picks for
 // every temperature × humidity (at the continentalness / erosion / peaks chosen below it), with gaps and overlaps marked;
 // the sample lays out a patch of the biome with its real tiles from the atlases — surface, its variants, decoration,
-// foliage colour — so a biome is judged by how it looks, not by its numbers. The inspector edits every key BiomeData
-// reads, checks each tile id against the tile files, and Ctrl+S writes the biome where the game loads it.
+// foliage colour — so a biome is judged by how it looks, not by its numbers. The 3D view builds a bigger patch with the
+// biome's structures (trees, houses) grown as the game grows them, each tile in its sprite's colour, to orbit around. The
+// inspector edits every key BiomeData reads (structures included), checks each tile and structure id against the files,
+// and Ctrl+S writes the biome where the game loads it.
 (function (Aura) {
   const { h, clear, rafThrottle } = Aura.dom;
   const { History } = Aura.history;
@@ -15,6 +17,7 @@
   const B = Aura.biomeModel;
   const T = Aura.atlasTiles;
   const Tint = Aura.tint;
+  const Scene = Aura.biomeScene;
 
   const GRID = 9;
 
@@ -40,6 +43,9 @@
     view = prefs.get("biomes:view", "climate");
     slice = prefs.get("biomes:slice", { continentalness: 0.8, erosion: 0.5, pv: 0.5 });
     sample = { seed: 1, density: 1, size: prefs.get("biomes:sampleSize", 16), relief: prefs.get("biomes:relief", true), water: prefs.get("biomes:water", true) };
+    view3d = { seed: 1, density: 1, size: prefs.get("biomes:3dSize", 48), relief: prefs.get("biomes:3dRelief", true), water: prefs.get("biomes:3dWater", true),
+      structures: prefs.get("biomes:3dStructures", true) };
+    structs = { structures: new Map(), templates: new Map(), errors: [] };
     history = new History({ limit: 200 });
     #tiles = new Map();      // qualified tile id -> { tile, doc, sheet, coord, tw, th, parts, tinted, habitat }
     #sheets = new Map();     // sheet key -> Promise<canvas | null>
@@ -72,11 +78,14 @@
     }
 
     async #load() {
-      const [docs, tileDocs] = await Promise.all([B.loadBiomes(this.project), T.loadDocs(this.project)]);
+      const [docs, tileDocs, structs] = await Promise.all([B.loadBiomes(this.project), T.loadDocs(this.project), Scene.loadStructures(this.project)]);
       this.docs = docs;
+      this.structs = structs;
+      this.scene3dKey = null;
       this.#indexTiles(tileDocs);
       this.#sheets.clear();
       this.#spriteCache.clear();
+      this.colorCache = new Map();
       this.biomeTints = await Tint.listBiomes(this.project);
       this.history.clear();
       this.current = this.docs.find((d) => d.root && B.kindOf(d.root) === "surface") ?? this.docs[0] ?? null;
@@ -125,14 +134,16 @@
         this.listEl);
 
       this.viewSeg = segmented({ label: "Vista", value: this.view, onChange: (v) => { this.view = v; prefs.set("biomes:view", v); this.#renderToolbar(); this.#draw(); },
-        options: [["climate", "Mapa de clima", "Qué bioma gana en cada temperatura y humedad"], ["sample", "Muestra", "Un trozo del bioma con sus tiles reales"]] });
+        options: [["climate", "Mapa de clima", "Qué bioma gana en cada temperatura y humedad"], ["sample", "Muestra", "Un trozo del bioma con sus tiles reales"],
+          ["3d", "3D", "Un trozo más grande con sus estructuras (árboles, casas), cada tile con su color, para girar alrededor"]] });
       this.toolbarExtra = h("div", { class: "row bm-extra" });
       this.undoBtn = h("button", { class: "icon", title: "Deshacer (Ctrl+Z)", onclick: () => this.history.undo() }, "↶");
       this.redoBtn = h("button", { class: "icon", title: "Rehacer (Ctrl+Y)", onclick: () => this.history.redo() }, "↷");
       this.saveBtn = h("button", { class: "primary", title: "Guardar los biomas cambiados donde los carga el juego (Ctrl+S)", onclick: () => this.save() }, "Guardar");
       this.canvas = h("canvas", { class: "bm-canvas" });
       this.legend = h("div", { class: "bm-legend" });
-      this.viewEl = h("div", { class: "bm-view" }, this.canvas, this.legend);
+      this.glCanvas = h("canvas", { class: "bm-canvas bm-gl", title: "Arrastra: girar · clic derecho o Shift: mover · rueda: zoom · doble clic: vista del juego" });
+      this.viewEl = h("div", { class: "bm-view" }, this.canvas, this.glCanvas, this.legend);
       this.canvas.addEventListener("mousemove", (e) => this.#hoverClimate(e));
       this.canvas.addEventListener("click", (e) => this.#clickClimate(e));
       const stage = h("div", { class: "bm-stage" },
@@ -198,6 +209,8 @@
           const out = h("span", { class: "mono faint" }, this.slice[key].toFixed(2));
           this.toolbarExtra.append(h("label", { class: "bm-slice", title: `${label} del corte del mapa` }, label.split(" ")[0], input, out));
         }
+      } else if (this.view === "3d") {
+        this.#toolbar3d();
       } else {
         const densOut = h("span", { class: "mono faint" }, "×" + this.sample.density);
         const dens = h("input", { type: "range", min: 0.5, max: 10, step: 0.5, value: this.sample.density,
@@ -215,6 +228,31 @@
           h("label", { class: "bm-slice", title: "×1 = las probabilidades reales; más para ver también lo raro" }, "Densidad", dens, densOut),
           h("button", { title: "Otra muestra", onclick: () => { this.sample.seed++; this.#draw(); } }, "⟳ Otra"));
       }
+    }
+
+    #toolbar3d() {
+      const v = this.view3d;
+      const flag = (label, key, title) => {
+        const c = h("input", { type: "checkbox", checked: v[key], onchange: () => { v[key] = c.checked; prefs.set("biomes:3d" + key[0].toUpperCase() + key.slice(1), c.checked); this.#draw(); } });
+        return h("label", { class: "bm-slice", title }, c, label);
+      };
+      const densOut = h("span", { class: "mono faint" }, "×" + v.density);
+      const dens = h("input", { type: "range", min: 0.5, max: 5, step: 0.5, value: v.density,
+        oninput: () => { v.density = Number(dens.value); densOut.textContent = "×" + v.density; this.#draw(); } });
+      const size = select({ value: String(v.size), options: [["32", "32×32"], ["48", "48×48"], ["64", "64×64"], ["96", "96×96"]], title: "Tamaño del trozo",
+        onChange: (s) => { v.size = Number(s); prefs.set("biomes:3dSize", v.size); this.#draw(); } });
+      const persp = h("button", { title: "Perspectiva u ortográfica (la del juego)", onclick: () => { persp.textContent = this.voxel?.togglePerspective() ? "Ortográfica" : "Perspectiva"; } },
+        this.voxel?.cam.ortho === false ? "Perspectiva" : "Ortográfica");
+      this.toolbarExtra.append(
+        size.input ?? size.el,
+        flag("Relieve", "relief", "Colinas de hasta 6 bloques"),
+        flag("Agua", "water", "Un estanque en lo más bajo"),
+        flag("Estructuras", "structures", "Los árboles y casas de la lista «Estructuras» del bioma"),
+        h("label", { class: "bm-slice", title: "×1 = las probabilidades reales (decoración y estructuras); más para ver lo raro" }, "Densidad", dens, densOut),
+        h("button", { title: "Otro trozo", onclick: () => { v.seed++; this.#draw(); } }, "⟳ Otro"),
+        h("button", { title: "Vista del juego (doble clic en la vista)", onclick: () => this.voxel?.iso() }, "Iso"),
+        h("button", { class: "icon", title: "Girar 90°", onclick: () => this.voxel?.turn(1) }, "↻"),
+        persp);
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -287,7 +325,7 @@
 
       if (kind !== "ocean") this.panel.append(this.#climateSection(r, kind).el, this.#materialsSection(r).el);
       this.panel.append(this.#decorationSection(r).el);
-      if (kind !== "ocean") this.panel.append(this.#colorsSection(r).el);
+      if (kind !== "ocean") this.panel.append(this.#structuresSection(r).el, this.#colorsSection(r).el);
       this.panel.append(this.#checkSection(doc).el, this.#rawSection(doc).el);
       this.panel.scrollTop = top;
     }
@@ -401,6 +439,37 @@
         h("p", { class: "note" }, "Por columna se tira una vez y las probabilidades se suman en orden, así que el total debería quedar por debajo de 1. «Automático» decide por el hábitat del tile (las algas en el fondo, los nenúfares sobre el agua)."));
     }
 
+    // The biome's "structures": which structures grow here and how densely. The structure files say what they are and what
+    // ground they need; the density is the biome's, so one oak can be thick in a forest and rare on the plains.
+    #structuresSection(r) {
+      const list = Array.isArray(r.structures) ? r.structures : [];
+      this.structList = this.structList ?? h("datalist", { id: "bm-structures" });
+      this.structList.replaceChildren(...[...this.structs.structures.keys()].sort().map((id) => h("option", { value: id })));
+      const edit = (fn) => this.#edit("Estructuras", (x) => { x.structures ??= []; fn(x.structures); if (!x.structures.length) delete x.structures; });
+      const rows = list.map((e, i) => {
+        const def = this.structs.structures.get(Scene.short(e?.structure));
+        const name = h("input", { type: "text", value: e?.structure ?? "", list: "bm-structures", placeholder: "estructura", spellcheck: false,
+          onchange: () => edit((l) => { l[i].structure = name.value.trim(); }) });
+        if (!def && this.structs.structures.size) name.classList.add("bad");
+        const cell = h("input", { type: "number", min: 1, max: 512, step: 1, value: e?.cellSize ?? 8,
+          title: "Tamaño de la celda en tiles: en cada celda sale como mucho una", onchange: () => edit((l) => { l[i].cellSize = Math.max(1, Math.round(Number(cell.value) || 8)); }) });
+        const chance = h("input", { type: "number", min: 0, max: 1, step: 0.01, value: e?.chance ?? 0.5,
+          title: "Probabilidad de que una celda tenga una (0..1)", onchange: () => edit((l) => { l[i].chance = Math.min(1, Math.max(0, Number(chance.value) || 0)); }) });
+        const p = def?.root?.placement ?? {};
+        const what = def ? [Scene.short(def.root.type), p.priority != null ? "prioridad " + p.priority : null,
+          Array.isArray(p.on) && p.on.length ? "sobre " + p.on.join(", ") : null, p.maxSlope != null ? "pendiente ≤ " + p.maxSlope : null].filter(Boolean).join(" · ") : "no existe";
+        return h("div", { class: "bm-srow" }, name, cell, chance,
+          h("button", { class: "icon ghost", title: "Quitar", onclick: () => edit((l) => { l.splice(i, 1); }) }, "×"),
+          h("div", { class: ["faint small bm-sinfo", !def && "bad-text"] }, what));
+      });
+      return section({ id: "bm-structs", title: "Estructuras", extra: String(list.length) },
+        this.structList,
+        list.length ? h("div", { class: "bm-srow bm-shead faint small" }, h("span", null, "Estructura"), h("span", null, "Celda"), h("span", null, "Prob."), h("span")) : null,
+        ...rows,
+        h("button", { onclick: () => edit((l) => { l.push({ structure: "", cellSize: 8, chance: 0.5 }); }) }, "+ Estructura"),
+        h("p", { class: "note" }, "Cada celda de «Celda» × «Celda» tiles tira «Prob.» una vez y, si sale, pone la estructura en un punto de la celda. Si dos se pisan gana la de más prioridad. Míralo en la vista 3D."));
+    }
+
     // -----------------------------------------------------------------------------------------------------------------
     // Repartir decoraciones
 
@@ -487,9 +556,27 @@
         kind !== "ocean" && !r.materials?.surface ? h("div", { class: "at-issue bad" }, "Falta materials.surface: el juego no carga el bioma.") : null,
         (r.decoration ?? []).reduce((s, d) => s + (Number(d.chance) || 0), 0) > 1 ? h("div", { class: "at-issue warn" }, "La decoración suma más de 1: las últimas entradas no salen nunca.") : null,
         this.docs.filter((d) => d !== doc && d.root?.id && d.root.id === r.id).length ? h("div", { class: "at-issue bad" }, `Otro bioma usa el id «${r.id}».`) : null,
+        ...this.#structureIssues(r),
       ].filter(Boolean);
       return section({ id: "bm-check", title: "Revisión", extra: issues.length ? String(issues.length) : "todo bien" },
         issues.length ? issues : h("p", { class: "note" }, "Todos los tiles existen y el bioma se puede cargar."));
+    }
+
+    #structureIssues(r) {
+      const list = Array.isArray(r.structures) ? r.structures : [];
+      const out = [];
+      const seen = new Set();
+      list.forEach((e, i) => {
+        const id = Scene.short(e?.structure);
+        if (!id) out.push(h("div", { class: "at-issue bad" }, `structures[${i}] no dice qué estructura.`));
+        else if (!this.structs.structures.has(id)) out.push(h("div", { class: "at-issue bad" }, `La estructura «${id}» (structures[${i}]) no existe en Data/Worldgen/Structures.`));
+        else if (seen.has(id)) out.push(h("div", { class: "at-issue bad" }, `«${id}» está dos veces: el juego da error.`));
+        seen.add(id);
+      });
+      // Structure files from before the biome lists: the game reports these keys and stops loading.
+      const old = [...this.structs.structures.values()].filter((d) => ["biomes", "cellSize", "chance"].some((k) => d.root?.placement?.[k] != null));
+      if (old.length) out.push(h("div", { class: "at-issue warn" }, `Con biomes, cellSize o chance en su placement (el juego da error; van en el bioma): ${old.map((d) => d.id).join(", ")}.`));
+      return out;
     }
 
     #rawSection(doc) {
@@ -515,9 +602,105 @@
       const g = c.getContext("2d");
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       g.clearRect(0, 0, W, H);
-      if (this.view === "climate") this.#drawClimate(g, W, H);
+      const gl = this.view === "3d";
+      this.canvas.style.display = gl ? "none" : "";
+      this.glCanvas.style.display = gl ? "" : "none";
+      if (gl) this.#draw3d();
+      else if (this.view === "climate") this.#drawClimate(g, W, H);
       else this.#drawSample(g, W, H);
     });
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // 3D
+
+    #draw3d() {
+      clear(this.legend);
+      const say = (text, cls = "faint") => this.legend.append(h("span", { class: cls }, text));
+      const r = this.current?.root;
+      if (!r || B.kindOf(r) === "ocean") { say(r ? "El mar abierto no tiene suelo que mostrar." : ""); this.voxel?.setScene?.(new EmptyScene(), () => [0, 0, 0, 1], false); return; }
+      if (!this.voxel) {
+        this.voxel = new Aura.voxelView.VoxelView(this.glCanvas);
+        new ResizeObserver(() => this.voxel.render()).observe(this.glCanvas);
+      }
+      if (!this.voxel.ok) { say("Este navegador no tiene WebGL2: la vista 3D no puede dibujarse.", "bad-text"); return; }
+
+      // Every tile the patch can hold, so their sheets are decoded before the colours are read.
+      const v = this.view3d;
+      const ids = new Set(["water", r.materials?.surface, r.materials?.shallow ?? "dirt", r.materials?.deep ?? "stone",
+        ...(r.materials?.surfaceVariants ?? []).map((x) => x.tile), ...(r.decoration ?? []).map((d) => d.tile)].filter(Boolean).map(Scene.short));
+      if (v.structures)
+        for (const e of Array.isArray(r.structures) ? r.structures : [])
+          for (const id of Scene.structureTiles(this.structs.structures.get(Scene.short(e?.structure)), this.structs.templates)) ids.add(id);
+      const infos = [...ids].map((id) => this.#tileInfo(id)).filter(Boolean);
+      const pending = [...new Set(infos.map((i) => i.sheet))].filter((k) => !this.#sheets.has(k) || this.#sheets.get(k).value === undefined);
+      if (pending.length) {
+        say("Cargando hojas…");
+        Promise.all(pending.map((k) => this.#sheetCanvas(k))).then(() => this.#draw());
+        return;
+      }
+
+      const key = JSON.stringify([r, v.size, v.seed, v.relief, v.water, v.density, v.structures]);
+      const reframe = this.scene3dDoc !== this.current || this.scene3dSize !== v.size;
+      if (key !== this.scene3dKey) {
+        const t0 = performance.now();
+        const info = (id) => {
+          const t = this.#tileInfo(id);
+          if (!t) return null;
+          const tags = (t.tile.tags ?? []).map((x) => String(x).toLowerCase());
+          const category = String(t.doc?.root?.category ?? "").toLowerCase();
+          const leafy = tags.includes("leaf") || /leaves|leaf/.test(id);
+          return {
+            liquid: tags.includes("liquid") || String(t.tile.type ?? "").toLowerCase() === "liquid",
+            plant: category === "foliage" || tags.includes("no_collision") || tags.includes("tiny"),
+            slab: tags.includes("slab"),
+            glass: !leafy && (tags.includes("transparent") || /glass/.test(id)),
+            habitat: t.habitat,
+          };
+        };
+        const built = Scene.buildScene(r, this.structs.structures, this.structs.templates, info, v);
+        const foliage = Tint.hexToRgb(r.colors?.foliage) ?? Tint.hexToRgb(Tint.DEFAULT_TINT.hex);
+        this.voxel.setScene(built.scene, (p) => this.#tileColor(p, foliage), reframe);
+        this.scene3dKey = key;
+        this.scene3dDoc = this.current;
+        this.scene3dSize = v.size;
+        this.scene3dStats = { ...built, ms: performance.now() - t0 };
+      } else {
+        this.voxel.render();
+      }
+
+      const st = this.scene3dStats;
+      const placed = [...st.counts.entries()].map(([id, n]) => `${id} ${n}`).join(" · ");
+      say(`${v.size}×${v.size} · ${Math.round(st.ms)} ms` + (v.structures ? ` · ${placed || "ninguna estructura"}` : " · estructuras ocultas"));
+      if (st.missing.size) say(` · no existen o no son de un tipo que el Studio sepa dibujar: ${[...st.missing].join(", ")}`, "bad-text");
+      say(" · los colores son el promedio del sprite de cada tile");
+    }
+
+    // A tile's colour: its sprite's average over the opaque pixels — of the top half for blocks, where the lit top is —
+    // in the biome's foliage colour when it is biome_tinted.
+    #tileColor(p, foliage) {
+      const K = Scene.KIND;
+      const key = p.id + "|" + p.kind + "|" + foliage.join(",");
+      this.colorCache ??= new Map();
+      if (this.colorCache.has(key)) return this.colorCache.get(key);
+      const info = this.#tileInfo(p.id);
+      let rgba = p.kind === K.water ? [0.2, 0.45, 0.77, 0.6] : [0.8, 0.3, 0.8, 1];
+      const coord = info?.coord ?? info?.parts?.[0]?.coord;
+      const img = coord && this.#sprite(info, coord, info.tinted ? foliage : null);
+      if (img) {
+        const d = img.getContext("2d").getImageData(0, 0, img.width, img.height).data;
+        const rows = p.kind === K.plant ? img.height : Math.ceil(img.height / 2);
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let y = 0; y < rows; y++)
+          for (let x = 0; x < img.width; x++) {
+            const i = (y * img.width + x) * 4;
+            if (d[i + 3] < 128) continue;
+            r += d[i]; g += d[i + 1]; b += d[i + 2]; n++;
+          }
+        if (n) rgba = [r / n / 255, g / n / 255, b / n / 255, p.kind === K.water ? 0.6 : p.kind === K.glass ? 0.45 : 1];
+      }
+      this.colorCache.set(key, rgba);
+      return rgba;
+    }
 
     #surfaceBiomes() {
       return this.docs.filter((d) => d.root && B.kindOf(d.root) === "surface").map((d) => ({
@@ -860,6 +1043,12 @@
         return false;
       }
     }
+  }
+
+  // What the 3D view shows for the open sea: nothing.
+  class EmptyScene {
+    size = 1; height = 1; cells = new Uint16Array(1); palette = [{ id: "air", kind: 0 }];
+    at() { return 0; }
   }
 
   async function dirAt(root, path) {
