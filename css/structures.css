@@ -1,0 +1,7 @@
+/* Estructuras: the Biomas layout (list, 3D stage, inspector) with its own rows. */
+.st-trow { display: grid; grid-template-columns: 1fr 60px 22px; gap: 5px; align-items: center; margin-bottom: 4px; }
+.st-trow input { min-height: 26px; padding: 2px 5px; min-width: 0; }
+.st-trow input.bad, .st .field input.bad { border-color: var(--bad); color: var(--bad); }
+.st-use { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.st .pad { padding: 10px 14px; }
+.st .at-issue button.small { margin-left: 8px; padding: 1px 8px; }

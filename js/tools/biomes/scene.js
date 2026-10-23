@@ -516,5 +516,49 @@
     };
   }
 
-  Aura.biomeScene = { KIND, short, loadStructures, structureTiles, buildScene };
+  // ─── One structure on its own (Estructuras) ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * count instances of a structure (1, 4 or 9 in a square), each on a flat plate of its own ground tile with its own
+   * seed, spaced so none touches the next. Returns { scene, shapes } or null when the type is not one the Studio grows.
+   * The plan runs twice: once to measure (how big the plate must be), once into the real scene — same seeds, same trees.
+   */
+  function buildPreview(def, templates, info, { seed = 1, count = 1 } = {}) {
+    const ground = short(def?.root?.placement?.on?.[0] ?? "grass");
+    const measure = makeGenerator(def, templates, () => 1);
+    if (!measure) return null;
+    const side = Math.round(Math.sqrt(count));
+    const plans = [];
+    for (let k = 0; k < side * side; k++) plans.push(measure.plan(rng(seed, k, 4242)));
+    const reach = Math.max(2, ...plans.map((s) => s.reach ?? 4));
+    const spacing = reach * 2 + 3, size = spacing * side;
+
+    const scene = new Scene(size, 80);
+    const kindOf = (id) => {
+      const t = info(id);
+      return !t ? KIND.solid : t.liquid ? KIND.water : t.plant ? KIND.plant : t.slab ? KIND.slab : t.glass ? KIND.glass : KIND.solid;
+    };
+    const P = (id) => scene.tileOf(short(id), kindOf(short(id)));
+    const top = P(ground), dirt = P("dirt"), stone = P("stone");
+    scene.soil = new Set([top, dirt]);
+    const GROUND = 2;
+    for (let x = 0; x < size; x++)
+      for (let z = 0; z < size; z++) {
+        scene.set(x, 0, z, stone);
+        scene.set(x, 1, z, dirt);
+        scene.set(x, GROUND, z, top);
+      }
+
+    const gen = makeGenerator(def, templates, P);
+    const shapes = [];
+    for (let k = 0; k < side * side; k++) {
+      const shape = gen.plan(rng(seed, k, 4242));
+      const cx = (k % side) * spacing + Math.floor(spacing / 2), cz = Math.floor(k / side) * spacing + Math.floor(spacing / 2);
+      gen.write(shape, cx, GROUND, cz, scene);
+      shapes.push(shape);
+    }
+    return { scene, shapes };
+  }
+
+  Aura.biomeScene = { KIND, short, loadStructures, structureTiles, buildScene, buildPreview, parseTemplate };
 })(window.Aura ??= {});

@@ -11,7 +11,8 @@ Solo HTML, CSS y JavaScript: nada que instalar ni compilar.
 | Crear | Genera sprites con su `_n`: modo **Bloque** (cubos, losas, escaleras… con caras de una hoja) y **Planta** (hierba, flores, cultivos, plantas de agua, hojas de 16 especies, semillas). Sección Bioma (escala de grises para `biome_tinted`), vista Contexto (3 × 3 con bioma, luz y viento), Básico/Avanzado, Crecimiento (etapas y columnas). «Enviar al Atlas» lo coloca en una hoja. |
 | Atlas | Edita las hojas de tiles: mover, intercambiar, copiar y vaciar celdas arrastrando. Los mapas (`_n`, `_d`…) y las coordenadas de los JSON de tiles se actualizan solos. Inspector con formulario y JSON, tiles nuevos (también juegos completos de crecimiento), vista Bioma y pasar a gris, revisión de referencias rotas. Deshacer/rehacer y Ctrl+S. |
 | Biomas | Crea y edita los biomas de `Data/Worldgen/Biomes`: mapa de clima (qué bioma gana, huecos y solapes), muestra con los tiles reales, **vista 3D** (un trozo con sus árboles y casas, cada tile con el color de su sprite, para girar), materiales, decoración, **estructuras** (cuáles y con qué densidad), colores, revisión de tiles y estructuras que no existen. |
-| Estructuras, Partículas | versión anterior dentro del Studio (v1) |
+| Estructuras | Las estructuras de `Data/Worldgen/Structures` en 3D (cada tile con el color de su sprite), sobre su suelo, de 1 a 9 a la vez con semillas distintas. Los árboles se ajustan con controles viéndolos cambiar (tronco, copa en bola o capas, hojas colgantes, ramas, raíces); las de plantillas eligen sus variantes, giro, cimientos y desnivel. Dónde pueden ir, qué biomas las usan, revisión y JSON. |
+| Plantillas, Partículas | versión anterior dentro del Studio (v1); en Plantillas se construyen las casas bloque a bloque |
 
 ## Estructura
 
