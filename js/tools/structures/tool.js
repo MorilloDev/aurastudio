@@ -117,6 +117,7 @@
         cmd("show", "Mostrar todo lo oculto", ["Shift+H"], () => this.#showAll(), { enabled: tpl }),
         cmd("anchor", "Anclaje en el bloque bajo el ratón", ["A"], () => this.#anchorHovered(), { enabled: tpl }),
         cmd("center", "Centrar la vista", ["Home"], () => this.#center()),
+        cmd("delete", "Borrar la estructura o plantilla elegida del proyecto", ["Delete"], () => this.#delete(this.current), { enabled: () => !!this.current }),
       ], this.id);
       this.#renderAll();
     }
@@ -362,7 +363,8 @@
             h("span", { class: "grow" }, d.root?.id ?? d.name),
             used ? h("span", { class: "faint small", title: "Biomas que la usan" }, used) : h("span", { class: "badge warn", title: "Ningún bioma la usa: no sale en el mundo" }, "0"),
             this.#isDirtyDoc(d) ? h("span", { class: "dot", title: "Sin guardar" }) : null,
-            d.error ? h("span", { class: "badge bad", title: d.error }, "!") : null));
+            d.error ? h("span", { class: "badge bad", title: d.error }, "!") : null,
+            this.#delButton(d)));
         }
       }
       if (this.tdocs.length) {
@@ -372,7 +374,8 @@
             h("span", { class: "grow" }, "▦ " + t.id),
             this.#templateUsers(t.id).length ? null : h("span", { class: "faint small", title: "Ninguna estructura la usa" }, "—"),
             this.#isDirtyTemplate(t) ? h("span", { class: "dot", title: "Sin guardar" }) : null,
-            t.error ? h("span", { class: "badge bad", title: t.error }, "!") : null));
+            t.error ? h("span", { class: "badge bad", title: t.error }, "!") : null,
+            this.#delButton(t)));
       }
     }
 
@@ -445,6 +448,63 @@
         undo: () => { this.docs.splice(this.docs.indexOf(doc), 1); this.current = this.docs[0] ?? null; } });
       this.#select(doc);
       this.studio.setStatus(`Estructura «${id}» creada${base ? " a partir de «" + base.id + "»" : ""}. Para que salga en el mundo, añádela a un bioma (Biomas → Estructuras).`, "ok");
+    }
+
+    #delButton(item) {
+      return h("button", { class: "icon ghost danger st-del", title: "Borrar del proyecto (Supr)",
+        onclick: (e) => { e.stopPropagation(); this.#delete(item); } }, "🗑");
+    }
+
+    /**
+     * Deletes a structure or template file from the project folder (or just drops it when it was never saved). It says what
+     * still points at it first: a template some structure stamps, a structure some biome lists. Deleting a file cannot be
+     * undone, so the undo history is cleared afterwards (its steps would point at documents that no longer exist).
+     */
+    async #delete(item) {
+      if (!item || !this.project) return;
+      const isTpl = !!item.isTemplate;
+      const id = isTpl ? item.id : short(item.root?.id) || item.name;
+      const kind = isTpl ? "la plantilla" : "la estructura";
+
+      const notes = [];
+      if (isTpl) {
+        const users = this.#templateUsers(item.id).map((d) => d.root.id);
+        if (users.length) notes.push(`La usan las estructuras: ${users.join(", ")}. Se quedarán sin ella.`);
+      } else {
+        const biomes = this.#usedIn(item).map((u) => u.name);
+        if (biomes.length) notes.push(`La listan los biomas: ${biomes.join(", ")}. Su referencia quedará rota.`);
+      }
+      const onDisk = !!item.entry;
+      const ok = await this.studio.confirm({
+        title: `Borrar ${isTpl ? "plantilla" : "estructura"} «${id}»`,
+        message: [onDisk ? `Se borra el archivo ${item.path} de la carpeta del proyecto y no se puede deshacer.` : `Aún no se guardó: se descarta sin tocar la carpeta.`,
+          ...notes, "Se vacía el historial de deshacer."].join("\n\n"),
+        confirm: "Borrar", danger: true });
+      if (!ok) return;
+
+      try {
+        if (onDisk) {
+          await item.entry.dir.removeEntry(item.entry.name);
+          this.project.files.delete(item.entry.lower);
+        }
+      } catch (err) {
+        this.studio.toast("No pude borrar el archivo.", { kind: "bad", detail: err.message });
+        return;
+      }
+
+      const list = isTpl ? this.tdocs : this.docs;
+      const at = list.indexOf(item);
+      if (at >= 0) list.splice(at, 1);
+      if (isTpl) { this.templates.delete(item.id); this.templatesRev = (this.templatesRev ?? 0) + 1; }
+      this.history.clear();
+      this.preview = null;
+      this.box3d = null;
+      if (this.current === item) {
+        this.current = null;
+        this.#select(list[Math.min(at, list.length - 1)] ?? this.docs.find((d) => d.root) ?? this.tdocs.find((t) => t.doc || t.json) ?? null);
+      } else this.#renderAll();
+      this.studio.refreshDirty();
+      this.studio.toast(`Borrada ${kind} «${id}».`, { kind: "ok", detail: onDisk ? item.path : undefined });
     }
 
     /**

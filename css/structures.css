@@ -16,3 +16,5 @@
 .st-thumb { image-rendering: pixelated; display: block; }
 .st-piece { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
 .st-piece .st-thumb { background: var(--canvas-bg); border-radius: 4px; }
+.st-del { padding: 0 6px; opacity: 0; }
+.bm-item:hover .st-del, .bm-item.active .st-del, .st-del:focus-visible { opacity: 1; }
