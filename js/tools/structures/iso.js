@@ -202,6 +202,14 @@
       for (const e of list) this.#drawCell(e.x, e.y, e.z, e.id, e.ghost ? 0.16 : 1, e.dir, e.shape);
 
       this.#drawGrid();
+      if (this.host.editable && !doc.blocks.size) {
+        g.save();
+        g.fillStyle = "rgba(255, 255, 255, 0.45)";
+        g.font = "13px system-ui, sans-serif";
+        g.textAlign = "center";
+        g.fillText(this.host.selected ? "Lienzo vacío: haz clic para poner el primer tile" : "Lienzo vacío: elige un tile en la paleta y haz clic para ponerlo", w / 2, 28);
+        g.restore();
+      }
       this.#drawFar();
       this.#drawRect();
       this.#drawAnchor();

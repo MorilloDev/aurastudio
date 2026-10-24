@@ -216,6 +216,7 @@
       this.listEl = h("div", { class: "bm-list scroll" });
       const left = h("div", { class: "bm-left" },
         h("div", { class: "bm-head" }, h("strong", null, "Estructuras"), h("span", { class: "grow" }),
+          h("button", { class: "primary", title: "Estructura nueva desde cero: un lienzo vacío donde pones los tiles uno a uno (crea la plantilla y la estructura que la usa)", onclick: () => this.#createByHand() }, "+ A mano"),
           h("button", { title: "Árbol o arbusto nuevo", onclick: () => this.#create("tree") }, "+ Árbol"),
           h("button", { title: "Estructura nueva hecha de plantillas (casas, ruinas)", onclick: () => this.#create("template") }, "+ Casa"),
           h("button", { title: "Plantilla nueva, vacía, para construir bloque a bloque", onclick: () => this.#createTemplate() }, "+ Plantilla")),
@@ -444,6 +445,45 @@
         undo: () => { this.docs.splice(this.docs.indexOf(doc), 1); this.current = this.docs[0] ?? null; } });
       this.#select(doc);
       this.studio.setStatus(`Estructura «${id}» creada${base ? " a partir de «" + base.id + "»" : ""}. Para que salga en el mundo, añádela a un bioma (Biomas → Estructuras).`, "ok");
+    }
+
+    /**
+     * A structure from nothing, built by hand: one id makes both an empty template (the cells, placed tile by tile) and the
+     * structure file that stamps it, so the result is a complete structure the biomes can use. One undo step removes both.
+     */
+    async #createByHand() {
+      if (!this.project || !this.registry) { this.studio.toast("Abre la carpeta del proyecto.", { kind: "warn" }); return; }
+      const taken = (id) => this.docs.some((d) => short(d.root?.id) === id) || this.tdocs.some((t) => t.id === id);
+      const name = await this.studio.prompt({ title: "Estructura a mano",
+        message: "Id (sirve de nombre para la estructura y para su plantilla). Empiezas con un lienzo vacío y pones los tiles uno a uno.",
+        placeholder: "watchtower",
+        validate: (v) => (!v ? "Escribe un id." : taken(T.deriveIdPath(v)) ? "Ya hay una estructura o plantilla con ese id." : "") });
+      if (!name) return;
+      const id = T.deriveIdPath(name);
+      const structDir = this.docs[0] ? dirName(this.docs[0].path) : this.#worldgenDir("Structures");
+      const tplDir = this.#worldgenDir("Templates");
+      if (!structDir || !tplDir) { this.studio.toast("No encuentro Data/Tiles para saber dónde va Data/Worldgen.", { kind: "bad" }); return; }
+
+      const tdoc = new TemplateDoc(this.registry, this.history, () => {});
+      const tpath = joinPath(tplDir, id + ".json");
+      const t = { isTemplate: true, id, entry: null, path: tpath, name: baseName(tpath), json: null, eol: "\n", baseline: "", doc: tdoc, error: null, isNew: true };
+      const spath = joinPath(structDir, id + ".json");
+      const s = { entry: null, path: spath, name: baseName(spath), root: NEW_TEMPLATE(id, id), eol: "\n", baseline: "", error: null, isNew: true };
+
+      this.history.run({ label: `Nueva estructura a mano ${id}`,
+        redo: () => {
+          this.docs.push(s);
+          this.tdocs.push(t);
+          this.tdocs.sort((a, b) => a.id.localeCompare(b.id));
+        },
+        undo: () => {
+          this.docs.splice(this.docs.indexOf(s), 1);
+          this.tdocs.splice(this.tdocs.indexOf(t), 1);
+          if (this.current === s || this.current === t) this.current = this.docs[0] ?? null;
+        } });
+      this.level = 0;
+      this.#select(t);
+      this.studio.setStatus(`Estructura «${id}» creada, vacía. Elige un tile en la paleta y haz clic para poner el primero. Guarda con Ctrl+S; para que salga en el mundo, añádela a un bioma (Biomas → Estructuras).`, "ok");
     }
 
     /** Data/Worldgen/<sub>, found next to Data/Tiles when no file of that kind exists yet. */
@@ -1244,6 +1284,15 @@
       const dirty = this.docs.filter((d) => this.#isDirtyDoc(d));
       const tdirty = this.tdocs.filter((t) => this.#isDirtyTemplate(t));
       if (!dirty.length && !tdirty.length) return true;
+      // Nothing is written until everything can be: a new structure must not point at a template that is still empty.
+      const emptyNew = this.tdocs.filter((t) => t.isNew && t.doc && this.#templateText(t) === null).map((t) => t.id);
+      const blocked = dirty.filter((d) => (Array.isArray(d.root?.config?.templates) ? d.root.config.templates : [])
+        .some((v) => emptyNew.includes(short(typeof v === "string" ? v : v?.template))));
+      if (blocked.length) {
+        this.studio.toast("Aún no se puede guardar.", { kind: "warn",
+          detail: `${blocked.map((d) => `«${d.root.id}»`).join(", ")} usa una plantilla vacía: pon al menos un bloque (o deshaz su creación) y vuelve a guardar.` });
+        return false;
+      }
       const write = async (item, text) => {
         if (!item.entry) {
           const dir = await dirAt(this.project.root, dirName(item.path));
