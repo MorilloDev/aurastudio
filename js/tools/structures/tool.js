@@ -17,6 +17,7 @@
   const Tint = Aura.tint;
   const G = Aura.structGen;
   const SH = Aura.structShapes;
+  const AO = Aura.ao;
   const { TileRegistry, SHAPE, AIR, DEFAULT_FOLIAGE } = Aura.structTiles;
   const { TemplateDoc, key, parse, rotateOffset } = Aura.structModel;
   const { KIND } = Aura.voxelView;
@@ -84,6 +85,7 @@
     count = prefs.get("structures:count", 1);
     tint = prefs.get("structures:tint", "");
 
+    ao = prefs.get("structures:ao", true);    // the game's ambient occlusion on the tiles, in both views
     shapeTool = prefs.get("structures:shapeTool", "brush");   // "brush" or a shape of Aura.structShapes
     shapeOpts = { ...SH.DEFAULTS, ...prefs.get("structures:shapeOpts", {}) };
     shapeStart = null;      // { cell, remove }: the first click of a two-click shape (box, walls, line)
@@ -277,6 +279,7 @@
           get selected() { return tool.selected; },
           get facing() { return tool.facing; },
           get shape() { return tool.shape; },
+          get ao() { return tool.ao; },
           get shapeStart() { return tool.shapeStart; },
           get selection() { return tool.selection; },
           get floating() { return !!tool.float; },
@@ -312,6 +315,7 @@
             this.#overlay3d();
           },
         });
+        this.voxel.aoOn = this.ao;
         new ResizeObserver(() => this.voxel.render()).observe(this.glCanvas);
       }
     }
@@ -370,7 +374,8 @@
         bar.append(select({ value: this.tint, options, title: "El color de los tiles biome_tinted (hojas, hierba)",
           onChange: (v) => { this.tint = v; prefs.set("structures:tint", v); this.#renderPalette(); this.#invalidate(); } }).input);
       }
-      bar.append(
+      bar.append(checkbox({ label: "AO", value: this.ao, title: "Oclusión ambiental: la sombra de contacto en las esquinas y al pie de las paredes, como la calcula el juego",
+        onChange: (v) => this.#setAO(v) }).el,
         h("button", { class: "icon", title: "Girar la cámara (Q)", onclick: () => this.#turnCamera(-1) }, "↺"),
         h("button", { class: "icon", title: "Girar la cámara (E)", onclick: () => this.#turnCamera(1) }, "↻"),
         h("button", { title: "Centrar (Inicio)", onclick: () => this.#center() }, "Centrar"));
@@ -1070,6 +1075,13 @@
       this.#invalidate();
     }
 
+    #setAO(on) {
+      this.ao = !!on;
+      prefs.set("structures:ao", this.ao);
+      this.voxel?.setAO(this.ao);
+      this.#draw();
+    }
+
     #setView(v) {
       this.view = v;
       prefs.set("structures:view", v);
@@ -1642,7 +1654,13 @@
       const entry = (id, kind, shape, dir) => {
         const pk = `${id}|${kind}|${shape}|${dir}`;
         let i = index.get(pk);
-        if (i === undefined) { i = palette.length; palette.push({ id, kind, shape, dir }); index.set(pk, i); }
+        if (i === undefined) {
+          // What it weighs as an occluder and whether it is shaded, as the game decides it; ghosts are neither.
+          const tile = this.registry.get(id), ghost = kind === KIND.ghost;
+          i = palette.length;
+          palette.push({ id, kind, shape, dir, ao: ghost ? 0 : AO.casterWeight(tile), noAo: ghost || !AO.receives(tile) });
+          index.set(pk, i);
+        }
         return i;
       };
       const kinds = { solid: KIND.solid, plant: KIND.plant, water: KIND.water, glass: KIND.glass, slab: KIND.slab };

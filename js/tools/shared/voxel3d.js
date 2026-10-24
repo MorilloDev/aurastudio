@@ -1,8 +1,8 @@
 "use strict";
 
 // A small WebGL2 voxel viewer, shared by the Biomas and Estructuras 3D views: blocks as cubes with per-face shading and
-// corner occlusion (the game's look of lit tops and darker sides), slabs as half boxes, plants as crossed quads, water,
-// glass and ghosts see-through. Each tile is one flat colour — its sprite's average.
+// the game's ambient occlusion (shared/ao.js: the same vertex rule, plateau and strength as its tile shader), slabs as half
+// boxes, plants as crossed quads, water, glass and ghosts see-through. Each tile is one flat colour — its sprite's average.
 //
 // Camera: drag with the left button to orbit, with the right one (or Shift, or the middle button) to pan, wheel to zoom,
 // double click for the game's angle. With an editor attached, a left or right click that does not move becomes a click
@@ -21,12 +21,28 @@
     { n: [0, 0, -1], shade: 0.66, quad: [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]] },
   ];
 
+  // aAo: the four corner values (0..3) of the face a vertex belongs to, in the order (u0,w0) (u1,w0) (u0,w1) (u1,w1); aUv:
+  // the vertex's place on that face. The fragment shader blends the corners with the game's plateau, so the shade runs
+  // across the face the way TileInstanced.fx draws it. uAo is the darkening at a value of 3 (0 turns AO off).
   const VS = `#version 300 es
-    in vec3 aPos; in vec4 aCol; uniform mat4 uMvp; out vec4 vCol;
-    void main() { vCol = aCol; gl_Position = uMvp * vec4(aPos, 1.0); }`;
+    in vec3 aPos; in vec4 aCol; in vec4 aAo; in vec2 aUv; uniform mat4 uMvp;
+    out vec4 vCol; out vec4 vAo; out vec2 vUv;
+    void main() { vCol = aCol; vAo = aAo; vUv = aUv; gl_Position = uMvp * vec4(aPos, 1.0); }`;
   const FS = `#version 300 es
-    precision mediump float; in vec4 vCol; out vec4 outColor;
-    void main() { outColor = vCol; }`;
+    precision mediump float; in vec4 vCol; in vec4 vAo; in vec2 vUv; uniform float uAo; out vec4 outColor;
+    const float REACH = ${Aura.ao.REACH.toFixed(3)};
+    void main() {
+      float u = clamp((vUv.x - 0.5) / REACH + 0.5, 0.0, 1.0), v = clamp((vUv.y - 0.5) / REACH + 0.5, 0.0, 1.0);
+      float ao = clamp(mix(mix(vAo.x, vAo.y, u), mix(vAo.z, vAo.w, u), v) / 3.0, 0.0, 1.0);
+      outColor = vec4(vCol.rgb * (1.0 - ao * uAo), vCol.a);
+    }`;
+
+  const A = Aura.ao, roundEven = A.roundEven, ZERO4 = Object.freeze([0, 0, 0, 0]);
+
+  /** What a cell of each kind weighs as an occluder, when its palette entry does not say (Chunk.GetAOCasterWeight). */
+  const CASTER = { [KIND.solid]: 1, [KIND.slab]: 1, [KIND.plant]: Aura.ao.PARTIAL, [KIND.glass]: 0, [KIND.water]: 0, [KIND.ghost]: 0 };
+  /** Which kinds are shaded (a plant or water draws something else where the shade would go). */
+  const SHADED = new Set([KIND.solid, KIND.slab, KIND.glass]);
 
   const CLICK_SLOP = 4;
 
@@ -40,6 +56,7 @@
       this.cam = { yaw: Math.PI / 4, pitch: Math.PI / 6, dist: 60, target: [0, 0, 0], ortho: true };
       this.meshes = [];
       this.overlay = null;
+      this.aoOn = true;
       this.sky = [0.17, 0.2, 0.24];
       if (!this.ok) return;
       this.#initGl();
@@ -101,6 +118,12 @@
       this.render();
     }
 
+    /** Ambient occlusion on or off. */
+    setAO(on) {
+      this.aoOn = !!on;
+      this.render();
+    }
+
     iso() {
       // The game's camera: looking down the diagonal, 2:1 tiles.
       const quarter = Math.round((this.cam.yaw - Math.PI / 4) / (Math.PI / 2));
@@ -150,7 +173,10 @@
       const SX = scene.sizeX ?? scene.size, SZ = scene.sizeZ ?? scene.size, H = scene.height;
       const kinds = scene.palette.map((p) => p.kind);
       const at = (x, y, z) => scene.at(x, y, z);
-      const blocks = (x, y, z) => kinds[at(x, y, z)] === KIND.solid;
+      // Occlusion: what each palette entry weighs as a caster, and whether it is shaded. An entry may say (ao, noAo); if not, its kind does.
+      const caster = scene.palette.map((p) => p.ao ?? CASTER[p.kind] ?? 0);
+      const shaded = scene.palette.map((p) => !p.noAo && SHADED.has(p.kind));
+      const weight = (x, y, z) => caster[at(x, y, z)] ?? 0;
       // A face shows unless the cell in front is an opaque full block, or the same see-through tile (no inner faces).
       const hides = (self, x, y, z) => {
         const o = at(x, y, z), k = kinds[o];
@@ -183,21 +209,31 @@
                 if (onBoundary) continue;
               }
               const base = out.pos.length / 3;
+              // The face's two tangent axes (the ones its normal is not along) and, for each of its four corners, the game's
+              // vertex rule: the two cells beside the corner and the one across it, in the layer in front of the face.
+              const axisU = n[0] ? 1 : 0, axisW = n[2] ? 1 : 2;
+              let aoVec = ZERO4;
+              if (shaded[p]) {
+                // A bottom slab's top sits inside its own level, so its layer is the cell itself, not the one above.
+                const inLevel = k === KIND.slab && n[1] === 1 && box[4] < 1;
+                const fx = x + (inLevel ? 0 : n[0]), fy = y + (inLevel ? 0 : n[1]), fz = z + (inLevel ? 0 : n[2]);
+                aoVec = [0, 0, 0, 0];
+                for (let cw = 0; cw < 2; cw++)
+                  for (let cu = 0; cu < 2; cu++) {
+                    const su = cu ? 1 : -1, sw = cw ? 1 : -1;
+                    const eu = [0, 0, 0], ew = [0, 0, 0];
+                    eu[axisU] = su; ew[axisW] = sw;
+                    const val = A.vertexAO(weight(fx + eu[0], fy + eu[1], fz + eu[2]), weight(fx + ew[0], fy + ew[1], fz + ew[2]),
+                      weight(fx + eu[0] + ew[0], fy + eu[1] + ew[1], fz + eu[2] + ew[2]));
+                    // As the game stores them: the top's corners as they are, the sides' rounded to whole numbers.
+                    aoVec[cu + 2 * cw] = n[1] === 1 ? val : roundEven(val);
+                  }
+              }
               for (const v of quad) {
-                // Corner occlusion, Minecraft style: the two cells beside the corner and the one across it, in the layer
-                // in front of the face.
-                const ax = v[0] * 2 - 1, ay = v[1] * 2 - 1, az = v[2] * 2 - 1;
-                const fx = x + n[0], fy = y + n[1], fz = z + n[2];
-                const t = [n[0] ? 0 : ax, n[1] ? 0 : ay, n[2] ? 0 : az];
-                const a1 = n[0] ? [0, t[1], 0] : [t[0], 0, 0];
-                const a2 = n[2] ? [0, t[1], 0] : [0, 0, t[2]];
-                const s1 = blocks(fx + a1[0], fy + a1[1], fz + a1[2]) ? 1 : 0;
-                const s2 = blocks(fx + a2[0], fy + a2[1], fz + a2[2]) ? 1 : 0;
-                const c = blocks(fx + t[0], fy + t[1], fz + t[2]) ? 1 : 0;
-                const ao = k === KIND.water || k === KIND.ghost ? 3 : s1 && s2 ? 0 : 3 - (s1 + s2 + c);
-                const light = shade * (0.58 + 0.14 * ao);
                 out.pos.push(x + (v[0] ? box[3] : box[0]), y + (v[1] ? box[4] : box[1]), z + (v[2] ? box[5] : box[2]));
-                out.col.push(col[0] * light, col[1] * light, col[2] * light, col[3]);
+                out.col.push(col[0] * shade, col[1] * shade, col[2] * shade, col[3]);
+                out.ao.push(...aoVec);
+                out.uv.push(v[axisU], v[axisW]);
               }
               out.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
             }
@@ -213,6 +249,8 @@
           const light = p[1] ? 1.05 : 0.7;
           out.pos.push(x + p[0], y + p[1], z + p[2]);
           out.col.push(Math.min(1, col[0] * light), Math.min(1, col[1] * light), Math.min(1, col[2] * light), col[3]);
+          out.ao.push(0, 0, 0, 0);
+          out.uv.push(0, 0);
         }
         out.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
       }
@@ -236,11 +274,18 @@
       this.prog = p;
       this.aPos = gl.getAttribLocation(p, "aPos");
       this.aCol = gl.getAttribLocation(p, "aCol");
+      this.aAo = gl.getAttribLocation(p, "aAo");
+      this.aUv = gl.getAttribLocation(p, "aUv");
       this.uMvp = gl.getUniformLocation(p, "uMvp");
+      this.uAo = gl.getUniformLocation(p, "uAo");
     }
 
-    #upload({ pos, col, idx }, mode) {
+    #upload({ pos, col, idx, ao, uv }, mode) {
       const gl = this.gl;
+      // Meshes that carry no occlusion (the overlay's lines and boxes) get zeros: no shade.
+      const n = pos.length / 3;
+      if (ao?.length !== n * 4) ao = new Array(n * 4).fill(0);
+      if (uv?.length !== n * 2) uv = new Array(n * 2).fill(0);
       const vao = gl.createVertexArray();
       gl.bindVertexArray(vao);
       const buf = (data, loc, size) => {
@@ -251,12 +296,12 @@
         gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
         return b;
       };
-      const bp = buf(pos, this.aPos, 3), bc = buf(col, this.aCol, 4);
+      const bp = buf(pos, this.aPos, 3), bc = buf(col, this.aCol, 4), ba = buf(ao, this.aAo, 4), bu = buf(uv, this.aUv, 2);
       const bi = gl.createBuffer();
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bi);
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(idx), gl.STATIC_DRAW);
       gl.bindVertexArray(null);
-      return { vao, buffers: [bp, bc, bi], count: idx.length, mode };
+      return { vao, buffers: [bp, bc, ba, bu, bi], count: idx.length, mode };
     }
 
     #free(m) {
@@ -284,6 +329,7 @@
 
       gl.useProgram(this.prog);
       gl.uniformMatrix4fv(this.uMvp, false, this.#mvp(W / H));
+      gl.uniform1f(this.uAo, this.aoOn ? A.STRENGTH : 0);
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LEQUAL);
       gl.disable(gl.CULL_FACE);
@@ -385,7 +431,7 @@
     }
   }
 
-  const mesh = () => ({ pos: [], col: [], idx: [] });
+  const mesh = () => ({ pos: [], col: [], idx: [], ao: [], uv: [] });
 
   // ── Matrices (column-major, as WebGL takes them) ────────────────────────────────────────────────────────────────
 

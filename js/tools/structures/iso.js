@@ -8,6 +8,7 @@
 (function (Aura) {
   const { SHAPE, AIR, CELL } = Aura.structTiles;
   const { key, parse, rotateOffset } = Aura.structModel;
+  const AO = Aura.ao;
 
   const HALF_W = 32, HALF_H = 16, LAYER_STEP = 32;
   const UPPER_HALF_OFFSET = -LAYER_STEP / 2;
@@ -27,6 +28,15 @@
 
   class IsoView {
     rotation = 0;
+
+    // Ambient occlusion (shared/ao.js, the game's own). Per cell the bake is rotation-free (North corner order), as the game
+    // keeps it; a mask per distinct setup darkens the sprite's own pixels, and the shaded sprite is kept per sprite + mask.
+    #aoCells = null;            // { doc, sig, cells: Map "x,y,z" → { edge, side, rot: [] } | null } — rebuilt when the cells change
+    #aoWeights = new Map();     // tile id → caster weight
+    #aoMasks = new Map();       // mask key → canvas (black, alpha = the darkening)
+    #aoSprites = new Map();     // sprite + flips + mask key → canvas
+    #imgIds = new WeakMap();
+    #imgCount = 0;
     zoomIndex = 4;
     pan = { x: 0, y: 0 };
     hover = null;            // { hit: [x,y,z] | null, place: [x,y,z] }
@@ -214,7 +224,7 @@
       };
       for (const e of list) {
         if (e.grid) { this.#diamond(e.x, e.y, e.z); run = true; }
-        else { flushGrid(); this.#drawCell(e.x, e.y, e.z, e.id, e.ghost ? 0.16 : 1, e.dir, e.shape); }
+        else { flushGrid(); this.#drawCell(e.x, e.y, e.z, e.id, e.ghost ? 0.16 : 1, e.dir, e.shape, !e.ghost); }
       }
       flushGrid();
       if (this.host.editable && !doc.blocks.size) {
@@ -285,7 +295,8 @@
       return [one(art)];
     }
 
-    #drawCell(x, y, z, id, alpha, dir = 0, shape = 0) {
+    /** ao: shade it with the occlusion of the cells around it (only the cells of the template itself, not ghosts or carried ones). */
+    #drawCell(x, y, z, id, alpha, dir = 0, shape = 0, ao = false) {
       const reg = this.host.registry, tile = reg.get(id);
       const foliage = this.host.foliage;
       const sprites = tile && id !== AIR ? this.#cellSprites(id, dir, shape).map((a) => ({ ...a, img: reg.sprite(a.id, foliage) })).filter((a) => a.img) : [];
@@ -294,10 +305,15 @@
       const z0 = this.zoom, g = this.g;
       // BuildTiles' offset for sprites larger than one cell: centred horizontally, grown upward.
       const ox = (tile.tw - CELL) / 2, oy = tile.th - CELL;
+      const shade = ao && this.host.ao ? this.#aoShade(x, y, z, id, tile, shape) : null;
       for (const a of sprites) {
         const [sx, sy] = this.#toScreen(px - ox, py - oy + a.dy);
         const w = Math.round(tile.tw * z0), h = Math.round(tile.th * z0);
         g.globalAlpha = alpha;
+        if (shade && a.img.width === CELL && a.img.height === CELL) {
+          g.drawImage(this.#aoSprite(a, shade), sx, sy, w, h);
+          continue;
+        }
         g.save();
         g.translate(sx + (a.flip ? w : 0), sy + (a.flipV ? h : 0));
         g.scale(a.flip ? -1 : 1, a.flipV ? -1 : 1);
@@ -413,6 +429,87 @@
       for (const e of list) this.#diamond(...e.p);
       g.fillStyle = "rgba(255, 210, 80, 0.3)";
       g.fill();
+    }
+
+    // ── Ambient occlusion ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    /** The caster weight of a tile id (Chunk.GetAOCasterWeight), remembered. */
+    #casterOf(id) {
+      let w = this.#aoWeights.get(id);
+      if (w === undefined) { w = AO.casterWeight(this.host.registry.get(id)); this.#aoWeights.set(id, w); }
+      return w;
+    }
+
+    /**
+     * What shades the cell at x, y, z for this camera: { key, edge, left, right, topOffset }, or null when it takes none.
+     * Only what is really there casts: hidden cells, and the ghosts / cut cells above the working level, do not.
+     */
+    #aoShade(x, y, z, id, tile, shape) {
+      if (!AO.receives(tile) || id === AIR) return null;
+      const doc = this.host.doc, { level, viewMode } = this.host, editable = this.host.editable;
+      const sig = `${doc.rev}|${level}|${viewMode}|${editable ? 1 : 0}`;
+      if (!this.#aoCells || this.#aoCells.doc !== doc || this.#aoCells.sig !== sig) this.#aoCells = { doc, sig, cells: new Map() };
+      const k = key(x, y, z), cells = this.#aoCells.cells;
+      let cell = cells.get(k);
+      if (cell === undefined) {
+        const weight = (cx, cy, cz) => {
+          const ck = key(cx, cy, cz), cid = doc.blocks.get(ck);
+          if (cid === undefined || cid === AIR || doc.hidden.has(ck)) return 0;
+          if (editable && cy > level && viewMode !== "all") return 0;
+          return this.#casterOf(cid);
+        };
+        const bottomSlab = !!tile.slab && !(shape & (SHAPE.UPPER | SHAPE.DOUBLE | SHAPE.VERTICAL));
+        const b = AO.bake((dx, dy, dz) => weight(x + dx, y + dy, z + dz), bottomSlab);
+        cell = b.side || b.edge.some((v) => v > 0) ? { edge: b.edge, side: b.side, rot: [] } : null;
+        cells.set(k, cell);
+      }
+      if (!cell) return null;
+      const r = this.rotation & 3;
+      // A bottom slab's top face sits a quarter of the sprite down; its walls start there too.
+      const topOffset = tile.slab && !(shape & SHAPE.VERTICAL) ? 0.25 : 0;
+      const memo = cell.rot[r]?.topOffset === topOffset ? cell.rot[r] : null;
+      if (memo) return memo.none ? null : memo;
+      const edge = AO.rotateCorners(cell.edge, r), [left, right] = AO.sideFaces(cell.side, r);
+      const out = edge.some((v) => v > 0) || left || right ? { key: AO.keyOf(edge, left, right, topOffset), edge, left, right, topOffset } : null;
+      cell.rot[r] = out ?? { topOffset, none: true };
+      return out;
+    }
+
+    /** The darkening for one setup: black pixels whose alpha is what the game's shader takes off (value / 3 * strength). */
+    #aoMask(s) {
+      let mask = this.#aoMasks.get(s.key);
+      if (mask) return mask;
+      mask = document.createElement("canvas");
+      mask.width = mask.height = CELL;
+      const ctx = mask.getContext("2d"), img = ctx.createImageData(CELL, CELL);
+      for (let py = 0; py < CELL; py++)
+        for (let px = 0; px < CELL; px++)
+          img.data[(py * CELL + px) * 4 + 3] = Math.round(AO.pixelAO((px + 0.5) / CELL, (py + 0.5) / CELL, s.topOffset, s.edge, s.left, s.right) * AO.STRENGTH * 255);
+      ctx.putImageData(img, 0, 0);
+      if (this.#aoMasks.size > 3000) this.#aoMasks.clear();
+      this.#aoMasks.set(s.key, mask);
+      return mask;
+    }
+
+    /** The sprite with its shade laid on its own pixels only (source-atop keeps the art's silhouette), flips included. */
+    #aoSprite(a, s) {
+      let id = this.#imgIds.get(a.img);
+      if (id === undefined) { id = ++this.#imgCount; this.#imgIds.set(a.img, id); }
+      const k = `${id}|${a.flip ? 1 : 0}${a.flipV ? 1 : 0}|${s.key}`;
+      let out = this.#aoSprites.get(k);
+      if (out) return out;
+      out = document.createElement("canvas");
+      out.width = out.height = CELL;
+      const ctx = out.getContext("2d");
+      ctx.translate(a.flip ? CELL : 0, a.flipV ? CELL : 0);
+      ctx.scale(a.flip ? -1 : 1, a.flipV ? -1 : 1);
+      ctx.drawImage(a.img, 0, 0, CELL, CELL);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalCompositeOperation = "source-atop";
+      ctx.drawImage(this.#aoMask(s), 0, 0);
+      if (this.#aoSprites.size > 6000) this.#aoSprites.clear();
+      this.#aoSprites.set(k, out);
+      return out;
     }
 
     /** The first corner of a two-click shape. */

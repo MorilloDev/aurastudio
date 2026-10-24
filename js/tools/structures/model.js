@@ -22,11 +22,21 @@
     }
   }
 
+  /** A Set that tells when it changes (the hidden cells: they alter what the views draw, and so what shades what). */
+  class NotifySet extends Set {
+    constructor(onChange) { super(); this.onChange = onChange; }
+    add(v) { const had = this.has(v); super.add(v); if (!had) this.onChange(); return this; }
+    delete(v) { const had = super.delete(v); if (had) this.onChange(); return had; }
+    clear() { if (this.size) { super.clear(); this.onChange(); } }
+  }
+
   class TemplateDoc {
+    /** Counts every change to the cells or to what is hidden, so what is worked out from them (the AO) knows when to redo. */
+    rev = 0;
     blocks = new Map();     // "x,y,z" → tile id (short)
     dirs = new Map();       // "x,y,z" → facing 1..3 (absent = 0)
     shapes = new Map();     // "x,y,z" → CellShape flags (absent = 0)
-    hidden = new Set();     // view only, never saved
+    hidden = new NotifySet(() => { this.rev++; });     // view only, never saved
     anchor = null;          // [x, y, z], or null for the bottom-centre default
     unknown = new Set();    // tile ids the file names that no tile file defines
     extra = { blockEntities: [], connectors: [] };     // kept as read: the Studio does not edit them yet
@@ -113,6 +123,7 @@
     }
 
     #apply(k, c) {
+      this.rev++;
       if (c === null) {
         this.blocks.delete(k); this.dirs.delete(k); this.shapes.delete(k); this.hidden.delete(k);
         return;
