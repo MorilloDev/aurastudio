@@ -71,18 +71,21 @@
 
     /**
      * Drawn over the scene: lines [{ a: [x, y, z], b: [x, y, z], color: [r, g, b, a] }] (outlines, the level's grid) and boxes
-     * [{ min, max, color }] (ghost pieces, the rectangle), see-through.
+     * [{ min, max, color }] (ghost pieces, the rectangle), see-through. `grid` takes lines in the same shape that are NOT
+     * see-through: the level's grid, hidden wherever a block stands in front of it (outlines, on the other hand, are meant to
+     * be read through what covers them).
      */
-    setOverlay({ lines = [], boxes = [] } = {}) {
+    setOverlay({ lines = [], boxes = [], grid = [] } = {}) {
       if (!this.ok) return;
       if (this.overlay) for (const m of this.overlay) this.#free(m);
-      const l = mesh(), b = mesh();
-      for (const { a, b: e, color } of lines) {
-        const i = l.pos.length / 3;
-        l.pos.push(...a, ...e);
-        l.col.push(...color, ...color);
-        l.idx.push(i, i + 1);
-      }
+      const l = mesh(), b = mesh(), gr = mesh();
+      for (const [target, list] of [[l, lines], [gr, grid]])
+        for (const { a, b: e, color } of list) {
+          const i = target.pos.length / 3;
+          target.pos.push(...a, ...e);
+          target.col.push(...color, ...color);
+          target.idx.push(i, i + 1);
+        }
       for (const { min, max, color } of boxes) {
         for (const { n, shade, quad } of FACES) {
           const i = b.pos.length / 3;
@@ -94,7 +97,7 @@
           void n;
         }
       }
-      this.overlay = [this.#upload(l, this.gl.LINES), this.#upload(b, this.gl.TRIANGLES)];
+      this.overlay = [this.#upload(l, this.gl.LINES), this.#upload(b, this.gl.TRIANGLES), this.#upload(gr, this.gl.LINES)];
       this.render();
     }
 
@@ -293,8 +296,9 @@
       gl.depthMask(false);
       this.#drawMesh(clear);
       if (this.overlay) {
-        const [lines, boxes] = this.overlay;
+        const [lines, boxes, grid] = this.overlay;
         this.#drawMesh(boxes);
+        this.#drawMesh(grid);   // depth-tested like the blocks: only where nothing covers it
         // Outlines read through what stands in front of them, faint, then solid where they are seen.
         gl.depthFunc(gl.GREATER);
         gl.blendColor(0, 0, 0, 0.3);

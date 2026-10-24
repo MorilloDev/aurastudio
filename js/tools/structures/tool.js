@@ -998,7 +998,7 @@
     /** + / − : the radius, or the height for the shapes that have no radius (box, walls). */
     #bumpShape(d) {
       const params = this.#shapeType().params;
-      const k = params.includes("r") ? "r" : params.includes("h") ? "h" : null;
+      const k = params.includes("r") ? "r" : params.includes("h") ? "h" : null;   // (the Alto of round shapes is set on its slider)
       if (!k) return;
       const [lo, hi] = SH.LIMITS[k];
       this.shapeOpts[k] = Math.max(lo, Math.min(hi, this.shapeOpts[k] + d));
@@ -1025,6 +1025,7 @@
       if (has("onlyLevel")) el.append(checkbox({ label: "Solo el nivel de trabajo", value: o.onlyLevel, title: "La caja (Shift+arrastrar) elige solo los bloques de este nivel; si no, todas las alturas", onChange: (v) => set("onlyLevel", v) }).el);
       if (has("plane")) el.append(select({ label: "Plano", value: o.plane, options: [["h", "Horizontal"], ["ns", "Vertical (de frente)"], ["ew", "Vertical (de lado)"]], onChange: (v) => set("plane", v) }).el);
       if (has("r")) el.append(slider({ label: "Radio", min: SH.LIMITS.r[0], max: SH.LIMITS.r[1], value: o.r, defaultValue: SH.DEFAULTS.r, onInput: (v) => set("r", v) }).el);
+      if (has("ha")) el.append(slider({ label: "Alto (0 = automático)", min: SH.LIMITS.ha[0], max: SH.LIMITS.ha[1], value: o.ha, defaultValue: SH.DEFAULTS.ha, onInput: (v) => set("ha", v) }).el);
       if (has("h")) el.append(slider({ label: "Alto", min: SH.LIMITS.h[0], max: SH.LIMITS.h[1], value: o.h, defaultValue: SH.DEFAULTS.h, onInput: (v) => set("h", v) }).el);
       if (has("hollow")) el.append(checkbox({ label: "Hueca", value: o.hollow, title: "Solo la cáscara, vacía por dentro", onChange: (v) => set("hollow", v, true) }).el);
       const shell = has("t") && (o.hollow || !has("hollow"));
@@ -1756,7 +1757,7 @@
       const v = this.voxel, s = this.scene3d;
       if (!v?.ok || !s) return;
       const [ox, oy, oz] = s.origin;
-      const lines = [], boxes = [];
+      const lines = [], boxes = [], grid = [];
       const at = ([x, y, z]) => [x - ox, y - oy, z - oz];
       const cube = (cell, color, inset = 0) => {
         const [x, y, z] = at(cell);
@@ -1774,9 +1775,9 @@
       const doc = this.#editDoc();
       if (doc) {
         // The working level's grid.
-        const y = this.level - oy, gc = [1, 1, 1, 0.13];
-        for (let x = 0; x <= s.sizeX; x++) lines.push({ a: [x, y, 0], b: [x, y, s.sizeZ], color: gc });
-        for (let z = 0; z <= s.sizeZ; z++) lines.push({ a: [0, y, z], b: [s.sizeX, y, z], color: gc });
+        const y = this.level - oy + 0.003, gc = [1, 1, 1, 0.2];
+        for (let x = 0; x <= s.sizeX; x++) grid.push({ a: [x, y, 0], b: [x, y, s.sizeZ], color: gc });
+        for (let z = 0; z <= s.sizeZ; z++) grid.push({ a: [0, y, z], b: [s.sizeX, y, z], color: gc });
         const anchor = doc.effectiveAnchor();
         outline(anchor, doc.anchor ? [1, 0.82, 0.2, 0.95] : [1, 0.82, 0.2, 0.4], 0.04);
         const hv = this.hover3d;
@@ -1817,7 +1818,7 @@
       } else if (this.preview?.far) {
         for (const k of this.preview.far) cube(parse(k), [1, 0.15, 0.15, 0.55], -0.02);
       }
-      v.setOverlay({ lines, boxes });
+      v.setOverlay({ lines, boxes, grid });
     }
 
     // -----------------------------------------------------------------------------------------------------------------

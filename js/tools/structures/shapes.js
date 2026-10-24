@@ -18,17 +18,17 @@
     { id: "line", name: "Línea", points: 2, params: [], hint: "Dos clics: de un extremo a otro, también en diagonal y en altura." },
     { id: "box", name: "Caja", points: 2, params: ["h", "hollow", "t", "caps"], hint: "Dos clics: esquinas opuestas. Alto con el control; hueca = muros, con o sin techo y suelo." },
     { id: "walls", name: "Paredes", points: 2, params: ["h", "t"], hint: "Dos clics: esquinas opuestas. Solo el contorno, sin techo ni suelo." },
-    { id: "disc", name: "Disco", points: 1, params: ["r", "plane"], hint: "Círculo macizo centrado en la celda." },
-    { id: "ring", name: "Anillo", points: 1, params: ["r", "t", "plane"], hint: "Círculo sin centro: solo el borde." },
-    { id: "sphere", name: "Esfera", points: 1, params: ["r", "hollow", "t", "grounded"], hint: "Maciza o hueca (cáscara)." },
-    { id: "dome", name: "Cúpula", points: 1, params: ["r", "hollow", "t"], hint: "Media esfera apoyada en el nivel." },
+    { id: "disc", name: "Disco", points: 1, params: ["r", "ha", "plane"], hint: "Círculo macizo centrado en la celda. Con alto, un cilindro macizo (en vertical, un grosor)." },
+    { id: "ring", name: "Anillo", points: 1, params: ["r", "t", "ha", "plane"], hint: "Círculo sin centro: solo el borde. Con alto, un muro redondo." },
+    { id: "sphere", name: "Esfera", points: 1, params: ["r", "ha", "hollow", "t", "grounded"], hint: "Maciza o hueca (cáscara). Con alto distinto del diámetro, se estira como un huevo." },
+    { id: "dome", name: "Cúpula", points: 1, params: ["r", "ha", "hollow", "t"], hint: "Media esfera apoyada en el nivel; el alto la achata o la alarga." },
     { id: "cylinder", name: "Cilindro", points: 1, params: ["r", "h", "hollow", "t", "caps"], hint: "Torre redonda, maciza o hueca. Sube desde el nivel." },
-    { id: "cone", name: "Cono", points: 1, params: ["r", "hollow", "t"], hint: "Se estrecha hasta la punta (alto = radio + 1)." },
-    { id: "pyramid", name: "Pirámide", points: 1, params: ["r", "hollow", "t"], hint: "Cuadrada, escalonada (alto = radio + 1)." },
+    { id: "cone", name: "Cono", points: 1, params: ["r", "ha", "hollow", "t"], hint: "Se estrecha hasta la punta (automático: alto = radio + 1)." },
+    { id: "pyramid", name: "Pirámide", points: 1, params: ["r", "ha", "hollow", "t"], hint: "Cuadrada, escalonada (automático: alto = radio + 1)." },
   ];
 
-  const DEFAULTS = { onlyLevel: false, r: 3, h: 5, t: 1, hollow: false, capTop: true, capBottom: true, plane: "h", grounded: true };
-  const LIMITS = { r: [1, 30], h: [1, 64], t: [1, 10] };
+  const DEFAULTS = { onlyLevel: false, r: 3, h: 5, ha: 0, t: 1, hollow: false, capTop: true, capBottom: true, plane: "h", grounded: true };
+  const LIMITS = { r: [1, 30], h: [1, 64], ha: [0, 64], t: [1, 10] };
 
   const typeOf = (id) => TYPES.find((t) => t.id === id) ?? TYPES[0];
   const clamp = (v, [lo, hi]) => Math.max(lo, Math.min(hi, Math.round(Number(v) || lo)));
@@ -44,26 +44,42 @@
 
   // ── Las formas ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-  function disc(out, [cx, cy, cz], r, t, hollow, plane) {
+  /** A disc (or ring) of `layers` thick: up for a horizontal one, along z / x for the two vertical planes. */
+  function disc(out, [cx, cy, cz], r, t, hollow, plane, layers = 1) {
     for (let u = -r; u <= r; u++)
       for (let v = -r; v <= r; v++) {
         const d2 = u * u + v * v;
         if (!(hollow ? inShell(d2, r, t) : inside(d2, r))) continue;
-        if (plane === "ns") out.push([cx + u, cy + v, cz]);
-        else if (plane === "ew") out.push([cx, cy + v, cz + u]);
-        else out.push([cx + u, cy, cz + v]);
+        for (let k = 0; k < layers; k++) {
+          if (plane === "ns") out.push([cx + u, cy + v, cz + k]);
+          else if (plane === "ew") out.push([cx + k, cy + v, cz + u]);
+          else out.push([cx + u, cy + k, cz + v]);
+        }
       }
   }
 
+  /**
+   * A sphere, or its upper half for a dome. Alto (o.ha, 0 = automatic) is the height in cells: the automatic one is the
+   * round shape; any other stretches or squashes it into an ellipsoid. The dome stands on the level; a sphere stands on it
+   * (grounded) or is centred on the cell.
+   */
   function sphere(out, [cx, cy, cz], o, half) {
     const { r, t, hollow } = o;
-    const y0 = half || o.grounded ? cy + (half ? 0 : r) : cy;
-    for (let dy = half ? 0 : -r; dy <= r; dy++)
+    const H = o.ha || (half ? r + 1 : 2 * r + 1);
+    const R = r + 0.5, A = half ? H - 0.5 : H / 2;           // horizontal and vertical semi-axes
+    const y0 = half || o.grounded ? cy : cy - Math.floor(H / 2);
+    const ri = r - t + 0.5, ai = A - t;
+    const shell = hollow && ri > 0 && ai > 0;
+    for (let i = 0; i < H; i++) {
+      const dy = half ? i : i - (H - 1) / 2;
       for (let dx = -r; dx <= r; dx++)
         for (let dz = -r; dz <= r; dz++) {
-          const d2 = dx * dx + dy * dy + dz * dz;
-          if (hollow ? inShell(d2, r, t) : inside(d2, r)) out.push([cx + dx, y0 + dy, cz + dz]);
+          const h2 = dx * dx + dz * dz;
+          if (h2 / (R * R) + (dy * dy) / (A * A) > 1) continue;
+          if (shell && h2 / (ri * ri) + (dy * dy) / (ai * ai) <= 1) continue;
+          out.push([cx + dx, y0 + i, cz + dz]);
         }
+    }
   }
 
   function cylinder(out, [cx, cy, cz], o) {
@@ -74,17 +90,22 @@
     }
   }
 
+  /** Radius left at layer i of a taper that is H layers tall: r at the base, 0 at the tip (the automatic H is r + 1). */
+  const taper = (r, i, H) => (H > 1 ? Math.round((r * (H - 1 - i)) / (H - 1)) : r);
+
   function cone(out, [cx, cy, cz], o) {
-    for (let i = 0; i <= o.r; i++) disc(out, [cx, cy + i, cz], o.r - i, o.t, o.hollow && i < o.r, "h");
+    const H = o.ha || o.r + 1;
+    for (let i = 0; i < H; i++) disc(out, [cx, cy + i, cz], taper(o.r, i, H), o.t, o.hollow && i < H - 1, "h");
   }
 
   function pyramid(out, [cx, cy, cz], o) {
-    for (let i = 0; i <= o.r; i++) {
-      const w = o.r - i;
+    const H = o.ha || o.r + 1;
+    for (let i = 0; i < H; i++) {
+      const w = taper(o.r, i, H);
       for (let dx = -w; dx <= w; dx++)
         for (let dz = -w; dz <= w; dz++) {
           const edge = Math.max(Math.abs(dx), Math.abs(dz));
-          if (!o.hollow || edge > w - o.t || i === o.r) out.push([cx + dx, cy + i, cz + dz]);
+          if (!o.hollow || edge > w - o.t || i === H - 1) out.push([cx + dx, cy + i, cz + dz]);
         }
     }
   }
@@ -124,15 +145,15 @@
   function cells(typeId, opts, a, b = a) {
     const type = typeOf(typeId);
     const o = { ...DEFAULTS, ...opts };
-    o.r = clamp(o.r, LIMITS.r); o.h = clamp(o.h, LIMITS.h); o.t = clamp(o.t, LIMITS.t);
+    o.r = clamp(o.r, LIMITS.r); o.h = clamp(o.h, LIMITS.h); o.ha = clamp(o.ha, LIMITS.ha); o.t = clamp(o.t, LIMITS.t);
     const out = [];
     switch (type.id) {
       case "brush": out.push(a.slice()); break;
       case "line": line(out, a, b); break;
       case "box": box(out, a, b, o, false); break;
       case "walls": box(out, a, b, o, true); break;
-      case "disc": disc(out, a, o.r, o.t, false, o.plane); break;
-      case "ring": disc(out, a, o.r, o.t, true, o.plane); break;
+      case "disc": disc(out, a, o.r, o.t, false, o.plane, o.ha || 1); break;
+      case "ring": disc(out, a, o.r, o.t, true, o.plane, o.ha || 1); break;
       case "sphere": sphere(out, a, o, false); break;
       case "dome": sphere(out, a, o, true); break;
       case "cylinder": cylinder(out, a, o); break;

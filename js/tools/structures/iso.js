@@ -198,10 +198,25 @@
         list.push({ x, y, z, id, dir: doc.dirs.get(k) ?? 0, shape: doc.shapes.get(k) ?? 0, ghost: above && viewMode === "ghost",
           depth: this.#depth(x, y, z, this.host.registry.get(id)?.category === "foliage") });
       }
+      // The working level's grid is the top face of each cell of that level: it is sorted in among the tiles by depth (just
+      // after the tile on the same cell), so whatever stands in front of it hides it instead of it showing through.
+      for (const [x, z] of this.#gridCells()) list.push({ grid: true, x, y: level, z, depth: this.#depth(x, level, z, false) + 0.001 });
       list.sort((a, b) => a.depth - b.depth);
-      for (const e of list) this.#drawCell(e.x, e.y, e.z, e.id, e.ghost ? 0.16 : 1, e.dir, e.shape);
-
-      this.#drawGrid();
+      let run = false;
+      g.beginPath();
+      const flushGrid = () => {
+        if (!run) return;
+        g.strokeStyle = "rgba(255, 255, 255, 0.1)";
+        g.lineWidth = 1;
+        g.stroke();
+        g.beginPath();
+        run = false;
+      };
+      for (const e of list) {
+        if (e.grid) { this.#diamond(e.x, e.y, e.z); run = true; }
+        else { flushGrid(); this.#drawCell(e.x, e.y, e.z, e.id, e.ghost ? 0.16 : 1, e.dir, e.shape); }
+      }
+      flushGrid();
       if (this.host.editable && !doc.blocks.size) {
         g.save();
         g.fillStyle = "rgba(255, 255, 255, 0.45)";
@@ -320,16 +335,14 @@
       g.closePath();
     }
 
-    #drawGrid() {
+    /** The cells [x, z] of the grid around the middle of the view, on the working level. */
+    #gridCells() {
       const level = this.host.level;
       const [cx, cz] = this.#worldAtLevel(this.canvas.clientWidth / 2, this.canvas.clientHeight / 2, level);
-      const ix = Math.round(cx), iz = Math.round(cz), g = this.g;
-      g.beginPath();
+      const ix = Math.round(cx), iz = Math.round(cz), cells = [];
       for (let x = ix - GRID_RADIUS; x <= ix + GRID_RADIUS; x++)
-        for (let z = iz - GRID_RADIUS; z <= iz + GRID_RADIUS; z++) this.#diamond(x, level, z);
-      g.strokeStyle = "rgba(255, 255, 255, 0.07)";
-      g.lineWidth = 1;
-      g.stroke();
+        for (let z = iz - GRID_RADIUS; z <= iz + GRID_RADIUS; z++) cells.push([x, z]);
+      return cells;
     }
 
     // Leaves too far from every log (they fall when a neighbouring tree is felled), outlined in red.
