@@ -812,6 +812,7 @@
       this.previewLabel.hidden = on;
       this.ctx?.show(on);
       if (on) this.#updateContext();
+      else this.#drawPreview();   // it was hidden (size 0) while the context view was up
     }
 
     // The preview piece 3 × 3: whether it tiles with itself is what the context view is for.

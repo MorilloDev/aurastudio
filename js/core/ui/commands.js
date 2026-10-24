@@ -158,6 +158,8 @@
   const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
   function matches(spec, e) {
+    // "+" alone is the plus key itself (splitting it on "+" would leave nothing); the layout decides whether it needs Shift.
+    if (spec === "+") return !(e.ctrlKey || e.metaKey || e.altKey) && e.key === "+";
     const parts = spec.split("+");
     const key = parts.pop();
     const want = { ctrl: parts.includes("Ctrl"), shift: parts.includes("Shift"), alt: parts.includes("Alt") };

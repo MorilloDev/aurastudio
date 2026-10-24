@@ -183,6 +183,18 @@
       return null;
     }
 
+    /** A list of cells (a shape) filled with a one-cell tile, or cleared: one undo step. Returns an error text, or null. */
+    fill(cells, id, facing, shape, remove, label) {
+      if (!remove && this.registry.get(id)?.parts) return "Las formas solo rellenan tiles de una celda.";
+      const changes = new Map();
+      for (const c of cells) {
+        if (remove) this.removeInto(changes, c);
+        else this.placeInto(changes, c, id, facing, shape);
+      }
+      this.commit(changes, label ?? (remove ? "Vaciar forma" : "Forma"));
+      return null;
+    }
+
     setAnchor(cell) {
       const before = this.anchor, after = cell ? cell.slice() : null;
       this.history.run({ label: "Anclaje", redo: () => { this.anchor = after; this.onChange?.(); }, undo: () => { this.anchor = before; this.onChange?.(); } });

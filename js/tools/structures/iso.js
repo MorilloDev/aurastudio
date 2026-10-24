@@ -213,6 +213,7 @@
       this.#drawFar();
       this.#drawRect();
       this.#drawAnchor();
+      this.#drawShapeStart();
       this.#drawHover();
       for (const label of this.host.labels ?? []) this.#drawLabel(label);
     }
@@ -366,6 +367,41 @@
       g.stroke();
     }
 
+    /** The first corner of a two-click shape. */
+    #drawShapeStart() {
+      const start = this.host.shapeStart;
+      if (!start || !this.host.editable) return;
+      this.g.beginPath();
+      this.#diamond(...start.cell);
+      this.g.strokeStyle = "#e5c07b";
+      this.g.lineWidth = 2;
+      this.g.stroke();
+    }
+
+    /** What a shape would fill: the tile in hand, translucent, when there are few cells; the footprints when there are many. */
+    #drawShapeGhost(cells) {
+      if (!cells.length) return;
+      const g = this.g, host = this.host, remove = !!host.shapeStart?.remove;
+      const piece = host.selected && !host.registry.get(host.selected)?.parts;
+      if (piece && !remove && cells.length <= 1200) {
+        const probe = new Map();
+        host.doc.placeInto(probe, [0, 0, 0], host.selected, host.facing, host.shape);
+        const proto = [...probe.values()][0];
+        if (proto) {
+          const sorted = cells.map((c) => ({ c, d: this.#depth(...c, false) })).sort((a, b) => a.d - b.d);
+          for (const { c } of sorted) this.#drawCell(...c, proto.id, 0.5, proto.dir, proto.shape ?? 0);
+          return;
+        }
+      }
+      g.beginPath();
+      for (const c of cells) this.#diamond(...c);
+      g.fillStyle = remove ? "rgba(224, 112, 108, 0.3)" : "rgba(111, 191, 115, 0.3)";
+      g.fill();
+      g.strokeStyle = remove ? "rgba(224, 112, 108, 0.7)" : "rgba(111, 191, 115, 0.7)";
+      g.lineWidth = 1;
+      g.stroke();
+    }
+
     #drawHover() {
       const hover = this.hover;
       if (!hover || this.#panning || this.rect || !this.host.editable) return;
@@ -374,6 +410,8 @@
         const [sx, sy] = this.#toScreen(...this.#project(...hover.hit));
         this.#hexagon(sx, sy, null, "rgba(255, 255, 255, 0.55)", false);
       }
+      const shapeCells = host.shapeGhost?.(hover.place);
+      if (shapeCells) { this.#drawShapeGhost(shapeCells); return; }
       if (host.selected) {
         // Every cell of the piece, turned as it would be placed.
         const ghost = new Map();
@@ -448,7 +486,7 @@
         if (!this.hover) return;
         if (e.button === 0 && e.altKey) host.onPick?.(this.hover.hit);
         else if (e.button === 0) host.onPlace?.(this.hover.place);
-        else if (e.button === 2 && this.hover.hit) host.onRemove?.(this.hover.hit);
+        else if (e.button === 2) host.onRemove?.(this.hover.hit, this.hover.place);
       });
       c.addEventListener("pointermove", (e) => {
         const [mx, my] = local(e);

@@ -659,6 +659,7 @@
       this.previewLabel.hidden = on;
       this.ctx?.show(on);
       if (on) this.#updateContext();
+      else this.#drawPreview();   // it was hidden (size 0) while the context view was up
     }
 
     // Every seed variant of the current stage spread over the 3 × 3, so the patch looks like the world, not a stamp.

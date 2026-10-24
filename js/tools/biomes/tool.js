@@ -596,17 +596,20 @@
 
     #draw = rafThrottle(() => {
       const c = this.canvas;
-      if (!c?.isConnected || !c.clientWidth) return;
+      if (!c?.isConnected) return;
+      // First show the canvas this view uses: the 2D one is hidden while the 3D view is up, so its size reads 0 and the
+      // size check below would stop the redraw before it was ever shown again (3D → sample stayed stuck).
+      const gl = this.view === "3d";
+      this.canvas.style.display = gl ? "none" : "";
+      this.glCanvas.style.display = gl ? "" : "none";
+      if (gl) { this.#draw3d(); return; }
+      if (!c.clientWidth) return;
       const dpr = window.devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight;
       if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
       const g = c.getContext("2d");
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       g.clearRect(0, 0, W, H);
-      const gl = this.view === "3d";
-      this.canvas.style.display = gl ? "none" : "";
-      this.glCanvas.style.display = gl ? "" : "none";
-      if (gl) this.#draw3d();
-      else if (this.view === "climate") this.#drawClimate(g, W, H);
+      if (this.view === "climate") this.#drawClimate(g, W, H);
       else this.#drawSample(g, W, H);
     });
 

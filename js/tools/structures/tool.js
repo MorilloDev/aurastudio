@@ -16,6 +16,7 @@
   const T = Aura.atlasTiles;
   const Tint = Aura.tint;
   const G = Aura.structGen;
+  const SH = Aura.structShapes;
   const { TileRegistry, SHAPE, AIR, DEFAULT_FOLIAGE } = Aura.structTiles;
   const { TemplateDoc, key, parse } = Aura.structModel;
   const { KIND } = Aura.voxelView;
@@ -83,6 +84,11 @@
     count = prefs.get("structures:count", 1);
     tint = prefs.get("structures:tint", "");
 
+    shapeTool = prefs.get("structures:shapeTool", "brush");   // "brush" or a shape of Aura.structShapes
+    shapeOpts = { ...SH.DEFAULTS, ...prefs.get("structures:shapeOpts", {}) };
+    shapeStart = null;      // { cell, remove }: the first click of a two-click shape (box, walls, line)
+    #shapeMemo = null;
+
     preview = null;         // { key, doc, far, plate, shapes, error } for the structure shown
     scene3d = null;         // the scene last handed to the 3D view, with its origin in template coordinates
     box3d = null;
@@ -118,6 +124,11 @@
         cmd("anchor", "Anclaje en el bloque bajo el ratón", ["A"], () => this.#anchorHovered(), { enabled: tpl }),
         cmd("center", "Centrar la vista", ["Home"], () => this.#center()),
         cmd("delete", "Borrar la estructura o plantilla elegida del proyecto", ["Delete"], () => this.#delete(this.current), { enabled: () => !!this.current }),
+        cmd("tool", "Siguiente herramienta de forma", ["T"], () => this.#cycleShapeTool(1), { enabled: tpl }),
+        cmd("toolPrev", "Herramienta de forma anterior", ["Shift+T"], () => this.#cycleShapeTool(-1), { enabled: tpl }),
+        cmd("bigger", "Forma más grande", ["+", "]"], () => this.#bumpShape(1), { enabled: tpl }),
+        cmd("smaller", "Forma más pequeña", ["-", "["], () => this.#bumpShape(-1), { enabled: tpl }),
+        cmd("cancelShape", "Cancelar la forma a medias", ["Escape"], () => this.#cancelShape(), { enabled: () => !!this.shapeStart }),
       ], this.id);
       this.#renderAll();
     }
@@ -248,10 +259,12 @@
           get selected() { return tool.selected; },
           get facing() { return tool.facing; },
           get shape() { return tool.shape; },
+          get shapeStart() { return tool.shapeStart; },
+          shapeGhost: (place) => this.#shapeCells(place)?.cells ?? null,
           get farLeaves() { return tool.#editDoc() ? null : tool.preview?.far ?? null; },
           labels: null,
           onPlace: (cell) => this.#place(cell),
-          onRemove: (cell) => this.#remove(cell),
+          onRemove: (cell, place) => this.#remove(cell, place),
           onPick: (cell) => this.#pick(cell),
           onRect: (a, b, remove) => this.#rect(a, b, remove),
           onHover: () => this.#renderLegend(),
@@ -387,6 +400,7 @@
       }
       this.current = doc;
       this.hover3d = null;
+      this.shapeStart = null;
       if (doc?.isTemplate && doc.doc) {
         // The level the template stands on: its anchor's (the ground line), so the first view shows the floor plan.
         this.level = doc.doc.size ? doc.doc.effectiveAnchor()[1] : 0;
@@ -586,11 +600,124 @@
     #place(cell) {
       const doc = this.#editDoc();
       if (!doc || !cell) return;
+      if (this.shapeTool !== "brush") { this.#applyShape(cell, false); return; }
       if (!this.selected) { this.studio.toast("Elige un tile en la paleta (o Alt+clic sobre uno).", { kind: "warn" }); return; }
       doc.place(cell, this.selected, this.facing, this.shape);
     }
 
-    #remove(cell) { if (cell) this.#editDoc()?.remove(cell); }
+    #remove(cell, place) {
+      if (!this.#editDoc()) return;
+      if (this.shapeTool !== "brush") {
+        // Right click: a shape started is dropped; otherwise the shape is carved out where the preview shows it.
+        if (this.shapeStart) this.#cancelShape();
+        else this.#applyShape(place ?? cell, true);
+        return;
+      }
+      if (cell) this.#editDoc().remove(cell);
+    }
+
+    // ── Shapes: sphere, circle, ring, cylinder… placed or carved in one step (Aura.structShapes makes the cells) ─────
+
+    #shapeType() { return SH.typeOf(this.shapeTool); }
+
+    /** The cells the active shape would take with the mouse on `place` ({ cells, error }), or null for the brush. */
+    #shapeCells(place) {
+      const type = this.#shapeType();
+      if (type.id === "brush" || !place || !this.#editDoc()) return null;
+      const start = this.shapeStart?.cell;
+      const k = JSON.stringify([type.id, this.shapeOpts, place, start ?? null]);
+      if (this.#shapeMemo?.key === k) return this.#shapeMemo.res;
+      const res = type.points === 2 && !start ? { cells: [place.slice()], error: null } : SH.cells(type.id, this.shapeOpts, start ?? place, place);
+      this.#shapeMemo = { key: k, res };
+      return res;
+    }
+
+    #applyShape(cell, remove) {
+      const doc = this.#editDoc();
+      if (!doc || !cell) return;
+      const type = this.#shapeType();
+      if (type.points === 2 && !this.shapeStart) {
+        if (!remove && !this.selected) { this.studio.toast("Elige un tile en la paleta (o Alt+clic sobre uno).", { kind: "warn" }); return; }
+        this.shapeStart = { cell: cell.slice(), remove };
+        this.#shapeChanged();
+        return;
+      }
+      const start = this.shapeStart;
+      const carving = start ? start.remove : remove;
+      if (!carving && !this.selected) { this.studio.toast("Elige un tile en la paleta (o Alt+clic sobre uno).", { kind: "warn" }); return; }
+      const res = SH.cells(type.id, this.shapeOpts, start?.cell ?? cell, cell);
+      this.shapeStart = null;
+      if (res.error) this.studio.toast(res.error, { kind: "warn" });
+      else {
+        const err = doc.fill(res.cells, this.selected, this.facing, this.shape, carving, `${carving ? "Vaciar" : "Poner"} ${type.name.toLowerCase()}`);
+        if (err) this.studio.toast(err, { kind: "warn" });
+      }
+      this.#shapeChanged();
+    }
+
+    #cancelShape() {
+      if (!this.shapeStart) return;
+      this.shapeStart = null;
+      this.#shapeChanged();
+    }
+
+    #shapeChanged() {
+      this.#shapeMemo = null;
+      this.#renderLegend();
+      this.#invalidate();
+    }
+
+    #setShapeTool(id) {
+      this.shapeTool = id;
+      this.shapeStart = null;
+      prefs.set("structures:shapeTool", id);
+      this.#renderShapes();
+      this.#shapeChanged();
+    }
+
+    #cycleShapeTool(d) {
+      const i = SH.TYPES.findIndex((t) => t.id === this.shapeTool);
+      this.#setShapeTool(SH.TYPES[(i + d + SH.TYPES.length) % SH.TYPES.length].id);
+    }
+
+    /** + / − : the radius, or the height for the shapes that have no radius (box, walls). */
+    #bumpShape(d) {
+      const params = this.#shapeType().params;
+      const k = params.includes("r") ? "r" : params.includes("h") ? "h" : null;
+      if (!k) return;
+      const [lo, hi] = SH.LIMITS[k];
+      this.shapeOpts[k] = Math.max(lo, Math.min(hi, this.shapeOpts[k] + d));
+      prefs.set("structures:shapeOpts", this.shapeOpts);
+      this.#renderShapes();
+      this.#shapeChanged();
+    }
+
+    #renderShapes() {
+      const el = this.shapeEl;
+      if (!el) return;
+      clear(el);
+      const type = this.#shapeType(), o = this.shapeOpts;
+      const has = (p) => type.params.includes(p);
+      const set = (k, v, redraw = false) => {
+        o[k] = v;
+        prefs.set("structures:shapeOpts", o);
+        if (redraw) this.#renderShapes();
+        this.#shapeChanged();
+      };
+      el.append(
+        h("div", { class: "st-shapes" }, ...SH.TYPES.map((t) => h("button", { class: ["small", t.id === type.id && "on"], title: t.hint, onclick: () => this.#setShapeTool(t.id) }, t.name))),
+        h("p", { class: "note" }, type.hint, type.id !== "brush" ? " Clic derecho: vaciar la forma. T: cambiar de forma · + / −: tamaño." : ""));
+      if (has("plane")) el.append(select({ label: "Plano", value: o.plane, options: [["h", "Horizontal"], ["ns", "Vertical (de frente)"], ["ew", "Vertical (de lado)"]], onChange: (v) => set("plane", v) }).el);
+      if (has("r")) el.append(slider({ label: "Radio", min: SH.LIMITS.r[0], max: SH.LIMITS.r[1], value: o.r, defaultValue: SH.DEFAULTS.r, onInput: (v) => set("r", v) }).el);
+      if (has("h")) el.append(slider({ label: "Alto", min: SH.LIMITS.h[0], max: SH.LIMITS.h[1], value: o.h, defaultValue: SH.DEFAULTS.h, onInput: (v) => set("h", v) }).el);
+      if (has("hollow")) el.append(checkbox({ label: "Hueca", value: o.hollow, title: "Solo la cáscara, vacía por dentro", onChange: (v) => set("hollow", v, true) }).el);
+      const shell = has("t") && (o.hollow || !has("hollow"));
+      if (shell) el.append(slider({ label: "Grosor", min: SH.LIMITS.t[0], max: SH.LIMITS.t[1], value: o.t, defaultValue: SH.DEFAULTS.t, onInput: (v) => set("t", v) }).el);
+      if (has("caps") && o.hollow)
+        el.append(checkbox({ label: "Techo", value: o.capTop, onChange: (v) => set("capTop", v) }).el,
+          checkbox({ label: "Suelo", value: o.capBottom, onChange: (v) => set("capBottom", v) }).el);
+      if (has("grounded")) el.append(checkbox({ label: "Apoyada en el nivel", value: o.grounded, title: "El clic marca la base; si no, el centro de la esfera", onChange: (v) => set("grounded", v) }).el);
+    }
 
     #pick(cell) {
       const c = cell && this.#viewDoc()?.cell(key(...cell));
@@ -734,17 +861,20 @@
       }
       this.templateInfoEl = h("div");
       this.pieceEl = h("div");
+      this.shapeEl = h("div");
       this.paletteGrid = h("div", { class: "st-palette" });
       const search = h("input", { type: "search", placeholder: "Buscar tile…", value: this.search, spellcheck: false,
         oninput: () => { this.search = search.value; this.#renderPalette(); } });
       this.panel.append(
         section({ id: "st-tinfo", title: "Plantilla", extra: t.isNew ? "nueva" : t.name }, this.templateInfoEl).el,
+        section({ id: "st-shapes", title: "Forma", extra: "rápido" }, this.shapeEl).el,
         section({ id: "st-piece", title: "Pieza" }, this.pieceEl).el,
         section({ id: "st-palette", title: "Paleta" }, search, this.paletteGrid).el,
         section({ id: "st-keys", title: "Atajos", collapsed: true },
           h("p", { class: "note" }, "Clic: poner · clic derecho: quitar (una pieza grande entera) · Alt+clic: copiar tile, orientación y forma · Shift+arrastrar: rellenar un rectángulo del nivel (con el derecho: vaciarlo)."),
-          h("p", { class: "note" }, "W / S: nivel · R: girar la pieza · F: forma · Q / E: girar la cámara · 1 2 3: todo / fantasma / cortar · H: ocultar el bloque (Shift+H: mostrar todo) · A: anclaje · V: iso / 3D · Inicio: centrar.")).el);
+          h("p", { class: "note" }, "T: herramienta de forma (esfera, círculo, cilindro…) · + / −: tamaño · Esc: cancelar · W / S: nivel · R: girar la pieza · F: forma · Q / E: girar la cámara · 1 2 3: todo / fantasma / cortar · H: ocultar el bloque (Shift+H: mostrar todo) · A: anclaje · V: iso / 3D · Inicio: centrar.")).el);
       this.#renderTemplateInfo();
+      this.#renderShapes();
       this.#renderPiece();
       this.#renderPalette();
     }
@@ -1123,6 +1253,13 @@
         const hv = this.#hovered();
         const cell = hv?.hit ?? hv?.place;
         say(`nivel ${this.level}`);
+        const st = this.#shapeType();
+        if (st.id !== "brush") {
+          const res = hv?.place ? this.#shapeCells(hv.place) : null;
+          say(st.name + (res && !res.error && res.cells.length > 1 ? ` · ${res.cells.length} celdas` : ""));
+          if (st.points === 2) say(this.shapeStart ? `esquina 1: ${this.shapeStart.cell.join(", ")} · clic en la opuesta (clic derecho o Esc cancela)` : "clic en la primera esquina");
+          if (res?.error) say(res.error, "bad-text");
+        }
         if (cell) say(`${cell.join(", ")}` + (hv.hit ? ` · ${doc.blocks.get(key(...hv.hit))}` : ""));
         if (this.selected) say(`en mano: ${this.selected}` + (this.registry.turns(this.selected, this.shape) ? ` · mira ${FACINGS[this.facing][2].toLowerCase()}` : "")
           + (this.shape ? ` · ${this.registry.shapeName(this.selected, this.shape)}` : ""));
@@ -1287,7 +1424,7 @@
       if (!p) return;
       if (button === 0 && e.altKey) this.#pick(p.hit);
       else if (button === 0) this.#place(p.place);
-      else if (button === 2) this.#remove(p.hit);
+      else if (button === 2) this.#remove(p.hit, p.place);
       this.hover3d = this.#pick3d(ray);
     }
 
@@ -1319,13 +1456,18 @@
         const anchor = doc.effectiveAnchor();
         outline(anchor, doc.anchor ? [1, 0.82, 0.2, 0.95] : [1, 0.82, 0.2, 0.4], 0.04);
         const hv = this.hover3d;
+        if (this.shapeStart) outline(this.shapeStart.cell, [1, 0.82, 0.2, 0.95], 0.04);
         if (this.rect3d) {
           const { start: [x0, z0], end: [x1, z1], remove } = this.rect3d;
           for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++)
             for (let z = Math.min(z0, z1); z <= Math.max(z0, z1); z++) cube([x, this.level, z], remove ? [1, 0.3, 0.3, 0.3] : [0.4, 0.9, 0.5, 0.3], 0.02);
         } else if (hv) {
           if (hv.hit) outline(hv.hit, [1, 1, 1, 0.9]);
-          if (this.selected && hv.place) {
+          const sh = hv.place && this.#shapeCells(hv.place);
+          if (sh) {
+            const color = this.shapeStart?.remove ? [1, 0.3, 0.3, 0.3] : [0.4, 0.95, 0.55, 0.35];
+            for (let i = 0; i < Math.min(sh.cells.length, 4000); i++) cube(sh.cells[i], color, 0.03);
+          } else if (this.selected && hv.place) {
             const ghost = new Map();
             doc.placeInto(ghost, hv.place, this.selected, this.facing, this.shape);
             for (const k of ghost.keys()) cube(parse(k), [0.4, 0.95, 0.55, 0.35], 0.03);
