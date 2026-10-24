@@ -210,6 +210,8 @@
         g.fillText(this.host.selected ? "Lienzo vacío: haz clic para poner el primer tile" : "Lienzo vacío: elige un tile en la paleta y haz clic para ponerlo", w / 2, 28);
         g.restore();
       }
+      this.#drawSelection();
+      this.#drawFloat();
       this.#drawFar();
       this.#drawRect();
       this.#drawAnchor();
@@ -367,6 +369,39 @@
       g.stroke();
     }
 
+    /** The selected blocks: a gold hexagon over each (the ones lifted into a move are drawn by #drawFloat instead). */
+    #drawSelection() {
+      const sel = this.host.selection, doc = this.host.doc;
+      if (!sel?.size || !this.host.editable || !doc) return;
+      for (const k of sel) {
+        if (doc.hidden.has(k)) continue;
+        const [x, y, z] = parse(k);
+        const [sx, sy] = this.#toScreen(...this.#project(x, y, z));
+        this.#hexagon(sx, sy, "rgba(255, 210, 80, 0.2)", "rgba(255, 210, 80, 0.95)", false);
+      }
+    }
+
+    /** What is being carried (a paste, or a selection lifted to move): translucent, following the mouse, outlined as selected. */
+    #drawFloat() {
+      const list = this.host.floatCells?.();
+      if (!list?.length) return;
+      if (list.length <= 5000) {
+        const sorted = list.map((e) => ({ e, d: this.#depth(...e.p, false) })).sort((a, b) => a.d - b.d);
+        for (const { e } of sorted) this.#drawCell(...e.p, e.id, 0.75, e.dir, e.shape);
+        if (list.length <= 1500)
+          for (const { e } of sorted) {
+            const [sx, sy] = this.#toScreen(...this.#project(...e.p));
+            this.#hexagon(sx, sy, null, "rgba(255, 210, 80, 0.9)", false);
+          }
+        return;
+      }
+      const g = this.g;
+      g.beginPath();
+      for (const e of list) this.#diamond(...e.p);
+      g.fillStyle = "rgba(255, 210, 80, 0.3)";
+      g.fill();
+    }
+
     /** The first corner of a two-click shape. */
     #drawShapeStart() {
       const start = this.host.shapeStart;
@@ -404,7 +439,7 @@
 
     #drawHover() {
       const hover = this.hover;
-      if (!hover || this.#panning || this.rect || !this.host.editable) return;
+      if (!hover || this.#panning || this.rect || !this.host.editable || this.host.floating) return;
       const g = this.g, host = this.host;
       if (hover.hit) {
         const [sx, sy] = this.#toScreen(...this.#project(...hover.hit));
@@ -477,7 +512,7 @@
           if (e.button === 0 || e.button === 1) this.#panning = { x: mx, y: my };
           return;
         }
-        if (e.shiftKey && (e.button === 0 || e.button === 2)) {
+        if (e.shiftKey && !host.floating && (e.button === 0 || e.button === 2)) {
           const [x, , z] = this.cellAtLevel(mx, my, host.level);
           this.rect = { start: [x, z], end: [x, z], remove: e.button === 2 };
           this.render();
@@ -485,7 +520,7 @@
         }
         if (!this.hover) return;
         if (e.button === 0 && e.altKey) host.onPick?.(this.hover.hit);
-        else if (e.button === 0) host.onPlace?.(this.hover.place);
+        else if (e.button === 0) host.onPlace?.(this.hover.place, e, this.hover.hit);
         else if (e.button === 2) host.onRemove?.(this.hover.hit, this.hover.place);
       });
       c.addEventListener("pointermove", (e) => {

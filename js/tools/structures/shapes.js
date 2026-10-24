@@ -14,6 +14,7 @@
    */
   const TYPES = [
     { id: "brush", name: "Pincel", points: 1, params: [], hint: "Un tile por clic." },
+    { id: "select", name: "Seleccionar", points: 1, params: ["onlyLevel"], hint: "Clic: elige un bloque (una pieza grande, entera). Ctrl+clic: suma o quita. Shift+arrastrar: una caja (con el derecho: quitar de la selección). Ctrl+A: todo." },
     { id: "line", name: "Línea", points: 2, params: [], hint: "Dos clics: de un extremo a otro, también en diagonal y en altura." },
     { id: "box", name: "Caja", points: 2, params: ["h", "hollow", "t", "caps"], hint: "Dos clics: esquinas opuestas. Alto con el control; hueca = muros, con o sin techo y suelo." },
     { id: "walls", name: "Paredes", points: 2, params: ["h", "t"], hint: "Dos clics: esquinas opuestas. Solo el contorno, sin techo ni suelo." },
@@ -26,7 +27,7 @@
     { id: "pyramid", name: "Pirámide", points: 1, params: ["r", "hollow", "t"], hint: "Cuadrada, escalonada (alto = radio + 1)." },
   ];
 
-  const DEFAULTS = { r: 3, h: 5, t: 1, hollow: false, capTop: true, capBottom: true, plane: "h", grounded: true };
+  const DEFAULTS = { onlyLevel: false, r: 3, h: 5, t: 1, hollow: false, capTop: true, capBottom: true, plane: "h", grounded: true };
   const LIMITS = { r: [1, 30], h: [1, 64], t: [1, 10] };
 
   const typeOf = (id) => TYPES.find((t) => t.id === id) ?? TYPES[0];

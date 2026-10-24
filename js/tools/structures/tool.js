@@ -18,7 +18,7 @@
   const G = Aura.structGen;
   const SH = Aura.structShapes;
   const { TileRegistry, SHAPE, AIR, DEFAULT_FOLIAGE } = Aura.structTiles;
-  const { TemplateDoc, key, parse } = Aura.structModel;
+  const { TemplateDoc, key, parse, rotateOffset } = Aura.structModel;
   const { KIND } = Aura.voxelView;
 
   const short = G.short;
@@ -89,6 +89,10 @@
     shapeStart = null;      // { cell, remove }: the first click of a two-click shape (box, walls, line)
     #shapeMemo = null;
 
+    selection = new Set();  // "x,y,z" keys of the selected blocks of the template being edited (view state, never saved)
+    clipboard = null;       // { name, size, cells: [{ p: [x, y, z] from the min corner, id, dir, shape }] }: survives changing template
+    float = null;           // what is being carried: { cells: [{ d: offset from the pivot, id, dir, shape }], lifted: Set|null, hid: [], off, lastAt, label }
+
     preview = null;         // { key, doc, far, plate, shapes, error } for the structure shown
     scene3d = null;         // the scene last handed to the 3D view, with its origin in template coordinates
     box3d = null;
@@ -110,7 +114,8 @@
         cmd("up", "Subir de nivel", ["W", "PageUp"], () => this.#setLevel(this.level + 1), { enabled: tpl }),
         cmd("down", "Bajar de nivel", ["S", "PageDown"], () => this.#setLevel(this.level - 1), { enabled: tpl }),
         cmd("facing", "Girar la pieza / otra semilla", ["R"], () => {
-          if (tpl()) this.#setFacing((this.facing + 1) & 3);
+          if (this.float) this.#rotateFloat();
+          else if (tpl()) this.#setFacing((this.facing + 1) & 3);
           else { this.seed++; this.#invalidate(); }
         }),
         cmd("shape", "Siguiente forma de la pieza", ["F"], () => this.#cycleShape(), { enabled: tpl }),
@@ -123,12 +128,25 @@
         cmd("show", "Mostrar todo lo oculto", ["Shift+H"], () => this.#showAll(), { enabled: tpl }),
         cmd("anchor", "Anclaje en el bloque bajo el ratón", ["A"], () => this.#anchorHovered(), { enabled: tpl }),
         cmd("center", "Centrar la vista", ["Home"], () => this.#center()),
-        cmd("delete", "Borrar la estructura o plantilla elegida del proyecto", ["Delete"], () => this.#delete(this.current), { enabled: () => !!this.current }),
+        cmd("delete", "Borrar la selección (sin selección: la estructura o plantilla elegida del proyecto)", ["Delete"],
+          () => { if (tpl() && this.selection.size && !this.float) this.#deleteSelection(); else this.#delete(this.current); }, { enabled: () => !!this.current }),
+        cmd("deleteSel", "Borrar la selección", ["Backspace"], () => this.#deleteSelection(), { enabled: () => tpl() && this.selection.size > 0 && !this.float }),
+        cmd("selectAll", "Seleccionar todo", ["Ctrl+A"], () => this.#selectAll(), { enabled: () => tpl() && !this.float }),
+        cmd("copy", "Copiar la selección (sin selección: la plantilla entera)", ["Ctrl+C"], () => this.#copy(), { enabled: () => this.#canCopy() && !this.float }),
+        cmd("cutSel", "Cortar la selección", ["Ctrl+X"], () => this.#cut(), { enabled: () => tpl() && this.selection.size > 0 && !this.float }),
+        cmd("paste", "Pegar (entera, seleccionada, siguiendo el ratón)", ["Ctrl+V"], () => this.#paste(), { enabled: () => tpl() && !!this.clipboard && !this.float }),
+        cmd("duplicate", "Duplicar la selección", ["Ctrl+D"], () => this.#duplicate(), { enabled: () => tpl() && this.selection.size > 0 && !this.float }),
+        cmd("grab", "Mover la selección con el ratón", ["G"], () => this.#grab(), { enabled: () => tpl() && this.selection.size > 0 && !this.float }),
+        cmd("drop", "Soltar lo que llevas donde esté el ratón", ["Enter"], () => this.#dropFloat(), { enabled: () => !!this.float }),
         cmd("tool", "Siguiente herramienta de forma", ["T"], () => this.#cycleShapeTool(1), { enabled: tpl }),
         cmd("toolPrev", "Herramienta de forma anterior", ["Shift+T"], () => this.#cycleShapeTool(-1), { enabled: tpl }),
         cmd("bigger", "Forma más grande", ["+", "]"], () => this.#bumpShape(1), { enabled: tpl }),
         cmd("smaller", "Forma más pequeña", ["-", "["], () => this.#bumpShape(-1), { enabled: tpl }),
-        cmd("cancelShape", "Cancelar la forma a medias", ["Escape"], () => this.#cancelShape(), { enabled: () => !!this.shapeStart }),
+        cmd("cancelShape", "Cancelar: lo que llevas, la forma a medias o la selección", ["Escape"], () => {
+          if (this.float) this.#cancelFloat();
+          else if (this.shapeStart) this.#cancelShape();
+          else this.#clearSelection();
+        }, { enabled: () => !!this.float || !!this.shapeStart || this.selection.size > 0 }),
       ], this.id);
       this.#renderAll();
     }
@@ -260,10 +278,13 @@
           get facing() { return tool.facing; },
           get shape() { return tool.shape; },
           get shapeStart() { return tool.shapeStart; },
+          get selection() { return tool.selection; },
+          get floating() { return !!tool.float; },
+          floatCells: () => this.#floatList(),
           shapeGhost: (place) => this.#shapeCells(place)?.cells ?? null,
           get farLeaves() { return tool.#editDoc() ? null : tool.preview?.far ?? null; },
           labels: null,
-          onPlace: (cell) => this.#place(cell),
+          onPlace: (cell, e, hit) => this.#place(cell, e, hit),
           onRemove: (cell, place) => this.#remove(cell, place),
           onPick: (cell) => this.#pick(cell),
           onRect: (a, b, remove) => this.#rect(a, b, remove),
@@ -308,6 +329,9 @@
 
     #changed() {
       const t = this.current?.isTemplate ? this.current : null;
+      // An undo / redo while something is carried puts the carried blocks back; the selection forgets blocks that are gone.
+      if (this.float) { this.#unlift(); this.float = null; }
+      if (this.selection.size && t?.doc) for (const k of this.selection) if (!t.doc.blocks.has(k)) this.selection.delete(k);
       // The structures that stamp this template see it as it is now, saved or not.
       if (t?.doc) {
         try {
@@ -317,7 +341,7 @@
       }
       this.#renderList();
       this.#renderToolbar();
-      if (t) this.#renderTemplateInfo();
+      if (t) { this.#renderTemplateInfo(); this.#renderSelection(); }
       else if (!this.#live) this.#renderPanel();
       this.#invalidate();
       this.studio.refreshDirty();
@@ -393,6 +417,8 @@
     }
 
     #select(doc) {
+      if (this.float) this.#cancelFloat();
+      this.selection = new Set();
       if (doc?.isTemplate && !doc.doc && doc.json && this.registry) {
         doc.doc = TemplateDoc.fromJson(doc.json, this.registry, this.history, () => {});
         // The baseline is the file as the Studio writes it, so opening a hand-formatted file does not count as a change.
@@ -597,9 +623,12 @@
       return t;
     }
 
-    #place(cell) {
+    #place(cell, e, hit) {
       const doc = this.#editDoc();
-      if (!doc || !cell) return;
+      if (!doc) return;
+      if (this.float) { this.#dropFloat(); return; }
+      if (this.shapeTool === "select") { this.#selectClick(hit, e); return; }
+      if (!cell) return;
       if (this.shapeTool !== "brush") { this.#applyShape(cell, false); return; }
       if (!this.selected) { this.studio.toast("Elige un tile en la paleta (o Alt+clic sobre uno).", { kind: "warn" }); return; }
       doc.place(cell, this.selected, this.facing, this.shape);
@@ -607,6 +636,8 @@
 
     #remove(cell, place) {
       if (!this.#editDoc()) return;
+      if (this.float) { this.#cancelFloat(); return; }
+      if (this.shapeTool === "select") { this.#deselect(cell); return; }
       if (this.shapeTool !== "brush") {
         // Right click: a shape started is dropped; otherwise the shape is carved out where the preview shows it.
         if (this.shapeStart) this.#cancelShape();
@@ -616,6 +647,290 @@
       if (cell) this.#editDoc().remove(cell);
     }
 
+    // ── Selection, copy / paste and moving ───────────────────────────────────────────────────────────────────────────
+    // A selection is a set of cells of the template being edited. Moving and pasting both carry blocks as a "float": a
+    // translucent copy that follows the mouse (R turns it, W / S raise the plane, click or Enter drops it, Esc cancels).
+    // Moving lifts the selected blocks out of view while carried (the file is untouched until the drop, so Esc is exact);
+    // the drop is one undo step that clears the old place and writes the new one. What was dropped stays selected.
+
+    #selChanged() {
+      this.#renderLegend();
+      this.#renderSelection();
+      this.#draw();
+    }
+
+    /** The cells of the piece under a block (a door or bed: all its parts), as keys. */
+    #pieceKeys(doc, cell) {
+      const probe = new Map();
+      doc.removeInto(probe, cell);
+      return [...probe.keys()];
+    }
+
+    #selectClick(hit, e) {
+      const doc = this.#editDoc();
+      if (!doc) return;
+      const add = !!(e && (e.ctrlKey || e.metaKey));
+      if (!hit) { if (!add) this.selection = new Set(); }
+      else {
+        const keys = this.#pieceKeys(doc, hit);
+        if (!keys.length) return;
+        if (add) {
+          const on = this.selection.has(keys[0]);
+          for (const k of keys) on ? this.selection.delete(k) : this.selection.add(k);
+        } else this.selection = new Set(keys);
+      }
+      this.#selChanged();
+    }
+
+    #deselect(hit) {
+      const doc = this.#editDoc();
+      if (!doc) return;
+      if (hit) for (const k of this.#pieceKeys(doc, hit)) this.selection.delete(k);
+      else this.selection = new Set();
+      this.#selChanged();
+    }
+
+    /** Shift + drag: the blocks inside the rectangle (every height, or only the working level). The right button takes them out. */
+    #selectRect([x0, z0], [x1, z1], remove) {
+      const doc = this.#editDoc();
+      if (!doc) return;
+      const lo = [Math.min(x0, x1), Math.min(z0, z1)], hi = [Math.max(x0, x1), Math.max(z0, z1)];
+      const next = remove ? new Set(this.selection) : new Set();
+      for (const k of doc.blocks.keys()) {
+        const [x, y, z] = parse(k);
+        if (x < lo[0] || x > hi[0] || z < lo[1] || z > hi[1]) continue;
+        if (this.shapeOpts.onlyLevel && y !== this.level) continue;
+        remove ? next.delete(k) : next.add(k);
+      }
+      this.selection = next;
+      this.#selChanged();
+    }
+
+    #selectAll() {
+      const doc = this.#editDoc();
+      if (!doc?.size) return;
+      this.selection = new Set(doc.blocks.keys());
+      this.#selChanged();
+    }
+
+    #clearSelection() {
+      if (!this.selection.size) return;
+      this.selection = new Set();
+      this.#selChanged();
+    }
+
+    #deleteSelection() {
+      const doc = this.#editDoc();
+      if (!doc || !this.selection.size) return;
+      const changes = new Map();
+      for (const k of this.selection) changes.set(k, null);
+      this.selection = new Set();
+      doc.commit(changes, "Borrar selección");
+      this.#selChanged();
+    }
+
+    // ── Copy ───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    #canCopy() {
+      const cur = this.current;
+      if (!cur) return false;
+      return cur.isTemplate ? !!cur.doc?.size : !!(cur.root && G.generatorFor(cur.root, this.templates));
+    }
+
+    /** What Copy takes: the selection; with none, the whole template; for a structure, the one that is shown (this seed). */
+    #copySource() {
+      const cur = this.current;
+      if (!cur) return null;
+      if (cur.isTemplate) {
+        const doc = cur.doc;
+        if (!doc?.size) return null;
+        const keys = this.selection.size ? [...this.selection] : [...doc.blocks.keys()];
+        const cells = new Map();
+        for (const k of keys) { const c = doc.cell(k); if (c) cells.set(k, c); }
+        return { name: cur.id + (this.selection.size ? " (selección)" : ""), cells };
+      }
+      const r = cur.root;
+      const gen = r && G.generatorFor(r, this.templates);
+      if (!gen) return null;
+      const { cells, plate } = this.#grow(r, gen, 1, 0);
+      for (const k of plate) cells.delete(k);
+      return { name: short(r.id), cells };
+    }
+
+    #copy() {
+      const src = this.#copySource();
+      if (!src?.cells.size) { this.studio.toast("No hay nada que copiar.", { kind: "warn" }); return false; }
+      let mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+      for (const k of src.cells.keys()) {
+        const p = parse(k);
+        for (let i = 0; i < 3; i++) { mn[i] = Math.min(mn[i], p[i]); mx[i] = Math.max(mx[i], p[i]); }
+      }
+      this.clipboard = {
+        name: src.name, size: [mx[0] - mn[0] + 1, mx[1] - mn[1] + 1, mx[2] - mn[2] + 1],
+        cells: [...src.cells].map(([k, c]) => { const p = parse(k); return { p: [p[0] - mn[0], p[1] - mn[1], p[2] - mn[2]], id: c.id, dir: c.dir ?? 0, shape: c.shape ?? 0 }; }),
+      };
+      this.studio.setStatus(`Copiado «${src.name}»: ${src.cells.size} bloques. Abre otra plantilla y pega con Ctrl+V.`, "ok");
+      this.#renderSelection();
+      return true;
+    }
+
+    #cut() {
+      if (!this.selection.size || !this.#copy()) return;
+      this.#deleteSelection();
+    }
+
+    #duplicate() {
+      if (!this.selection.size || !this.#copy()) return;
+      this.#paste();
+    }
+
+    // ── Carrying: paste and move ───────────────────────────────────────────────────────────────────────────────────
+
+    /** Paste: the whole clipboard, centred on the mouse with its base on the plane, already selected and carried. */
+    #paste() {
+      const doc = this.#editDoc();
+      if (!doc) { this.studio.toast("Abre una plantilla para pegar.", { kind: "warn" }); return; }
+      const clip = this.clipboard;
+      if (!clip) { this.studio.toast("No hay nada copiado.", { kind: "warn" }); return; }
+      const px = Math.floor(clip.size[0] / 2), pz = Math.floor(clip.size[2] / 2);
+      this.float = { cells: clip.cells.map((c) => ({ d: [c.p[0] - px, c.p[1], c.p[2] - pz], id: c.id, dir: c.dir, shape: c.shape })),
+        lifted: null, hid: [], off: [0, 0, 0], lastAt: this.#hovered()?.place?.slice() ?? null, label: `Pegar ${clip.name}` };
+      this.selection = new Set();
+      this.studio.setStatus(`Pegado «${clip.name}» (${clip.cells.length} bloques): llévalo con el ratón y clic para soltarlo. R lo gira, W / S suben o bajan el plano, Esc lo cancela.`, "ok");
+      this.#selChanged();
+    }
+
+    /** G: lift the selection to carry it. The pivot is the cell under the mouse, so nothing jumps. */
+    #grab() {
+      const doc = this.#editDoc();
+      if (!doc || !this.selection.size || this.float) return;
+      const cells = [...this.selection].map((k) => ({ p: parse(k), c: doc.cell(k) })).filter((e) => e.c);
+      if (!cells.length) return;
+      let mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+      for (const { p } of cells) for (let i = 0; i < 3; i++) { mn[i] = Math.min(mn[i], p[i]); mx[i] = Math.max(mx[i], p[i]); }
+      const pivot = this.#hovered()?.place?.slice() ?? [Math.floor((mn[0] + mx[0]) / 2), mn[1], Math.floor((mn[2] + mx[2]) / 2)];
+      const lifted = new Set(cells.map((e) => key(...e.p)));
+      const hid = [];
+      for (const k of lifted) if (!doc.hidden.has(k)) { doc.hidden.add(k); hid.push(k); }
+      this.float = { cells: cells.map(({ p, c }) => ({ d: [p[0] - pivot[0], p[1] - pivot[1], p[2] - pivot[2]], id: c.id, dir: c.dir, shape: c.shape })),
+        lifted, hid, off: [0, 0, 0], lastAt: pivot.slice(), label: "Mover" };
+      this.studio.setStatus("Moviendo: clic o Enter suelta, R gira, W / S suben o bajan el plano, Esc devuelve todo a su sitio.", "ok");
+      this.#invalidate();
+      this.#selChanged();
+    }
+
+    /** Where the carried pivot is: under the mouse (the last place it was), plus the nudges. */
+    #floatAt() {
+      const f = this.float;
+      const place = this.#hovered()?.place;
+      if (place) f.lastAt = place.slice();
+      const base = f.lastAt ?? [0, this.level, 0];
+      return [base[0] + f.off[0], base[1] + f.off[1], base[2] + f.off[2]];
+    }
+
+    #floatList() {
+      if (!this.float) return null;
+      const at = this.#floatAt();
+      return this.float.cells.map((c) => ({ p: [at[0] + c.d[0], at[1] + c.d[1], at[2] + c.d[2]], id: c.id, dir: c.dir, shape: c.shape }));
+    }
+
+    #unlift() {
+      const doc = this.#editDoc();
+      if (doc && this.float?.hid) for (const k of this.float.hid) doc.hidden.delete(k);
+    }
+
+    #cancelFloat() {
+      if (!this.float) return;
+      this.#unlift();
+      const moved = !!this.float.lifted;
+      this.float = null;
+      this.#invalidate();
+      this.#selChanged();
+      if (moved) this.studio.setStatus("Movimiento cancelado: todo sigue donde estaba.", "ok");
+    }
+
+    /** Drop: one undo step. A move clears the lifted blocks' old cells and writes the new ones; a paste only writes. */
+    #dropFloat() {
+      const f = this.float, doc = this.#editDoc();
+      if (!f || !doc) return;
+      const at = this.#floatAt();
+      this.#unlift();
+      this.float = null;
+      const changes = new Map();
+      if (f.lifted) for (const k of f.lifted) changes.set(k, null);
+      const now = new Set();
+      for (const c of f.cells) {
+        const k = key(at[0] + c.d[0], at[1] + c.d[1], at[2] + c.d[2]);
+        changes.set(k, { id: c.id, dir: c.dir, shape: c.shape });
+        now.add(k);
+      }
+      doc.commit(changes, f.label);
+      this.selection = now;
+      this.#invalidate();
+      this.#selChanged();
+    }
+
+    /** R while carrying: a quarter turn about the pivot; every piece keeps facing the way it did relative to the whole. */
+    #rotateFloat() {
+      const f = this.float;
+      if (!f) return;
+      for (const c of f.cells) {
+        const [dx, dz] = rotateOffset(c.d[0], c.d[2], 1);
+        c.d = [dx, c.d[1], dz];
+        if (c.dir || this.registry.turns(c.id, c.shape)) c.dir = (c.dir + 1) & 3;
+      }
+      this.#selChanged();
+    }
+
+    /** The Desplazar buttons: carrying, they nudge what is carried; otherwise the selection moves one block, as one undo step. */
+    #nudge(axis, d) {
+      const doc = this.#editDoc();
+      if (!doc) return;
+      if (this.float) { this.float.off[axis] += d; this.#selChanged(); return; }
+      if (!this.selection.size) return;
+      const delta = [0, 0, 0];
+      delta[axis] = d;
+      const changes = new Map(), now = new Set();
+      for (const k of this.selection) changes.set(k, null);
+      for (const k of this.selection) {
+        const c = doc.cell(k);
+        if (!c) continue;
+        const p = parse(k), nk = key(p[0] + delta[0], p[1] + delta[1], p[2] + delta[2]);
+        changes.set(nk, c);
+        now.add(nk);
+      }
+      doc.commit(changes, "Desplazar");
+      this.selection = now;
+      this.#invalidate();
+      this.#selChanged();
+    }
+
+    #renderSelection() {
+      const el = this.selEl;
+      if (!el) return;
+      clear(el);
+      const n = this.selection.size, clip = this.clipboard, busy = !!this.float;
+      const btn = (label, title, fn, disabled = false) => h("button", { class: "small", title, disabled, onclick: fn }, label);
+      const axes = [["X −", 0, -1, "Un bloque hacia −X"], ["X +", 0, 1, "Un bloque hacia +X"], ["Y −", 1, -1, "Un nivel abajo"],
+        ["Y +", 1, 1, "Un nivel arriba"], ["Z −", 2, -1, "Un bloque hacia −Z"], ["Z +", 2, 1, "Un bloque hacia +Z"]];
+      el.append(
+        h("p", { class: "note" }, busy ? "Llevando bloques: clic o Enter los suelta · R gira · W / S suben o bajan el plano · Esc cancela."
+          : n ? `${n} bloque${n === 1 ? "" : "s"} seleccionado${n === 1 ? "" : "s"}.`
+            : "Nada seleccionado. Herramienta «Seleccionar» (T): clic, Ctrl+clic suma, Shift+arrastrar una caja. Ctrl+A: todo."),
+        h("div", { class: "st-sel" },
+          btn("Todo", "Seleccionar todo (Ctrl+A)", () => this.#selectAll(), busy),
+          btn("Nada", "Quitar la selección (Esc)", () => this.#clearSelection(), busy || !n),
+          btn("Copiar", "Copia la selección; sin selección, la plantilla entera (Ctrl+C)", () => this.#copy(), busy || !this.#canCopy()),
+          btn("Cortar", "Ctrl+X", () => this.#cut(), busy || !n),
+          btn("Pegar", "Ctrl+V: se pega entero, seleccionado y siguiendo el ratón", () => this.#paste(), busy || !clip),
+          btn("Duplicar", "Ctrl+D", () => this.#duplicate(), busy || !n),
+          btn("Mover", "G: levanta la selección y la lleva con el ratón; clic la suelta", () => this.#grab(), busy || !n),
+          btn("Borrar", "Retroceso", () => this.#deleteSelection(), busy || !n)),
+        h("div", { class: "st-nudge" }, h("span", { class: "faint small" }, "Desplazar"),
+          ...axes.map(([t, a, d, title]) => btn(t, title, () => this.#nudge(a, d), !n && !busy))),
+        clip ? h("p", { class: "note" }, `Copiado: «${clip.name}» · ${clip.cells.length} bloques · ${clip.size.join(" × ")}`) : null);
+    }
+
     // ── Shapes: sphere, circle, ring, cylinder… placed or carved in one step (Aura.structShapes makes the cells) ─────
 
     #shapeType() { return SH.typeOf(this.shapeTool); }
@@ -623,7 +938,7 @@
     /** The cells the active shape would take with the mouse on `place` ({ cells, error }), or null for the brush. */
     #shapeCells(place) {
       const type = this.#shapeType();
-      if (type.id === "brush" || !place || !this.#editDoc()) return null;
+      if (type.id === "brush" || type.id === "select" || !place || !this.#editDoc()) return null;
       const start = this.shapeStart?.cell;
       const k = JSON.stringify([type.id, this.shapeOpts, place, start ?? null]);
       if (this.#shapeMemo?.key === k) return this.#shapeMemo.res;
@@ -706,7 +1021,8 @@
       };
       el.append(
         h("div", { class: "st-shapes" }, ...SH.TYPES.map((t) => h("button", { class: ["small", t.id === type.id && "on"], title: t.hint, onclick: () => this.#setShapeTool(t.id) }, t.name))),
-        h("p", { class: "note" }, type.hint, type.id !== "brush" ? " Clic derecho: vaciar la forma. T: cambiar de forma · + / −: tamaño." : ""));
+        h("p", { class: "note" }, type.hint, type.id !== "brush" && type.id !== "select" ? " Clic derecho: vaciar la forma. T: cambiar de forma · + / −: tamaño." : ""));
+      if (has("onlyLevel")) el.append(checkbox({ label: "Solo el nivel de trabajo", value: o.onlyLevel, title: "La caja (Shift+arrastrar) elige solo los bloques de este nivel; si no, todas las alturas", onChange: (v) => set("onlyLevel", v) }).el);
       if (has("plane")) el.append(select({ label: "Plano", value: o.plane, options: [["h", "Horizontal"], ["ns", "Vertical (de frente)"], ["ew", "Vertical (de lado)"]], onChange: (v) => set("plane", v) }).el);
       if (has("r")) el.append(slider({ label: "Radio", min: SH.LIMITS.r[0], max: SH.LIMITS.r[1], value: o.r, defaultValue: SH.DEFAULTS.r, onInput: (v) => set("r", v) }).el);
       if (has("h")) el.append(slider({ label: "Alto", min: SH.LIMITS.h[0], max: SH.LIMITS.h[1], value: o.h, defaultValue: SH.DEFAULTS.h, onInput: (v) => set("h", v) }).el);
@@ -732,7 +1048,8 @@
 
     #rect(a, b, remove) {
       const doc = this.#editDoc();
-      if (!doc) return;
+      if (!doc || this.float) return;
+      if (this.shapeTool === "select") { this.#selectRect(a, b, remove); return; }
       if (!remove && !this.selected) { this.studio.toast("Elige un tile en la paleta.", { kind: "warn" }); return; }
       const err = doc.rect(a, b, this.level, this.selected, this.facing, this.shape, remove);
       if (err) this.studio.toast(err, { kind: "warn" });
@@ -821,7 +1138,7 @@
       if (this.panel.contains(document.activeElement)) document.activeElement.blur();
       const top = this.panel.scrollTop;
       clear(this.panel);
-      this.templateInfoEl = this.pieceEl = this.paletteGrid = null;
+      this.templateInfoEl = this.pieceEl = this.paletteGrid = this.selEl = this.shapeEl = null;
       const doc = this.current;
       if (!doc) {
         this.panel.append(h("div", { class: "empty-state" }, h("h3", null, "Estructuras"),
@@ -842,7 +1159,9 @@
         h("div", { class: "field" }, h("label", null, "Tipo"), h("span", { class: "mono" }, r.type ?? "—")),
         doc.isNew ? h("p", { class: "note" }, "Se escribe en ", h("b", null, doc.path), " al guardar.") : null,
         G.generatorFor(r, this.templates) ? h("button", { title: "Copia la primera de la vista (con esta semilla) a una plantilla nueva, para terminarla a mano",
-          onclick: () => this.#bake() }, "Pasar a plantilla…") : null).el);
+          onclick: () => this.#bake() }, "Pasar a plantilla…") : null,
+        G.generatorFor(r, this.templates) ? h("button", { title: "Copia la que se ve (con esta semilla) para pegarla dentro de una plantilla: abre la plantilla y Ctrl+V",
+          onclick: () => this.#copy() }, "Copiar para pegar") : null).el);
 
       if (type === "tree") this.panel.append(...this.#treeSections(r));
       else if (type === "template") this.panel.append(this.#templateSection(r).el);
@@ -862,19 +1181,22 @@
       this.templateInfoEl = h("div");
       this.pieceEl = h("div");
       this.shapeEl = h("div");
+      this.selEl = h("div");
       this.paletteGrid = h("div", { class: "st-palette" });
       const search = h("input", { type: "search", placeholder: "Buscar tile…", value: this.search, spellcheck: false,
         oninput: () => { this.search = search.value; this.#renderPalette(); } });
       this.panel.append(
         section({ id: "st-tinfo", title: "Plantilla", extra: t.isNew ? "nueva" : t.name }, this.templateInfoEl).el,
         section({ id: "st-shapes", title: "Forma", extra: "rápido" }, this.shapeEl).el,
+        section({ id: "st-sel", title: "Selección", extra: "copiar · mover" }, this.selEl).el,
         section({ id: "st-piece", title: "Pieza" }, this.pieceEl).el,
         section({ id: "st-palette", title: "Paleta" }, search, this.paletteGrid).el,
         section({ id: "st-keys", title: "Atajos", collapsed: true },
           h("p", { class: "note" }, "Clic: poner · clic derecho: quitar (una pieza grande entera) · Alt+clic: copiar tile, orientación y forma · Shift+arrastrar: rellenar un rectángulo del nivel (con el derecho: vaciarlo)."),
-          h("p", { class: "note" }, "T: herramienta de forma (esfera, círculo, cilindro…) · + / −: tamaño · Esc: cancelar · W / S: nivel · R: girar la pieza · F: forma · Q / E: girar la cámara · 1 2 3: todo / fantasma / cortar · H: ocultar el bloque (Shift+H: mostrar todo) · A: anclaje · V: iso / 3D · Inicio: centrar.")).el);
+          h("p", { class: "note" }, "Ctrl+A / C / X / V / D: todo, copiar, cortar, pegar, duplicar · G: mover lo seleccionado · Enter: soltar · T: herramienta (seleccionar, esfera, círculo, cilindro…) · + / −: tamaño · Esc: cancelar · W / S: nivel · R: girar la pieza · F: forma · Q / E: girar la cámara · 1 2 3: todo / fantasma / cortar · H: ocultar el bloque (Shift+H: mostrar todo) · A: anclaje · V: iso / 3D · Inicio: centrar.")).el);
       this.#renderTemplateInfo();
       this.#renderShapes();
+      this.#renderSelection();
       this.#renderPiece();
       this.#renderPalette();
     }
@@ -1260,6 +1582,8 @@
           if (st.points === 2) say(this.shapeStart ? `esquina 1: ${this.shapeStart.cell.join(", ")} · clic en la opuesta (clic derecho o Esc cancela)` : "clic en la primera esquina");
           if (res?.error) say(res.error, "bad-text");
         }
+        if (this.float) say(`llevas ${this.float.cells.length} bloques · clic: soltar · R: girar · Esc: cancelar`);
+        else if (this.selection.size) say(`${this.selection.size} seleccionados`);
         if (cell) say(`${cell.join(", ")}` + (hv.hit ? ` · ${doc.blocks.get(key(...hv.hit))}` : ""));
         if (this.selected) say(`en mano: ${this.selected}` + (this.registry.turns(this.selected, this.shape) ? ` · mira ${FACINGS[this.facing][2].toLowerCase()}` : "")
           + (this.shape ? ` · ${this.registry.shapeName(this.selected, this.shape)}` : ""));
@@ -1423,7 +1747,7 @@
       const p = this.#pick3d(ray);
       if (!p) return;
       if (button === 0 && e.altKey) this.#pick(p.hit);
-      else if (button === 0) this.#place(p.place);
+      else if (button === 0) this.#place(p.place, e, p.hit);
       else if (button === 2) this.#remove(p.hit, p.place);
       this.hover3d = this.#pick3d(ray);
     }
@@ -1456,12 +1780,29 @@
         const anchor = doc.effectiveAnchor();
         outline(anchor, doc.anchor ? [1, 0.82, 0.2, 0.95] : [1, 0.82, 0.2, 0.4], 0.04);
         const hv = this.hover3d;
+        if (this.selection.size) {
+          let n = 0;
+          for (const k of this.selection) {
+            if (doc.hidden.has(k)) continue;
+            cube(parse(k), [1, 0.82, 0.2, 0.3], -0.02);
+            if (++n >= 6000) break;
+          }
+        }
+        if (this.float) {
+          const fol = this.#foliage();
+          let n = 0;
+          for (const e of this.#floatList()) {
+            const c = this.registry.color(e.id, fol, true);
+            cube(e.p, c ? [c[0] / 255, c[1] / 255, c[2] / 255, 0.72] : [1, 0.82, 0.2, 0.6], -0.01);
+            if (++n >= 8000) break;
+          }
+        }
         if (this.shapeStart) outline(this.shapeStart.cell, [1, 0.82, 0.2, 0.95], 0.04);
         if (this.rect3d) {
           const { start: [x0, z0], end: [x1, z1], remove } = this.rect3d;
           for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++)
             for (let z = Math.min(z0, z1); z <= Math.max(z0, z1); z++) cube([x, this.level, z], remove ? [1, 0.3, 0.3, 0.3] : [0.4, 0.9, 0.5, 0.3], 0.02);
-        } else if (hv) {
+        } else if (hv && !this.float) {
           if (hv.hit) outline(hv.hit, [1, 1, 1, 0.9]);
           const sh = hv.place && this.#shapeCells(hv.place);
           if (sh) {

@@ -18,5 +18,6 @@
 .st-piece .st-thumb { background: var(--canvas-bg); border-radius: 4px; }
 .st-shapes { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
 .st-shapes button.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: var(--accent-soft); }
+.st-sel, .st-nudge { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; align-items: center; }
 .st-del { padding: 0 6px; opacity: 0; }
 .bm-item:hover .st-del, .bm-item.active .st-del, .st-del:focus-visible { opacity: 1; }
