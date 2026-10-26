@@ -288,6 +288,40 @@
     return d;
   }
 
+
+  /** Normal por defecto (cara superior del motor: #80EEBF) para píxeles opacos sin mapa. */
+  const DEFAULT_TOP_N = [128, 238, 191];
+
+  /**
+   * Asegura un buffer _n del tamaño de la celda, alineado al alpha del color.
+   * - Si hay normal de capas, se usa.
+   * - Píxeles opacos sin normal → cara superior por defecto (como un bloque sin detalle).
+   * - Transparentes → alpha 0 (el Atlas no pinta basura).
+   * Así el Atlas siempre puede escribir _n.png igual que Bloque/Planta.
+   */
+  function ensureCellNormal(color, normal, size) {
+    const n = size * size * 4;
+    const out = new Uint8ClampedArray(n);
+    for (let i = 0; i < size * size; i++) {
+      const a = color[i * 4 + 3];
+      if (a < 1) continue;
+      const pi = i * 4;
+      if (normal && normal[pi + 3] > 0) {
+        out[pi] = normal[pi];
+        out[pi + 1] = normal[pi + 1];
+        out[pi + 2] = normal[pi + 2];
+        out[pi + 3] = 255;
+      } else {
+        out[pi] = DEFAULT_TOP_N[0];
+        out[pi + 1] = DEFAULT_TOP_N[1];
+        out[pi + 2] = DEFAULT_TOP_N[2];
+        out[pi + 3] = 255;
+      }
+    }
+    return out;
+  }
+
+
   function blitShifted(dest, destSize, src, srcSize, shiftX, shiftY, blend, opacity) {
     for (let y = 0; y < srcSize; y++) {
       for (let x = 0; x < srcSize; x++) {
@@ -1263,17 +1297,21 @@
 
     exportCells() {
       // Orden estable para Atlas: horizontal (offsetY, offsetX, offsetZ) — celdas en fila.
+      // Cada celda lleva color + normal (_n) listos, como Bloque/Planta.
       const cells = this.buildCells().slice().sort((a, b) =>
         (a.offsetY - b.offsetY) || (a.offsetX - b.offsetX) || (a.offsetZ - b.offsetZ));
-      return cells.map((c) => ({
-        size: c.size,
-        color: c.color,
-        normal: c.normal,
-        offsetX: c.offsetX,
-        offsetY: c.offsetY,
-        offsetZ: c.offsetZ,
-        label: c.label,
-      }));
+      return cells.map((c) => {
+        const size = c.size || this.doc.size || 64;
+        return {
+          size,
+          color: c.color,
+          normal: ensureCellNormal(c.color, c.normal, size),
+          offsetX: c.offsetX,
+          offsetY: c.offsetY,
+          offsetZ: c.offsetZ,
+          label: c.label,
+        };
+      });
     }
 
     render() {
@@ -1484,7 +1522,8 @@
       // Clonar buffers: el Composer puede re-renderizar y reutilizar arrays.
       const items = cells.map((c) => ({
         color: new Uint8ClampedArray(c.color),
-        normal: c.normal ? new Uint8ClampedArray(c.normal) : null,
+        // Siempre hay normal (ensureCellNormal en exportCells): el Atlas escribe _n.png
+        normal: new Uint8ClampedArray(c.normal),
         label: c.label || ("celda " + c.offsetX + "," + c.offsetY + "," + c.offsetZ),
       }));
       const offsets = cells.map((c) => ({

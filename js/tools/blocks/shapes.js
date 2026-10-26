@@ -108,6 +108,27 @@
   const cut = (b, ...cuts) => ({ ...b, cuts: cuts.map(([n, d]) => ({ n, d })) });
   const FULL = box(0, 0, 0, 16, 16, 16);
 
+  /**
+   * Agujeros en dieciseisavos (0..16). Se restan del sólido en el motor.
+   * solid: "box" (default) | "sphere" | "cylinder" — el interior se ve 3D por el raymarch.
+   */
+  function holeBoxes(holes) {
+    if (!holes?.length) return [];
+    return holes.map((h) => {
+      const x = Math.max(0, Math.min(15, h.x ?? 4));
+      const y = Math.max(0, Math.min(15, h.y ?? 4));
+      const z = Math.max(0, Math.min(15, h.z ?? 4));
+      const w = Math.max(1, Math.min(16 - x, h.w ?? 8));
+      const ht = Math.max(1, Math.min(16 - y, h.h ?? 8));
+      const d = Math.max(1, Math.min(16 - z, h.d ?? 8));
+      const b = box(x, y, z, x + w, y + ht, z + d);
+      b.hole = true;
+      if (h.solid && h.solid !== "box") b.solid = h.solid;
+      return b;
+    });
+  }
+
+
   // Connection sides of fences and walls, as quarter turns of the arm that points front.
   const SIDES = [["f", "frente", 0], ["r", "derecha", 1], ["b", "atrás", 2], ["l", "izquierda", 3]];
 
@@ -427,6 +448,8 @@
     }
     let boxes = def.boxes(p);
     if (p.scale != null && p.scale !== 1) boxes = scaleBoxes(boxes, p.scale);
+    // Agujeros del usuario (movibles): se restan del sólido; el interior se ilumina como superficie 3D.
+    if (opts.holes?.length) boxes = boxes.concat(holeBoxes(opts.holes));
     const iso = hasIso(opts.iso) ? { x: opts.iso.x | 0, y: opts.iso.y | 0, z: opts.iso.z | 0 } : null;
     for (const st of def.states) {
       if (!(opts.states?.[st] ?? st === "default")) continue;
@@ -461,6 +484,6 @@
 
   Aura.blockShapes = {
     SHAPES, PARAM_DEFAULTS, STATE_LABEL, FACING_LABEL, DIRS,
-    transform, boxesToWorld, variants, artSnippet, parseCustom, turnLocal, isoMatrix, hasIso, inSolid, scaleBoxes,
+    transform, boxesToWorld, variants, holeBoxes, artSnippet, parseCustom, turnLocal, isoMatrix, hasIso, inSolid, scaleBoxes,
   };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));

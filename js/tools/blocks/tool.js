@@ -51,15 +51,20 @@
     states: { default: true, inverted: true, vertical: true, horizontal: true },
     back: true,
     combos: false,
-    frontSide: "left",          // which camera face the game's "front" art looks at
-    rot3d: { x: 0, y: 0, z: 0 },  // the whole tile turned like a 3D model, degrees about the isometric axes
+    frontSide: "left",
+    rot3d: { x: 0, y: 0, z: 0 },
+    holes: [],  // [{ x,y,z,w,h,d, solid }] en dieciseisavos; solid: box|sphere|cylinder
   };
-  // "iso" (quarter turns, an earlier version) is dropped from saved settings: rot3d replaces it.
   const mergePiece = ({ iso, ...p } = {}) => ({
     ...PIECE_DEFAULTS, ...p,
     params: { ...PIECE_DEFAULTS.params, ...(p.params || {}) },
     states: { ...PIECE_DEFAULTS.states, ...(p.states || {}) },
     rot3d: { ...PIECE_DEFAULTS.rot3d, ...(p.rot3d || {}) },
+    holes: Array.isArray(p.holes) ? p.holes.map((h) => ({
+      x: h.x ?? 4, y: h.y ?? 4, z: h.z ?? 4,
+      w: h.w ?? 8, h: h.h ?? 8, d: h.d ?? 8,
+      solid: h.solid || "box",
+    })) : [],
   });
 
   // Option keys each panel section owns, for its own reset button.
@@ -268,6 +273,55 @@
         axis("y", "Y", "Gira alrededor del eje vertical"),
         axis("z", "Z", "Gira alrededor del eje hacia el que mira la cara izquierda"));
     }
+
+    #holesSection() {
+      const holes = this.piece.holes || (this.piece.holes = []);
+      const set = (fn) => { fn(); this.#save(); this.#schedule(); this.#rebuildPanel(); };
+      const kids = [
+        h("p", { class: "note" },
+          "Resta volumen del bloque. El interior se ve en 3D (caras internas iluminadas). ",
+          "Unidades: dieciseisavos del bloque (0–16)."),
+        h("button", {
+          type: "button", class: "primary",
+          onclick: () => set(() => {
+            holes.push({ x: 4, y: 4, z: 4, w: 8, h: 8, d: 8, solid: "box" });
+          }),
+        }, "+ Agujero"),
+      ];
+      holes.forEach((hole, i) => {
+        const slide = (key, label, min, max) => slider({
+          label, min, max, step: 1,
+          value: hole[key] ?? min,
+          onChange: (v) => {
+            hole[key] = Number(v);
+            this.#save();
+            this.#schedule();
+          },
+        }).el;
+        kids.push(h("div", { class: "bk-hole", style: "border:1px solid var(--line);border-radius:6px;padding:8px;margin-top:8px" },
+          h("div", { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px" },
+            h("b", { style: "font-size:12px" }, "Agujero " + (i + 1)),
+            h("span", { class: "grow" }),
+            select({
+              label: "", value: hole.solid || "box",
+              options: [["box", "Caja"], ["sphere", "Esfera"], ["cylinder", "Cilindro"]],
+              onChange: (v) => { hole.solid = v; this.#save(); this.#schedule(); },
+            }).el,
+            h("button", {
+              type: "button", title: "Quitar",
+              onclick: () => set(() => { holes.splice(i, 1); }),
+            }, "×")),
+          slide("x", "X", 0, 15),
+          slide("y", "Y", 0, 15),
+          slide("z", "Z", 0, 15),
+          slide("w", "Ancho", 1, 16),
+          slide("h", "Alto", 1, 16),
+          slide("d", "Prof.", 1, 16),
+        ));
+      });
+      return section({ id: "bk-holes", title: "Agujeros" }, ...kids);
+    }
+
 
     #colorField(label, path, title = "") {
       const input = h("input", { type: "color", value: this.#get(path), title,
@@ -529,7 +583,7 @@
 
       this.tintUi = TP.tintSection({ id: "bk-tint", state: this.tint, biomes: this.biomes,
         onChange: () => { this.#save(); this.#schedule(); } });
-      this.panelScroll = h("div", { class: "scroll" }, shape.el, stone.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
+      this.panelScroll = h("div", { class: "scroll" }, shape.el, this.#holesSection().el, stone.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
       for (const sec of [maskSection, cover, hair, light, pixel]) sec.el.classList.add("adv");
       const detail = h("span");
       this.panel = h("div", { class: "bk-panel" },
