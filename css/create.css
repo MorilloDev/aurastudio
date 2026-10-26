@@ -36,3 +36,29 @@
   .cp { grid-template-columns: 1fr; grid-template-rows: 42vh 1fr; }
   .cp-side { border-right: none; border-bottom: 1px solid var(--line); max-height: 42vh; }
 }
+
+
+/* Composer grupos / dual view */
+.cp-groups { flex: 0 1 42%; min-height: 120px; overflow: auto; padding: 4px 6px; display: flex; flex-direction: column; gap: 2px; }
+.cp-group-head { display: grid; grid-template-columns: auto auto 1fr auto auto; gap: 6px; align-items: center; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; border: 1px solid transparent; font-size: 13px; }
+.cp-group-head:hover { background: var(--panel-2); }
+.cp-group-head.active { background: var(--accent-soft); border-color: var(--accent); }
+.cp-group-head.multipart .cp-badge { color: var(--accent); }
+.cp-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.cp-badge { font-size: 11px; font-family: ui-monospace, monospace; color: var(--muted); }
+.cp-badge.faint { opacity: 0.7; }
+.cp-collapse { padding: 0 4px; font-size: 10px; background: transparent; border: none; color: var(--muted); cursor: pointer; }
+.cp-mp-btn { font-size: 10px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); cursor: pointer; }
+.cp-mp-btn.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.cp-layer { display: grid; grid-template-columns: auto 1fr auto auto auto; gap: 6px; align-items: center; padding: 4px 8px 4px 28px; border-radius: var(--radius-sm); cursor: pointer; border: 1px solid transparent; font-size: 12px; }
+.cp-layer:hover { background: var(--panel-2); }
+.cp-layer.active { background: var(--accent-soft); border-color: var(--accent); }
+.cp-sub { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); margin: 10px 0 4px; }
+.cp-views { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1.2fr; gap: 1px; background: var(--line); }
+.cp-view-block { display: flex; flex-direction: column; min-height: 0; background: var(--canvas-bg); }
+.cp-view-label { padding: 4px 10px; font-size: 11px; color: var(--muted); background: var(--panel); border-bottom: 1px solid var(--line); }
+.cp-view-block .cp-view { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: auto; }
+.cp-part-preview { /* same as cp-preview */ }
+@media (max-width: 900px) {
+  .cp-views { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+}
