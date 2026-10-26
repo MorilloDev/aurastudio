@@ -237,6 +237,11 @@
     preview = null;       // conjunto
     activeCell = null;    // parte activa (solo esa celda)
     cellCache = new Map();
+    clipboard = null;       // capa copiada/cortada
+    zoomPart = 0;           // 0 = auto ajustar
+    zoomEnsemble = 0;       // 0 = auto ajustar
+    fitMode = true;
+    #drag = null;           // { startX, startY, originShiftX, originShiftY, layer }
 
     mount(host, studio) {
       this.studio = studio;
@@ -245,45 +250,68 @@
         if (raw) this.doc = migrateDoc(raw);
       } catch { /* ignore */ }
 
-      this.ensembleCanvas = h("canvas", { class: "cp-preview" });
-      this.partCanvas = h("canvas", { class: "cp-preview cp-part-preview" });
+      this.ensembleCanvas = h("canvas", { class: "cp-preview", title: "Clic en una celda para seleccionarla" });
+      this.partCanvas = h("canvas", { class: "cp-preview cp-part-preview", title: "Arrastra para mover la capa dentro de la celda" });
       this.groupList = h("div", { class: "cp-groups" });
       this.propsHost = h("div", { class: "cp-props" });
+      this.zoomPartLabel = h("span", { class: "cp-zoom-lbl" }, "auto");
+      this.zoomEnsLabel = h("span", { class: "cp-zoom-lbl" }, "auto");
 
       const toolbar = h("div", { class: "cp-toolbar" },
-        h("button", { class: "primary", onclick: () => this.addGroup(false) }, "+ Grupo"),
-        h("button", { class: "primary", onclick: () => this.addGroup(true) }, "+ Parte multipart"),
-        h("button", { onclick: () => this.addShapeLayer() }, "+ Forma"),
-        h("button", { onclick: () => this.duplicateLayer() }, "Duplicar capa"),
-        h("button", { onclick: () => this.removeSelected() }, "Quitar"),
+        h("div", { class: "cp-tool-group" },
+          h("button", { class: "primary", title: "Grupo normal (organización)", onclick: () => this.addGroup(false) }, "+ Grupo"),
+          h("button", { class: "primary", title: "Nueva celda multipart", onclick: () => this.addGroup(true) }, "+ Parte"),
+          h("button", { title: "Añadir forma a la parte activa", onclick: () => this.addShapeLayer() }, "+ Forma")),
+        h("div", { class: "cp-tool-group" },
+          h("button", { title: "Ctrl+C", onclick: () => this.copyLayer() }, "Copiar"),
+          h("button", { title: "Ctrl+X", onclick: () => this.cutLayer() }, "Cortar"),
+          h("button", { title: "Ctrl+V", onclick: () => this.pasteLayer() }, "Pegar"),
+          h("button", { title: "Ctrl+D", onclick: () => this.duplicateLayer() }, "Duplicar"),
+          h("button", { title: "Supr", onclick: () => this.removeSelected() }, "Quitar")),
+        h("div", { class: "cp-tool-group" },
+          h("button", { title: "Alejar parte", onclick: () => this.bumpZoom("part", -1) }, "−"),
+          this.zoomPartLabel,
+          h("button", { title: "Acercar parte", onclick: () => this.bumpZoom("part", 1) }, "+"),
+          h("button", { title: "Ajustar parte al panel", onclick: () => { this.zoomPart = 0; this.paintPart(); this.syncZoomLabels(); } }, "Ajustar"),
+          h("span", { class: "cp-sep" }),
+          h("button", { title: "Alejar conjunto", onclick: () => this.bumpZoom("ens", -1) }, "−"),
+          this.zoomEnsLabel,
+          h("button", { title: "Acercar conjunto", onclick: () => this.bumpZoom("ens", 1) }, "+"),
+          h("button", { title: "Ajustar conjunto", onclick: () => { this.zoomEnsemble = 0; this.paintEnsemble(); this.syncZoomLabels(); } }, "Ajustar")),
         h("span", { class: "grow" }),
-        h("button", { onclick: () => this.exportPng() }, "Exportar PNG conjunto"),
-        h("button", { onclick: () => this.exportMultipart() }, "JSON parts"),
-        h("button", { class: "primary", onclick: () => this.sendToAtlas() }, "Enviar al Atlas \u2192"),
+        h("div", { class: "cp-tool-group" },
+          h("button", { onclick: () => this.exportPng() }, "PNG"),
+          h("button", { onclick: () => this.exportMultipart() }, "JSON"),
+          h("button", { class: "primary", onclick: () => this.sendToAtlas() }, "Atlas →")),
       );
+
+      this.partView = h("div", { class: "cp-view" }, this.partCanvas);
+      this.ensView = h("div", { class: "cp-view" }, this.ensembleCanvas);
 
       host.appendChild(h("div", { class: "cp" },
         h("div", { class: "cp-side" },
           h("div", { class: "cp-side-head" },
             h("b", null, "Grupos / Partes"),
-            h("span", { class: "hint" }, "carpeta = grupo")),
+            h("span", { class: "hint" }, "MP = celda")),
           this.groupList,
-          h("div", { class: "cp-side-head" }, h("b", null, "Seleccionado")),
+          h("div", { class: "cp-side-head" }, h("b", null, "Propiedades")),
           this.propsHost),
         h("div", { class: "cp-stage" },
           toolbar,
           h("div", { class: "cp-views" },
             h("div", { class: "cp-view-block" },
-              h("div", { class: "cp-view-label" }, "Parte activa (esta celda)"),
-              h("div", { class: "cp-view" }, this.partCanvas)),
+              h("div", { class: "cp-view-label" },
+                h("span", null, "Parte activa"),
+                h("span", { class: "hint" }, "arrastrar = mover capa")),
+              this.partView),
             h("div", { class: "cp-view-block" },
-              h("div", { class: "cp-view-label" }, "Conjunto (c\u00f3mo queda unido)"),
-              h("div", { class: "cp-view" }, this.ensembleCanvas))),
-          h("p", { class: "hint cp-hint" },
-            "Activa ", h("b", null, "Multipart"), " en un grupo para que sea una celda del tile. ",
-            "Las capas dentro de esa carpeta se componen solo en esa celda. ",
-            "El conjunto muestra todas las partes en iso con contorno."))));
+              h("div", { class: "cp-view-label" },
+                h("span", null, "Conjunto"),
+                h("span", { class: "hint" }, "clic = elegir celda")),
+              this.ensView)))));
 
+      this.bindCanvasEvents();
+      this.bindKeys(host);
       this.drainQueue();
       this.rebuildGroupList();
       this.rebuildProps();
@@ -293,6 +321,175 @@
         pushResult: (result, meta) => this.pushResult(result, meta),
       };
     }
+
+    bindKeys(host) {
+      host.tabIndex = 0;
+      host.addEventListener("keydown", (e) => {
+        const tag = (e.target && e.target.tagName) || "";
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        const mod = e.ctrlKey || e.metaKey;
+        if (mod && e.key === "c") { e.preventDefault(); this.copyLayer(); }
+        else if (mod && e.key === "x") { e.preventDefault(); this.cutLayer(); }
+        else if (mod && e.key === "v") { e.preventDefault(); this.pasteLayer(); }
+        else if (mod && e.key === "d") { e.preventDefault(); this.duplicateLayer(); }
+        else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); this.removeSelected(); }
+      });
+    }
+
+    bindCanvasEvents() {
+      // Parte activa: arrastrar para shift de la capa seleccionada
+      this.partCanvas.addEventListener("pointerdown", (e) => {
+        const L = this.layer();
+        if (!L) return;
+        const scale = this.#partScale();
+        this.#drag = {
+          pointerId: e.pointerId,
+          startX: e.clientX,
+          startY: e.clientY,
+          originShiftX: L.shiftX || 0,
+          originShiftY: L.shiftY || 0,
+          layer: L,
+          scale,
+        };
+        this.partCanvas.setPointerCapture(e.pointerId);
+        e.preventDefault();
+      });
+      this.partCanvas.addEventListener("pointermove", (e) => {
+        if (!this.#drag || this.#drag.pointerId !== e.pointerId) return;
+        const L = this.#drag.layer;
+        const s = this.#drag.scale || 1;
+        const dx = Math.round((e.clientX - this.#drag.startX) / s);
+        const dy = Math.round((e.clientY - this.#drag.startY) / s);
+        const src = this.layerSourceRgba(L);
+        const size = L.size || this.doc.size || 64;
+        let sx = this.#drag.originShiftX + dx;
+        let sy = this.#drag.originShiftY + dy;
+        if (src?.color) {
+          const c = clampShift(src.color, size, sx, sy);
+          sx = c.x; sy = c.y;
+        }
+        L.shiftX = sx; L.shiftY = sy;
+        this.schedule();
+      });
+      const endDrag = (e) => {
+        if (!this.#drag || this.#drag.pointerId !== e.pointerId) return;
+        this.#drag = null;
+        this.savePrefsMeta();
+        this.rebuildProps();
+      };
+      this.partCanvas.addEventListener("pointerup", endDrag);
+      this.partCanvas.addEventListener("pointercancel", endDrag);
+
+      // Conjunto: clic en celda → seleccionar grupo
+      this.ensembleCanvas.addEventListener("pointerdown", (e) => {
+        if (!this.preview?.outlines?.length) return;
+        const rect = this.ensembleCanvas.getBoundingClientRect();
+        const scale = this.#ensScale();
+        const x = (e.clientX - rect.left) / scale;
+        const y = (e.clientY - rect.top) / scale;
+        // Buscar celda de atrás hacia adelante (la activa encima)
+        let hit = null;
+        for (const o of this.preview.outlines) {
+          if (x >= o.x && y >= o.y && x < o.x + o.w && y < o.y + o.h) hit = o;
+        }
+        if (!hit) return;
+        const gi = this.doc.groups.findIndex((g) =>
+          (g.multipart ? (g.offsetX | 0) : 0) === hit.ox &&
+          (g.multipart ? (g.offsetY | 0) : 0) === hit.oy &&
+          (g.multipart ? (g.offsetZ | 0) : 0) === hit.oz &&
+          g.visible);
+        if (gi >= 0) {
+          this.doc.selectedGroup = gi;
+          this.doc.selectedLayer = 0;
+          this.rebuildGroupList();
+          this.rebuildProps();
+          this.schedule();
+        }
+      });
+    }
+
+    #partScale() {
+      const S = this.activeCell?.size || this.doc.size || 64;
+      if (this.zoomPart > 0) return this.zoomPart;
+      const box = this.partView || this.partCanvas.parentElement;
+      const avail = Math.min(box?.clientWidth || 320, box?.clientHeight || 320) * 0.92;
+      return Math.max(1, Math.floor(avail / S));
+    }
+
+    #ensScale() {
+      const W = this.preview?.w || this.doc.size || 64;
+      const H = this.preview?.h || this.doc.size || 64;
+      if (this.zoomEnsemble > 0) return this.zoomEnsemble;
+      const box = this.ensView || this.ensembleCanvas.parentElement;
+      return Math.max(1, Math.floor(Math.min(
+        (box?.clientWidth || 480) / W,
+        (box?.clientHeight || 480) / H,
+        6)));
+    }
+
+    bumpZoom(which, dir) {
+      if (which === "part") {
+        const cur = this.zoomPart || this.#partScale();
+        this.zoomPart = Math.max(1, Math.min(16, cur + dir));
+        this.paintPart();
+      } else {
+        const cur = this.zoomEnsemble || this.#ensScale();
+        this.zoomEnsemble = Math.max(1, Math.min(16, cur + dir));
+        this.paintEnsemble();
+      }
+      this.syncZoomLabels();
+    }
+
+    syncZoomLabels() {
+      if (this.zoomPartLabel) {
+        this.zoomPartLabel.textContent = this.zoomPart ? (this.zoomPart + "×") : "auto";
+      }
+      if (this.zoomEnsLabel) {
+        this.zoomEnsLabel.textContent = this.zoomEnsemble ? (this.zoomEnsemble + "×") : "auto";
+      }
+    }
+
+    /** Copia profunda de una capa (incl. buffers). */
+    cloneLayer(L) {
+      return {
+        ...JSON.parse(JSON.stringify({ ...L, color: null, normal: null })),
+        id: uid(),
+        color: L.color ? new Uint8ClampedArray(L.color) : null,
+        normal: L.normal ? new Uint8ClampedArray(L.normal) : null,
+      };
+    }
+
+    copyLayer() {
+      const L = this.layer();
+      if (!L) { this.studio?.toast("No hay capa seleccionada", { kind: "warn" }); return; }
+      this.clipboard = { mode: "copy", layer: this.cloneLayer(L) };
+      this.studio?.toast("Capa copiada", { kind: "ok" });
+    }
+
+    cutLayer() {
+      const g = this.group();
+      const L = this.layer();
+      if (!g || !L) { this.studio?.toast("No hay capa seleccionada", { kind: "warn" }); return; }
+      this.clipboard = { mode: "cut", layer: this.cloneLayer(L) };
+      g.layers.splice(this.doc.selectedLayer, 1);
+      if (!g.layers.length) g.layers.push(defaultShapeLayer(0));
+      this.doc.selectedLayer = Math.min(this.doc.selectedLayer, g.layers.length - 1);
+      this.touch();
+      this.studio?.toast("Capa cortada", { kind: "ok" });
+    }
+
+    pasteLayer() {
+      if (!this.clipboard?.layer) { this.studio?.toast("Nada que pegar", { kind: "warn" }); return; }
+      const g = this.group();
+      if (!g) return;
+      const copy = this.cloneLayer(this.clipboard.layer);
+      copy.name = (copy.name || "Capa") + (this.clipboard.mode === "copy" ? " copia" : "");
+      g.layers.splice(this.doc.selectedLayer + 1, 0, copy);
+      this.doc.selectedLayer++;
+      this.touch();
+      this.studio?.toast("Capa pegada", { kind: "ok" });
+    }
+
 
     activate() { this.drainQueue(); this.schedule(); }
     deactivate() {}
@@ -544,7 +741,17 @@
       // Group props
       kids.push(h("div", { class: "cp-sub" }, "Grupo / carpeta"));
       kids.push(h("label", { class: "field" }, h("span", null, "Nombre"),
-        h("input", { value: g.name, oninput: (e) => set(() => { g.name = e.target.value; this.rebuildProps(); }) })));
+        h("input", {
+          value: g.name,
+          oninput: (e) => {
+            g.name = e.target.value;
+            // Actualiza solo el texto de la lista, sin reconstruir el panel (mantiene el foco).
+            const head = this.groupList?.querySelector(".cp-group-head.active .cp-group-name");
+            if (head) head.textContent = g.name;
+            this.savePrefsMeta();
+          },
+          onchange: () => this.savePrefsMeta(),
+        })));
       kids.push(h("label", { class: "field check" },
         h("input", {
           type: "checkbox", checked: g.multipart || null,
@@ -570,7 +777,16 @@
 
       kids.push(h("div", { class: "cp-sub" }, "Capa"));
       kids.push(h("label", { class: "field" }, h("span", null, "Nombre"),
-        h("input", { value: L.name, oninput: (e) => set(() => { L.name = e.target.value; this.rebuildProps(); }) })));
+        h("input", {
+          value: L.name,
+          oninput: (e) => {
+            L.name = e.target.value;
+            const row = this.groupList?.querySelector(".cp-layer.active .cp-layer-name");
+            if (row) row.textContent = L.name;
+            this.savePrefsMeta();
+          },
+          onchange: () => this.savePrefsMeta(),
+        })));
       kids.push(h("p", { class: "note" },
         L.kind === "sprite"
           ? ("Raster (" + (L.source || "sprite") + ", " + (L.size || this.doc.size) + "px).")
@@ -914,12 +1130,10 @@
       // Siempre S×S (64×64): la celda completa, centrada en el panel.
       const S = this.activeCell?.size || this.doc.size || 64;
       const c = this.partCanvas;
-      const box = c.parentElement;
-      const availW = box?.clientWidth || 320;
-      const availH = box?.clientHeight || 320;
-      const scale = Math.max(1, Math.floor(Math.min(availW, availH) * 0.92 / S));
+      const scale = this.#partScale();
       c.width = S * scale;
       c.height = S * scale;
+      this.syncZoomLabels();
       const ctx = c.getContext("2d");
       ctx.imageSmoothingEnabled = false;
       this.fillChecker(ctx, c.width, c.height);
@@ -950,13 +1164,10 @@
       const H = this.preview?.h || this.doc.size;
       const S = this.preview?.size || this.doc.size;
       const c = this.ensembleCanvas;
-      const box = c.parentElement;
-      const scale = Math.max(1, Math.floor(Math.min(
-        (box?.clientWidth || 480) / W,
-        (box?.clientHeight || 480) / H,
-        6)));
+      const scale = this.#ensScale();
       c.width = W * scale;
       c.height = H * scale;
+      this.syncZoomLabels();
       const ctx = c.getContext("2d");
       ctx.imageSmoothingEnabled = false;
       this.fillChecker(ctx, c.width, c.height);
