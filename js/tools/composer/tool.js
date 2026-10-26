@@ -88,7 +88,10 @@
     const g = defaultGroup(0, false);
     g.name = "Principal";
     g.layers = [defaultShapeLayer(0)];
-    return { size: 64, groups: [g], selectedGroup: 0, selectedLayer: 0 };
+    return {
+      size: 64, groups: [g], selectedGroup: 0, selectedLayer: 0,
+      ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true },
+    };
   }
 
   /** Migra docs antiguos (layers planos con offset) al modelo de grupos. */
@@ -98,6 +101,7 @@
         size: raw.size || 64,
         selectedGroup: raw.selectedGroup | 0,
         selectedLayer: raw.selectedLayer | 0,
+        ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true, ...(raw.ao || {}) },
         groups: raw.groups.map((g, gi) => ({
           ...defaultGroup(gi, !!g.multipart),
           ...g,
@@ -206,6 +210,82 @@
     dst[1] = Math.round(dst[1] * inv + g * a);
     dst[2] = Math.round(dst[2] * inv + b * a);
     dst[3] = Math.min(255, Math.round(dst[3] + (255 - dst[3]) * a));
+  }
+
+
+  /**
+   * AO en espacio de imagen entre capas/celdas.
+   * depth: Float32Array size*size, mayor = más cerca de la cámara (como el motor).
+   * Para cada píxel opaco, si vecinos más cercanos “tapan” el hemisferio, oscurece.
+   */
+  function applyScreenAO(color, depth, width, height, opts) {
+    const strength = opts.strength ?? 0.45;
+    const radius = Math.max(1, opts.radius ?? 3);
+    const samples = Math.max(4, opts.samples ?? 12);
+    if (strength <= 0.001) return color;
+
+    // Muestras en círculo (estable, sin RNG por frame).
+    const dirs = [];
+    for (let i = 0; i < samples; i++) {
+      const a = (i + 0.5) / samples * Math.PI * 2;
+      dirs.push([Math.cos(a), Math.sin(a)]);
+    }
+
+    const out = new Uint8ClampedArray(color);
+    const bias = opts.bias ?? 0.02;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        const di = i * 4;
+        if (color[di + 3] < 1) continue;
+        const d0 = depth[i];
+        if (!Number.isFinite(d0)) continue;
+
+        let blocked = 0, total = 0;
+        for (const [dx, dy] of dirs) {
+          // Dos radios: cercano y medio (mejor que un solo anillo).
+          for (const rMul of [0.45, 1]) {
+            const sx = Math.round(x + dx * radius * rMul);
+            const sy = Math.round(y + dy * radius * rMul);
+            total++;
+            if (sx < 0 || sy < 0 || sx >= width || sy >= height) {
+              // Borde abierto = menos oclusión (cielo).
+              continue;
+            }
+            const j = sy * width + sx;
+            const d1 = depth[j];
+            if (!Number.isFinite(d1)) continue; // vacío = no ocluye
+            // Vecino más cerca (depth mayor) y con diferencia relevante → ocluye.
+            if (d1 > d0 + bias) blocked++;
+          }
+        }
+        const ao = 1 - strength * (blocked / Math.max(1, total));
+        out[di] = Math.round(color[di] * ao);
+        out[di + 1] = Math.round(color[di + 1] * ao);
+        out[di + 2] = Math.round(color[di + 2] * ao);
+      }
+    }
+    return out;
+  }
+
+  /** Depth sintético si no hay mapa: base + orden de capa (frente más cerca). */
+  function syntheticDepth(size, layerIndex, totalLayers, shiftY) {
+    const d = new Float32Array(size * size);
+    // Frente (índice alto) = depth mayor. shiftY hacia abajo en pantalla ≈ un poco más lejos en iso.
+    const base = 1 + (layerIndex + 1) / (totalLayers + 1);
+    d.fill(base - (shiftY || 0) * 0.001);
+    return d;
+  }
+
+  /** Convierte depth RGBA del motor (blanco = cerca) a float 0..1. */
+  function depthFromMap(depthRgba, size) {
+    const d = new Float32Array(size * size);
+    if (!depthRgba) { d.fill(0.5); return d; }
+    for (let i = 0; i < size * size; i++) {
+      d[i] = depthRgba[i * 4] / 255;
+    }
+    return d;
   }
 
   function blitShifted(dest, destSize, src, srcSize, shiftX, shiftY, blend, opacity) {
@@ -596,6 +676,7 @@
         g = this.group();
       }
       const layer = spriteLayerFromResult(result, meta);
+      if (result.depth) layer.depth = new Uint8ClampedArray(result.depth);
       g.layers.push(layer);
       this.doc.selectedLayer = g.layers.length - 1;
       if (result.size) this.doc.size = Math.max(this.doc.size, result.size);
@@ -634,6 +715,7 @@
         size: this.doc.size,
         selectedGroup: this.doc.selectedGroup,
         selectedLayer: this.doc.selectedLayer,
+        ao: this.doc.ao,
         groups: this.doc.groups.map((g) => ({
           id: g.id, name: g.name, visible: g.visible, collapsed: g.collapsed,
           multipart: g.multipart, offsetX: g.offsetX, offsetY: g.offsetY, offsetZ: g.offsetZ,
@@ -737,6 +819,39 @@
       const set = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); this.rebuildGroupList(); };
 
       const kids = [];
+      const ao = this.doc.ao || (this.doc.ao = { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true });
+      const setAo = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); };
+
+      kids.push(section({ id: "cp-ao", title: "Ambient occlusion" },
+        h("p", { class: "note" }, "Oscurece contactos entre capas de la misma celda y entre celdas vecinas."),
+        h("label", { class: "field check" },
+          h("input", {
+            type: "checkbox", checked: ao.enabled !== false || null,
+            onchange: (e) => setAo(() => { ao.enabled = e.target.checked; }),
+          }),
+          h("span", null, "Activar AO")),
+        h("label", { class: "field check" },
+          h("input", {
+            type: "checkbox", checked: ao.crossCell !== false || null,
+            onchange: (e) => setAo(() => { ao.crossCell = e.target.checked; }),
+          }),
+          h("span", null, "AO entre celdas (conjunto)")),
+        slider({
+          label: "Intensidad", min: 0, max: 1, step: 0.05,
+          value: ao.strength ?? 0.5,
+          onChange: (v) => setAo(() => { ao.strength = Number(v); }),
+        }).el,
+        slider({
+          label: "Radio (px)", min: 1, max: 12, step: 1,
+          value: ao.radius ?? 3,
+          onChange: (v) => setAo(() => { ao.radius = Number(v); }),
+        }).el,
+        slider({
+          label: "Muestras", min: 4, max: 24, step: 2,
+          value: ao.samples ?? 12,
+          onChange: (v) => setAo(() => { ao.samples = Number(v); }),
+        }).el,
+      ).el);
 
       // Group props
       kids.push(h("div", { class: "cp-sub" }, "Grupo / carpeta"));
@@ -916,7 +1031,13 @@
     layerSourceRgba(L) {
       if (L.kind === "sprite") {
         if (!L.color) return null;
-        return { size: L.size || this.doc.size, color: L.color, normal: L.normal };
+        const size = L.size || this.doc.size;
+        return {
+          size,
+          color: L.color,
+          normal: L.normal,
+          depth: L.depth ? depthFromMap(L.depth, size) : null,
+        };
       }
       try {
         const def = Sh.SHAPES[L.shape] ?? Sh.SHAPES.cube;
@@ -932,34 +1053,70 @@
           return { w: S, h: S, rgba };
         };
         const tex = { top: solid([160, 160, 155]), left: solid([120, 120, 118]), right: solid([100, 100, 98]) };
-        const r = E.render(E.merge({ size: L.size || this.doc.size, shading: true }), tex, piece);
-        return { size: r.size, color: r.color, normal: r.normal };
+        // AO del motor apagado aquí: el Composer aplica AO entre capas/celdas después.
+        const r = E.render(E.merge({ size: L.size || this.doc.size, shading: true, ao: false }), tex, piece);
+        return {
+          size: r.size,
+          color: r.color,
+          normal: r.normal,
+          depth: r.depth ? depthFromMap(r.depth, r.size) : null,
+        };
       } catch (err) {
         console.warn(err);
         return null;
       }
     }
 
-    /** Compone las capas visibles de un grupo en un buffer size\u00d7size. */
+    /** Compone las capas visibles de un grupo en un buffer size×size, con depth y AO entre capas. */
     renderGroup(g) {
       const S = this.doc.size || 64;
       const color = new Uint8ClampedArray(S * S * 4);
+      const depth = new Float32Array(S * S).fill(-Infinity);
       let normal = null;
-      for (const L of g.layers || []) {
-        if (!L.visible) continue;
+      const layers = (g.layers || []).filter((L) => L.visible);
+      layers.forEach((L, li) => {
         const src = this.layerSourceRgba(L);
-        if (!src?.color) continue;
+        if (!src?.color) return;
         let rgba = src.color;
         if (L.tint) rgba = applyTint(rgba, L.tint);
         const c = clampShift(rgba, src.size, L.shiftX || 0, L.shiftY || 0);
         L.shiftX = c.x; L.shiftY = c.y;
-        blitShifted(color, S, rgba, src.size, c.x, c.y, L.blend, L.opacity ?? 1);
+        let srcDepth = src.depth;
+        if (!srcDepth) srcDepth = syntheticDepth(src.size, li, layers.length, c.y);
+        // Bonus de cercanía por orden de capa (las de arriba en la lista quedan delante).
+        const orderBias = (li + 1) * 0.02;
+        for (let y = 0; y < src.size; y++) {
+          for (let x = 0; x < src.size; x++) {
+            const si = (y * src.size + x) * 4;
+            if (rgba[si + 3] < 1) continue;
+            const dx = x + c.x, dy = y + c.y;
+            if (dx < 0 || dy < 0 || dx >= S || dy >= S) continue;
+            const di = dy * S + dx;
+            const d = srcDepth[y * src.size + x] + orderBias;
+            const pi = di * 4;
+            const dest = [color[pi], color[pi + 1], color[pi + 2], color[pi + 3]];
+            const srcPx = [rgba[si], rgba[si + 1], rgba[si + 2], rgba[si + 3]];
+            blendPixel(dest, srcPx, L.blend || "normal", L.opacity ?? 1);
+            color[pi] = dest[0]; color[pi + 1] = dest[1]; color[pi + 2] = dest[2]; color[pi + 3] = dest[3];
+            if (d > depth[di]) depth[di] = d;
+          }
+        }
         if (src.normal) {
           if (!normal) normal = new Uint8ClampedArray(S * S * 4);
           blitShifted(normal, S, src.normal, src.size, c.x, c.y, "normal", 1);
         }
+      });
+
+      const ao = this.doc.ao || {};
+      let finalColor = color;
+      if (ao.enabled !== false && (ao.strength ?? 0.5) > 0) {
+        finalColor = applyScreenAO(color, depth, S, S, {
+          strength: ao.strength ?? 0.5,
+          radius: ao.radius ?? 3,
+          samples: ao.samples ?? 12,
+        });
       }
-      return { size: S, color, normal };
+      return { size: S, color: finalColor, normal, depth };
     }
 
     /**
@@ -1015,17 +1172,21 @@
         if (g.multipart) cell.label = g.name;
       }
       const cells = [...map.values()].map((c) => {
-        // Componer todas las capas de todos los grupos de esta celda → un 64×64
+        // Componer todos los grupos de esta celda → un 64×64 + depth combinado
         const color = new Uint8ClampedArray(S * S * 4);
+        const depth = new Float32Array(S * S).fill(-Infinity);
         let normal = null;
         for (const g of c.groups) {
           const r = this.renderGroup(g);
-          for (let i = 0; i < color.length; i += 4) {
-            if (r.color[i + 3] < 1) continue;
-            const d = [color[i], color[i + 1], color[i + 2], color[i + 3]];
-            const s = [r.color[i], r.color[i + 1], r.color[i + 2], r.color[i + 3]];
-            blendPixel(d, s, "normal", 1);
-            color[i] = d[0]; color[i + 1] = d[1]; color[i + 2] = d[2]; color[i + 3] = d[3];
+          // renderGroup ya aplicó AO intra-grupo; re-fusionamos depth para AO entre celdas
+          for (let i = 0; i < S * S; i++) {
+            const pi = i * 4;
+            if (r.color[pi + 3] < 1) continue;
+            const dest = [color[pi], color[pi + 1], color[pi + 2], color[pi + 3]];
+            const srcPx = [r.color[pi], r.color[pi + 1], r.color[pi + 2], r.color[pi + 3]];
+            blendPixel(dest, srcPx, "normal", 1);
+            color[pi] = dest[0]; color[pi + 1] = dest[1]; color[pi + 2] = dest[2]; color[pi + 3] = dest[3];
+            if (r.depth && r.depth[i] > depth[i]) depth[i] = r.depth[i];
           }
           if (r.normal) {
             if (!normal) normal = new Uint8ClampedArray(S * S * 4);
@@ -1042,6 +1203,7 @@
           size: S,
           color,
           normal,
+          depth,
           px: d.x,
           py: d.y,
           sort: this.sortKey(c.offsetX, c.offsetY, c.offsetZ),
@@ -1093,9 +1255,12 @@
       const H = Math.max(S, maxY - minY);
       const color = new Uint8ClampedArray(W * H * 4);
 
+      const ensDepth = new Float32Array(W * H).fill(-Infinity);
       for (const c of cells) {
         const dx = c.px - minX;
         const dy = c.py - minY;
+        // Depth bias por altura de celda: más alto (offsetY) = un poco más cerca en pantalla iso
+        const cellBias = (c.offsetY | 0) * 0.05 + (c.offsetX + c.offsetZ) * 0.001;
         for (let y = 0; y < S; y++) {
           for (let x = 0; x < S; x++) {
             const si = (y * S + x) * 4;
@@ -1103,15 +1268,28 @@
             const di = ((dy + y) * W + (dx + x)) * 4;
             const d = [color[di], color[di + 1], color[di + 2], color[di + 3]];
             const s = [c.color[si], c.color[si + 1], c.color[si + 2], c.color[si + 3]];
-            // Activa un poco más opaca visualmente no hace falta; mismo blit
             blendPixel(d, s, "normal", 1);
             color[di] = d[0]; color[di + 1] = d[1]; color[di + 2] = d[2]; color[di + 3] = d[3];
+            const zi = (dy + y) * W + (dx + x);
+            const zd = (c.depth ? c.depth[y * S + x] : 0.5) + cellBias;
+            if (zd > ensDepth[zi]) ensDepth[zi] = zd;
           }
         }
       }
 
+      // AO entre celdas del conjunto (contactos, huecos, solapes iso).
+      const ao = this.doc.ao || {};
+      let ensColor = color;
+      if (ao.enabled !== false && ao.crossCell !== false && (ao.strength ?? 0.5) > 0) {
+        ensColor = applyScreenAO(color, ensDepth, W, H, {
+          strength: (ao.strength ?? 0.5) * 0.85,
+          radius: Math.max(2, (ao.radius ?? 3) + 1),
+          samples: ao.samples ?? 12,
+        });
+      }
+
       this.preview = {
-        size: S, w: W, h: H, color,
+        size: S, w: W, h: H, color: ensColor,
         cells: cells.length,
         outlines: cells.map((c) => ({
           x: c.px - minX, y: c.py - minY, w: S, h: S,
