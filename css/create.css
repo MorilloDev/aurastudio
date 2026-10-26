@@ -78,3 +78,120 @@
 .cp-props .field input:not([type="checkbox"]):not([type="range"]):not([type="color"]):not([type="number"]) {
   min-width: 0; width: 100%;
 }
+
+/* Crear hub: Composer principal + overlay generadores */
+.cr-hub {
+  grid-template-rows: auto 1fr;
+  position: absolute;
+  inset: 0;
+}
+.cr-hub-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  z-index: 2;
+}
+.cr-gen-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(95, 211, 176, 0.35);
+  background: linear-gradient(135deg, rgba(95, 211, 176, 0.12), rgba(127, 178, 255, 0.1));
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 600;
+}
+.cr-gen-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+.cr-composer-host {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+.cr-composer-host .cp {
+  position: absolute;
+  inset: 0;
+}
+
+.cr-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: rgba(6, 8, 12, 0.75);
+  backdrop-filter: blur(3px);
+  display: none;
+  padding: 12px 16px 16px;
+}
+.cr-overlay.open,
+.cr-overlay:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+}
+.cr-overlay[hidden] { display: none !important; }
+.cr-overlay-panel {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+}
+.cr-overlay-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.cr-overlay-bar h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+.cr-overlay-tag {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.cr-overlay-body {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+.cr-gen-host {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+}
+.cr-overlay-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+.cr-overlay-foot .cr-apply-hint { flex: 1; }
+.cr-overlay-foot button {
+  padding: 8px 14px;
+  font-size: 13px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.cr-overlay-foot button.primary {
+  background: var(--accent);
+  color: #0c1210;
+  border-color: transparent;
+  font-weight: 600;
+}

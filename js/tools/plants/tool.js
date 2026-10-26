@@ -865,22 +865,36 @@
      * one as "parts" stacked upward; stages and seeds are several tiles, so they go over as their cells only.
      */
 
-    /** Copia la vista previa actual al Composer como capa (sprite). */
-    #addToComposer() {
+    /** Público: usado por el hub Crear (overlay). Devuelve true si se aplicó. */
+    applyToComposer() {
+      return this.#addToComposer(true);
+    }
+
+    /**
+     * Mete la planta en el Composer. Multipart = cada parte como capa/grupo con offsetY.
+     * Las plantas no llevan AO de generador.
+     */
+    #addToComposer(fromHub = false) {
       if (!this.result) {
         this.studio.toast("Genera una planta antes de añadirla", { kind: "warn" });
-        return;
+        return false;
       }
       const name = this.type || "planta";
       const ok = Aura.composerTool?.queueResult?.(this.result, { name, source: "planta" });
       if (!ok) {
         this.studio.toast("Composer no disponible", { kind: "warn" });
-        return;
+        return false;
       }
-      try { Aura.storage.prefs.set("create:mode", "composer"); } catch {}
-      this.studio.activate?.("create");
-      this.studio.tools?.find?.((t) => t.id === "create")?.show?.("composer");
-      this.studio.toast("Añadido al Composer como capa", { kind: "ok" });
+      if (!fromHub) {
+        try { Aura.storage.prefs.set("create:mode", "composer"); } catch {}
+        this.studio.activate?.("create");
+        this.studio.tools?.find?.((t) => t.id === "create")?.show?.("composer");
+      }
+      const n = this.result.parts?.length || 1;
+      this.studio.toast(n > 1
+        ? ("Planta multipart: " + n + " partes en el Composer")
+        : "Planta añadida al Composer", { kind: "ok" });
+      return true;
     }
 
 

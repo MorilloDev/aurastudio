@@ -1,16 +1,10 @@
 "use strict";
 
-// Crear / Composer: modes for generators (blocks, plants) and the multipiece Composer.
+// Crear = hub: Composer siempre visible. Bloque y Planta se abren en overlay;
+// «Aplicar» mete el resultado (o todas las partes de una planta multipart) en el Composer.
 (function (Aura) {
   const { h } = Aura.dom;
-  const { segmented } = Aura.controls;
   const { prefs } = Aura.storage;
-
-  const MODES = [
-    { id: "composer", label: "Composer", hint: "Capas 3D, multipart, agujeros, fusion, tint y export", make: () => Aura.composerTool.composerTool() },
-    { id: "blocks", label: "Bloque", hint: "Cubos, losas, escaleras, esferas, marcos\u2026 con caras de una hoja", make: () => Aura.blocksTool.blocksTool() },
-    { id: "plants", label: "Planta", hint: "Hierba, flores, cultivos, plantas de agua, hojas y semillas", make: () => Aura.plantsTool.plantsTool() },
-  ];
 
   function createTool() {
     return new CreateTool();
@@ -18,54 +12,147 @@
 
   class CreateTool {
     id = "create";
-    title = "Composer";
+    title = "Crear";
     project = null;
-    modes = MODES.map((m) => ({ ...m, tool: m.make(), host: null, mounted: false }));
-    current = null;
+    studio = null;
+    composer = null;
+    blocks = null;
+    plants = null;
+    overlayMode = null; // "blocks" | "plants" | null
 
     mount(host, studio) {
       this.studio = studio;
-      this.hint = h("span", { class: "hint" });
-      this.seg = segmented({
-        label: "Modo", value: "",
-        options: this.modes.map((m) => [m.id, m.label, m.hint]),
-        onChange: (id) => this.show(id),
-      });
-      const hosts = this.modes.map((m) => (m.host = h("div", { class: "cr-host" })));
-      host.appendChild(h("div", { class: "cr" },
-        h("div", { class: "cr-bar" }, this.seg.el, this.hint, h("span", { class: "grow" }),
-          h("span", { class: "hint" }, "En Bloque/Planta: «Añadir al Composer» mete el tile en una capa.")),
-        h("div", { style: "position: relative; min-height: 0" }, hosts)));
-      this.show(prefs.get("create:mode", "composer"));
+
+      this.composerHost = h("div", { class: "cr-composer-host" });
+      this.blocksHost = h("div", { class: "cr-gen-host" });
+      this.plantsHost = h("div", { class: "cr-gen-host" });
+
+      this.overlayTitle = h("h2", null, "Bloque");
+      this.overlayTag = h("span", { class: "cr-overlay-tag" }, "generador");
+      this.overlayHint = h("span", { class: "hint" }, "");
+
+      this.overlay = h("div", { class: "cr-overlay", hidden: true },
+        h("div", { class: "cr-overlay-panel" },
+          h("div", { class: "cr-overlay-bar" },
+            this.overlayTitle,
+            this.overlayTag,
+            h("span", { class: "grow" }),
+            this.overlayHint),
+          h("div", { class: "cr-overlay-body" },
+            this.blocksHost,
+            this.plantsHost),
+          h("div", { class: "cr-overlay-foot" },
+            h("span", { class: "hint cr-apply-hint" }, "El resultado se añade al Composer (grupo activo)."),
+            h("button", { type: "button", onclick: () => this.closeOverlay() }, "Cancelar"),
+            h("button", {
+              type: "button", class: "primary",
+              onclick: () => this.applyGenerator(),
+            }, "Aplicar al Composer"))));
+
+      this.hubBar = h("div", { class: "cr-hub-bar" },
+        h("button", {
+          type: "button", class: "cr-gen-btn",
+          title: "Abrir generador de bloques",
+          onclick: () => this.openGenerator("blocks"),
+        }, "▣ Bloque…"),
+        h("button", {
+          type: "button", class: "cr-gen-btn",
+          title: "Abrir generador de plantas / follaje",
+          onclick: () => this.openGenerator("plants"),
+        }, "🌿 Planta…"),
+        h("span", { class: "grow" }),
+        h("span", { class: "hint" }, "Composer · genera en overlay → Aplicar → capas / multipart"));
+
+      host.appendChild(h("div", { class: "cr cr-hub" },
+        this.hubBar,
+        this.composerHost,
+        this.overlay));
+
+      this.composer = Aura.composerTool.composerTool();
+      this.blocks = Aura.blocksTool.blocksTool();
+      this.plants = Aura.plantsTool.plantsTool();
+
+      this.composer.mount(this.composerHost, studio);
+      this.blocks.mount(this.blocksHost, studio);
+      this.plants.mount(this.plantsHost, studio);
+
+      this.blocksHost.hidden = true;
+      this.plantsHost.hidden = true;
+
+      prefs.set("create:mode", "composer");
     }
 
-    show(id) {
-      const mode = this.modes.find((m) => m.id === id) ?? this.modes[0];
-      if (mode === this.current) return;
-      this.current?.tool.deactivate?.();
-      for (const m of this.modes) m.host.classList.toggle("active", m === mode);
-      if (!mode.mounted) {
-        mode.mounted = true;
-        mode.tool.mount(mode.host, this.studio);
-        if (this.project) mode.tool.onProject?.(this.project);
+    openGenerator(mode) {
+      this.overlayMode = mode;
+      this.blocksHost.hidden = mode !== "blocks";
+      this.plantsHost.hidden = mode !== "plants";
+      if (mode === "blocks") {
+        this.overlayTitle.textContent = "Bloque";
+        this.overlayTag.textContent = "generador";
+        this.overlayHint.textContent = "AO del motor sí · al aplicar = 1 capa";
+        this.blocks.activate?.();
+      } else {
+        this.overlayTitle.textContent = "Planta";
+        this.overlayTag.textContent = "follaje";
+        this.overlayHint.textContent = "Sin AO · multipart → una capa por celda";
+        this.plants.activate?.();
       }
-      this.current = mode;
-      this.seg.set(mode.id);
-      this.hint.textContent = mode.hint;
-      prefs.set("create:mode", mode.id);
-      requestAnimationFrame(() => mode.tool.activate?.());
+      this.overlay.hidden = false;
+      this.overlay.classList.add("open");
     }
 
-    activate() { if (this.current) requestAnimationFrame(() => this.current.tool.activate?.()); }
-    deactivate() { this.current?.tool.deactivate?.(); }
+    closeOverlay() {
+      this.overlayMode = null;
+      this.overlay.hidden = true;
+      this.overlay.classList.remove("open");
+      this.blocks.deactivate?.();
+      this.plants.deactivate?.();
+      this.composer.activate?.();
+    }
+
+    applyGenerator() {
+      const mode = this.overlayMode;
+      let ok = false;
+      if (mode === "blocks") {
+        ok = this.blocks.applyToComposer?.() ?? false;
+      } else if (mode === "plants") {
+        ok = this.plants.applyToComposer?.() ?? false;
+      }
+      if (ok) this.closeOverlay();
+    }
+
+    activate() {
+      if (this.overlayMode) {
+        if (this.overlayMode === "blocks") this.blocks.activate?.();
+        else this.plants.activate?.();
+      } else {
+        this.composer.activate?.();
+      }
+    }
+
+    deactivate() {
+      this.composer.deactivate?.();
+      this.blocks.deactivate?.();
+      this.plants.deactivate?.();
+    }
 
     onProject(project) {
       this.project = project;
-      for (const m of this.modes) if (m.mounted) m.tool.onProject?.(project);
+      this.composer?.onProject?.(project);
+      this.blocks?.onProject?.(project);
+      this.plants?.onProject?.(project);
     }
 
-    isDirty() { return this.modes.some((m) => m.mounted && m.tool.isDirty?.()); }
-    dirtyLabel() { return "Composer"; }
+    isDirty() {
+      return !!(this.composer?.isDirty?.() || this.blocks?.isDirty?.() || this.plants?.isDirty?.());
+    }
+
+    dirtyLabel() { return "Crear"; }
+
+    show(id) {
+      if (id === "blocks" || id === "plants") this.openGenerator(id);
+      else this.closeOverlay();
+    }
   }
 
   Aura.createTool = { createTool };

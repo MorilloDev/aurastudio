@@ -666,40 +666,88 @@
     }
 
     pushResult(result, meta = {}) {
-      if (!result?.color) {
-        this.studio?.toast("No hay preview para a\u00f1adir", { kind: "warn" });
+      // Planta multipart: result.parts = [abajo…arriba], una celda por parte.
+      const parts = (result?.parts && result.parts.length) ? result.parts : null;
+      if (parts && parts.length > 1) {
+        const baseName = meta.name || meta.source || "planta";
+        const size = result.size || parts[0].size || 64;
+        this.doc.size = Math.max(this.doc.size || 64, size);
+        // Cada parte → grupo multipart con offsetY = índice (sistema de plantas del juego).
+        for (let k = 0; k < parts.length; k++) {
+          const part = parts[k];
+          if (!part?.color) continue;
+          const g = defaultGroup(this.doc.groups.length, true);
+          g.name = baseName + " p" + (k + 1);
+          g.offsetX = 0;
+          g.offsetY = k;
+          g.offsetZ = 0;
+          g.multipart = true;
+          const layer = spriteLayerFromResult(part, {
+            name: baseName + " p" + (k + 1),
+            source: meta.source || "planta",
+          });
+          if (part.depth) layer.depth = new Uint8ClampedArray(part.depth);
+          // Plantas: sin AO de generador; el Composer puede ocluir entre celdas si el usuario quiere.
+          g.layers = [layer];
+          this.doc.groups.push(g);
+        }
+        this.doc.selectedGroup = this.doc.groups.length - 1;
+        this.doc.selectedLayer = 0;
+        this.dirty = true;
+        this.touch();
         return;
       }
+
+      const color = result?.color || (parts && parts[0]?.color);
+      if (!color) {
+        this.studio?.toast("No hay preview para añadir", { kind: "warn" });
+        return;
+      }
+      const single = parts && parts.length === 1
+        ? { ...result, color: parts[0].color, normal: parts[0].normal, depth: parts[0].depth, size: parts[0].size || result.size }
+        : result;
+
       let g = this.group();
       if (!g) {
         this.addGroup(false);
         g = this.group();
       }
-      const layer = spriteLayerFromResult(result, meta);
-      if (result.depth) layer.depth = new Uint8ClampedArray(result.depth);
+      const layer = spriteLayerFromResult(single, meta);
+      if (single.depth) layer.depth = new Uint8ClampedArray(single.depth);
       g.layers.push(layer);
       this.doc.selectedLayer = g.layers.length - 1;
-      if (result.size) this.doc.size = Math.max(this.doc.size, result.size);
+      if (single.size) this.doc.size = Math.max(this.doc.size, single.size);
       this.dirty = true;
       this.touch();
-      this.studio?.toast("Capa \u00ab" + layer.name + "\u00bb en \u00ab" + g.name + "\u00bb", { kind: "ok" });
     }
 
     drainQueue() {
       try {
         const q = prefs.get(QUEUE_KEY, []);
-        if (!Array.isArray(q) || !q.length) return;
+        if (!q?.length) return;
         prefs.set(QUEUE_KEY, []);
         for (const item of q) {
-          if (!item?.color) continue;
-          this.pushResult({
-            size: item.size || 64,
-            color: new Uint8ClampedArray(item.color),
-            normal: item.normal ? new Uint8ClampedArray(item.normal) : null,
-            w: item.w, h: item.h,
-          }, item.meta || {});
+          if (item.multipart && item.parts?.length) {
+            this.pushResult({
+              size: item.size || 64,
+              parts: item.parts.map((p) => ({
+                size: p.size || item.size || 64,
+                color: new Uint8ClampedArray(p.color),
+                normal: p.normal ? new Uint8ClampedArray(p.normal) : null,
+              })),
+            }, item.meta || {});
+          } else {
+            this.pushResult({
+              size: item.size || 64,
+              w: item.w, h: item.h,
+              color: new Uint8ClampedArray(item.color),
+              normal: item.normal ? new Uint8ClampedArray(item.normal) : null,
+            }, item.meta || {});
+          }
         }
-      } catch { /* ignore */ }
+      } catch (err) {
+        console.warn("composer queue", err);
+      }
     }
 
     touch() {
@@ -1214,14 +1262,17 @@
     }
 
     exportCells() {
-      return this.buildCells().map((c) => ({
+      // Orden estable para Atlas: horizontal (offsetY, offsetX, offsetZ) — celdas en fila.
+      const cells = this.buildCells().slice().sort((a, b) =>
+        (a.offsetY - b.offsetY) || (a.offsetX - b.offsetX) || (a.offsetZ - b.offsetZ));
+      return cells.map((c) => ({
+        size: c.size,
+        color: c.color,
+        normal: c.normal,
         offsetX: c.offsetX,
         offsetY: c.offsetY,
         offsetZ: c.offsetZ,
         label: c.label,
-        color: c.color,
-        normal: c.normal,
-        size: c.size,
       }));
     }
 
@@ -1467,19 +1518,35 @@
   }
 
   function queueResult(result, meta = {}) {
-    if (!result?.color) return false;
+    // Multipart planta: tiene parts[] aunque result.color pueda ser un stack compuesto.
+    const hasParts = result?.parts && result.parts.length > 0;
+    if (!result?.color && !hasParts) return false;
     if (Aura.composerBridge?.pushResult) {
       Aura.composerBridge.pushResult(result, meta);
       return true;
     }
     const q = prefs.get(QUEUE_KEY, []);
-    q.push({
-      size: result.size || result.w || 64,
-      w: result.w, h: result.h,
-      color: Array.from(result.color),
-      normal: result.normal ? Array.from(result.normal) : null,
-      meta: { name: meta.name, source: meta.source },
-    });
+    if (hasParts && result.parts.length > 1) {
+      q.push({
+        multipart: true,
+        size: result.size || result.parts[0].size || 64,
+        parts: result.parts.map((p) => ({
+          size: p.size || result.size || 64,
+          color: Array.from(p.color),
+          normal: p.normal ? Array.from(p.normal) : null,
+        })),
+        meta: { name: meta.name, source: meta.source },
+      });
+    } else {
+      const src = hasParts ? result.parts[0] : result;
+      q.push({
+        size: src.size || result.size || result.w || 64,
+        w: result.w, h: result.h,
+        color: Array.from(src.color || result.color),
+        normal: (src.normal || result.normal) ? Array.from(src.normal || result.normal) : null,
+        meta: { name: meta.name, source: meta.source },
+      });
+    }
     prefs.set(QUEUE_KEY, q);
     return true;
   }

@@ -1026,23 +1026,34 @@
 
     /** Hands every variant to the Atlas tab, which places them where the user clicks and offers to make the tile. */
 
+
+    /** Público: usado por el hub Crear (overlay). Devuelve true si se aplicó. */
+    applyToComposer() {
+      return this.#addToComposer(true);
+    }
+
     /** Copia la vista previa actual al Composer como capa (sprite). */
-    #addToComposer() {
+    #addToComposer(fromHub = false) {
       if (!this.result) {
         this.studio.toast("Genera una pieza antes de añadirla", { kind: "warn" });
-        return;
+        return false;
       }
       const name = (this.#baseName && this.#baseName()) || ("bloque_" + (this.piece?.shape || "cube"));
+      // AO del motor ya va en el sprite; el Composer no vuelve a aplicar AO de generador.
       const ok = Aura.composerTool?.queueResult?.(this.result, { name, source: "bloque" });
       if (!ok) {
         this.studio.toast("Composer no disponible", { kind: "warn" });
-        return;
+        return false;
       }
-      try { Aura.storage.prefs.set("create:mode", "composer"); } catch {}
-      this.studio.activate?.("create");
-      this.studio.tools?.find?.((t) => t.id === "create")?.show?.("composer");
-      this.studio.toast("Añadido al Composer como capa", { kind: "ok" });
+      if (!fromHub) {
+        try { Aura.storage.prefs.set("create:mode", "composer"); } catch {}
+        this.studio.activate?.("create");
+        this.studio.tools?.find?.((t) => t.id === "create")?.show?.("composer");
+      }
+      this.studio.toast("Bloque añadido al Composer", { kind: "ok" });
+      return true;
     }
+
 
 
     #sendToAtlas() {
