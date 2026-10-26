@@ -379,7 +379,9 @@
         const def = Sh.SHAPES[L.shape] ?? Sh.SHAPES.cube;
         let boxes;
         try {
-          boxes = def.boxes ? def.boxes({ ...Sh.PARAM_DEFAULTS, ...(L.params || {}) }) : [{ min: [0, 0, 0], max: [1, 1, 1] }];
+          const params = { ...Sh.PARAM_DEFAULTS, ...(L.params || {}) };
+          boxes = def.boxes ? def.boxes(params) : [{ min: [0, 0, 0], max: [1, 1, 1] }];
+          if (params.scale != null && params.scale !== 1 && Sh.scaleBoxes) boxes = Sh.scaleBoxes(boxes, params.scale);
         } catch {
           boxes = Sh.SHAPES.cube.boxes();
         }
@@ -495,19 +497,25 @@
       const out = [];
       const shape = L.shape;
       if (!Sh?.PARAM_DEFAULTS) return out;
-      const add = (key, label, min, max) => out.push(this.paramSlider(L, key, label, min, max, set));
+      const add = (key, label, min, max, step = 1) => out.push(this.paramSlider(L, key, label, min, max, set, step));
       if (shape === "layer") add("layer", "Altura", 1, 15);
       if (shape === "small") { add("small", "Ancho", 2, 16); add("smallHeight", "Alto", 1, 16); }
       if (shape === "pillar") add("pillar", "Grosor", 2, 16);
       if (["panel", "slopePanel", "diagonalWall", "semicircle", "frame", "frameRound"].includes(shape)) add("panel", "Grosor", 1, 8);
       if (["sphere", "hemisphere", "cylinder", "semicircle", "arch", "frameRound", "tube"].includes(shape)) add("radius", "Radio", 2, 8);
-      if (["frame", "frameRound", "arch", "tube"].includes(shape)) add("frameThick", "Grosor marco", 1, 6);
+      if (["frame", "frameRound", "arch", "tube"].includes(shape)) add("frameThick", "Grosor", 1, 6);
+      if (shape === "arch") {
+        add("archHeight", "Altura pilares", 1, 14);
+        add("archDepth", "Profundidad", 2, 16);
+      }
+      // Tamaño de la forma dentro de la celda.
+      add("scale", "Escala", 0.2, 1, 0.05);
       return out;
     }
 
-    paramSlider(L, key, label, min, max, set) {
+    paramSlider(L, key, label, min, max, set, step = 1) {
       return slider({
-        label, min, max, step: 1, value: L.params?.[key] ?? Sh.PARAM_DEFAULTS[key],
+        label, min, max, step, value: L.params?.[key] ?? Sh.PARAM_DEFAULTS[key] ?? min,
         onChange: (v) => set(() => { L.params = L.params || {}; L.params[key] = Number(v); }),
       }).el;
     }
@@ -596,15 +604,9 @@
 
     render() {
       const S = this.doc.size;
-      const cells = this.listCells();
       this.cellCanvases.clear();
-      for (const c of cells) {
-        // Use original offsets from layers for rendering (listCells may have normalized for export only).
-        // Re-find layers by matching - actually listCells normalizes only for export.
-        // For preview we composite all cells onto one canvas with iso layout.
-      }
 
-      // Recompute cells without normalizing for preview keys
+      // Celdas reales (sin normalizar): cada offset distinto = una celda al lado.
       const raw = new Map();
       for (const L of this.doc.layers) {
         if (!L.visible) continue;
@@ -618,38 +620,75 @@
         this.cellCanvases.set(c.offsetX + "," + c.offsetY + "," + c.offsetZ, this.renderCell(c.offsetX, c.offsetY, c.offsetZ));
       }
 
-      // Preview: stack cells with iso offset on a larger canvas, or single cell centered.
-      const color = new Uint8ClampedArray(S * S * 4);
-      for (const c of rawCells) {
-        const cell = this.cellCanvases.get(c.offsetX + "," + c.offsetY + "," + c.offsetZ);
-        if (!cell) continue;
+      // Offsets isométricos en px para cada celda (mismo criterio que el juego aproxima en 2D).
+      const placed = rawCells.map((c) => {
         const ox = Math.round((c.offsetX - c.offsetZ) * (S * 0.5));
         const oy = Math.round((c.offsetX + c.offsetZ) * (S * 0.25) - c.offsetY * (S * 0.5));
-        blitShifted(color, S, cell.color, S, ox, oy, "normal", 1);
+        return { c, ox, oy };
+      });
+
+      // Lienzo que cabe TODAS las celdas sin cortar.
+      let minX = 0, minY = 0, maxX = S, maxY = S;
+      for (const p of placed) {
+        minX = Math.min(minX, p.ox);
+        minY = Math.min(minY, p.oy);
+        maxX = Math.max(maxX, p.ox + S);
+        maxY = Math.max(maxY, p.oy + S);
+      }
+      const pad = 4;
+      minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+      const W = Math.max(S, maxX - minX);
+      const H = Math.max(S, maxY - minY);
+      const color = new Uint8ClampedArray(W * H * 4);
+
+      for (const p of placed) {
+        const cell = this.cellCanvases.get(p.c.offsetX + "," + p.c.offsetY + "," + p.c.offsetZ);
+        if (!cell) continue;
+        const dx = p.ox - minX;
+        const dy = p.oy - minY;
+        // Blit cell into the big canvas at (dx, dy).
+        for (let y = 0; y < S; y++) {
+          for (let x = 0; x < S; x++) {
+            const si = (y * S + x) * 4;
+            if (cell.color[si + 3] < 1) continue;
+            const di = ((dy + y) * W + (dx + x)) * 4;
+            const d = [color[di], color[di + 1], color[di + 2], color[di + 3]];
+            const s = [cell.color[si], cell.color[si + 1], cell.color[si + 2], cell.color[si + 3]];
+            blendPixel(d, s, "normal", 1);
+            color[di] = d[0]; color[di + 1] = d[1]; color[di + 2] = d[2]; color[di + 3] = d[3];
+          }
+        }
       }
 
-      this.preview = { size: S, color };
+      this.preview = { size: S, w: W, h: H, color, cells: rawCells.length };
       this.paintCanvas();
     }
 
     paintCanvas() {
-      const S = this.preview?.size || this.doc.size;
+      const W = this.preview?.w || this.preview?.size || this.doc.size;
+      const H = this.preview?.h || this.preview?.size || this.doc.size;
       const c = this.canvas;
-      const scale = Math.max(1, Math.floor(Math.min(480, (c.parentElement?.clientWidth || 480)) / S));
-      c.width = S * scale;
-      c.height = S * scale;
+      const boxW = c.parentElement?.clientWidth || 480;
+      const boxH = c.parentElement?.clientHeight || 480;
+      const scale = Math.max(1, Math.floor(Math.min(boxW / W, boxH / H, 8)));
+      c.width = W * scale;
+      c.height = H * scale;
       const ctx = c.getContext("2d");
       ctx.imageSmoothingEnabled = false;
-      const g = 8;
+      const g = Math.max(4, 8);
       for (let y = 0; y < c.height; y += g) for (let x = 0; x < c.width; x += g) {
         ctx.fillStyle = ((x / g + y / g) & 1) ? "#2a2a30" : "#1e1e24";
         ctx.fillRect(x, y, g, g);
       }
       if (!this.preview) return;
-      const img = ctx.createImageData(S, S);
-      img.data.set(this.preview.color);
+      // Optional grid of cell bounds when multipart.
+      if ((this.preview.cells || 1) > 1) {
+        ctx.strokeStyle = "rgba(95, 211, 176, 0.35)";
+        ctx.lineWidth = 1;
+      }
+      const img = new ImageData(new Uint8ClampedArray(this.preview.color), W, H);
       const off = document.createElement("canvas");
-      off.width = S; off.height = S;
+      off.width = W; off.height = H;
       off.getContext("2d").putImageData(img, 0, 0);
       ctx.drawImage(off, 0, 0, c.width, c.height);
     }

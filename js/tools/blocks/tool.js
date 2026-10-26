@@ -248,8 +248,9 @@
       if (rebuild) this.#rebuildPanel();
       this.#schedule();
     }
-    #pieceSlider(label, key, min, max, title = "") {
-      return slider({ label, min, max, step: 1, value: this.piece.params[key], defaultValue: Sh.PARAM_DEFAULTS[key], unit: "/16", title,
+    #pieceSlider(label, key, min, max, title = "", step = 1) {
+      const unit = key === "scale" ? "×" : "/16";
+      return slider({ label, min, max, step, value: this.piece.params[key] ?? Sh.PARAM_DEFAULTS[key], defaultValue: Sh.PARAM_DEFAULTS[key], unit, title,
         onInput: (v) => this.#setPiece((p) => { p.params[key] = v; }) }).el;
     }
     #pieceCheck(label, get, put, title = "") {
@@ -363,7 +364,15 @@
         params.push(this.#pieceSlider("Radio", "radius", 2, 8, "Radio en dieciseisavos del bloque"));
       }
       if (["frame", "frameRound", "arch", "tube"].includes(this.piece.shape)) {
-        params.push(this.#pieceSlider("Grosor marco", "frameThick", 1, 6, "Grosor del marco o pared del tubo"));
+        params.push(this.#pieceSlider("Grosor marco", "frameThick", 1, 6, "Grosor del marco, pilares o pared del tubo"));
+      }
+      if (this.piece.shape === "arch") {
+        params.push(this.#pieceSlider("Altura pilares", "archHeight", 1, 14, "Altura de las columnas del arco en dieciseisavos"));
+        params.push(this.#pieceSlider("Profundidad", "archDepth", 2, 16, "Cuánto avanza el arco en profundidad (Z)"));
+      }
+      // Escala de casi todas las formas (no custom a mano).
+      if (this.piece.shape !== "custom" && !def.connects) {
+        params.push(this.#pieceSlider("Escala", "scale", 0.2, 1, "Tamaño de la forma dentro de la celda (1 = llena el bloque)", 0.05));
       }
       if (this.piece.shape === "custom") {
         const area = h("textarea", { rows: 6, spellcheck: false }, this.piece.params.custom);

@@ -22,3 +22,17 @@
 .cp-view { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--canvas-bg); }
 .cp-preview { image-rendering: pixelated; max-width: 100%; max-height: 100%; }
 .cp-hint { padding: 6px 10px; margin: 0; border-top: 1px solid var(--line); background: var(--panel); }
+
+
+/* Composer: panel más ancho y sliders usables (móvil y escritorio) */
+.cp { grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); }
+.cp-props .field { grid-template-columns: 96px 1fr; gap: 10px; }
+.cp-props .field.slider > .ctl { grid-template-columns: 1fr 56px 18px; gap: 6px; }
+.cp-props .field.slider input[type=range] { min-width: 0; width: 100%; }
+.cp-props .note { font-size: 12px; line-height: 1.35; color: var(--muted); }
+.cp-view { overflow: auto; }
+.cp-preview { image-rendering: pixelated; max-width: none; max-height: none; }
+@media (max-width: 900px) {
+  .cp { grid-template-columns: 1fr; grid-template-rows: 42vh 1fr; }
+  .cp-side { border-right: none; border-bottom: 1px solid var(--line); max-height: 42vh; }
+}

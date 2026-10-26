@@ -246,16 +246,23 @@
     },
     arch: {
       label: "Arco", states: ["default"],
+      // frameThick = grosor de pilares y del anillo; radius = altura del medio punto;
+      // archHeight = altura de los pilares (dieciseisavos); archDepth = profundidad Z del arco.
       boxes: (p) => {
-        const thick = p.frameThick ?? 2;
-        const r = (p.radius ?? 7) / 16;
+        const thick = Math.max(1, p.frameThick ?? 2);
+        const r = Math.max(2, p.radius ?? 7) / 16;
+        const pillarH = Math.max(1, Math.min(14, p.archHeight ?? 8));
+        const depth = Math.max(2, Math.min(16, p.archDepth ?? 16));
+        const z0 = (16 - depth) / 2;
+        const z1 = z0 + depth;
         const c = 0.5;
+        const yTop = pillarH / 16;
         return [
-          box(0, 0, 0, thick, 8, 16),
-          box(16 - thick, 0, 0, 16, 8, 16),
+          box(0, 0, z0, thick, pillarH, z1),
+          box(16 - thick, 0, z0, 16, pillarH, z1),
           {
-            min: [0, 0.5, 0], max: [1, 0.5 + r, 1],
-            solid: "arch", center: [c, 0.5, c], radius: r,
+            min: [0, yTop, z0 / 16], max: [1, yTop + r, z1 / 16],
+            solid: "arch", center: [c, yTop, c], radius: r,
             inner: Math.max(0.05, r - thick / 16),
           },
         ];
@@ -304,9 +311,28 @@
 
   const PARAM_DEFAULTS = {
     layer: 4, small: 8, smallHeight: 8, pillar: 8, panel: 2,
-    radius: 7, frameThick: 2,
+    radius: 7, frameThick: 2, archHeight: 8, archDepth: 16,
+    // Escala de la forma dentro de la celda (1 = tamaño completo, 0.5 = mitad, centrada).
+    scale: 1,
     custom: '[ { "min": [0, 0, 0], "max": [1, 0.5, 1] } ]',
   };
+
+  /** Escala cajas (y radios de sólidos implícitos) alrededor del centro de la celda. */
+  function scaleBoxes(boxes, s) {
+    if (!s || s === 1) return boxes;
+    s = Math.max(0.1, Math.min(1, s));
+    return boxes.map((b) => {
+      const out = {
+        ...b,
+        min: b.min.map((v) => 0.5 + (v - 0.5) * s),
+        max: b.max.map((v) => 0.5 + (v - 0.5) * s),
+      };
+      if (typeof b.radius === "number") out.radius = b.radius * s;
+      if (typeof b.inner === "number") out.inner = b.inner * s;
+      if (Array.isArray(b.center)) out.center = b.center.map((v) => 0.5 + (v - 0.5) * s);
+      return out;
+    });
+  }
 
   /**
    * Boxes typed by hand. Accepts the tile JSON "collision" list ({ min, max } in cell units 0..1, y up, written facing
@@ -399,7 +425,8 @@
       }
       return out;
     }
-    const boxes = def.boxes(p);
+    let boxes = def.boxes(p);
+    if (p.scale != null && p.scale !== 1) boxes = scaleBoxes(boxes, p.scale);
     const iso = hasIso(opts.iso) ? { x: opts.iso.x | 0, y: opts.iso.y | 0, z: opts.iso.z | 0 } : null;
     for (const st of def.states) {
       if (!(opts.states?.[st] ?? st === "default")) continue;
@@ -434,6 +461,6 @@
 
   Aura.blockShapes = {
     SHAPES, PARAM_DEFAULTS, STATE_LABEL, FACING_LABEL, DIRS,
-    transform, boxesToWorld, variants, artSnippet, parseCustom, turnLocal, isoMatrix, hasIso, inSolid,
+    transform, boxesToWorld, variants, artSnippet, parseCustom, turnLocal, isoMatrix, hasIso, inSolid, scaleBoxes,
   };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));
