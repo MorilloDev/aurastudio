@@ -343,24 +343,17 @@
       this.sizeSel = select({ label: "Tamaño sprite", value: String(this.r.size),
         options: [["32", "32 px"], ["48", "48 px"], ["64", "64 px"], ["96", "96 px"], ["128", "128 px"]],
         onChange: (v) => this.#rSet("size", Number(v)) });
-      this.targetSel = select({ label: "Hoja destino", value: "", options: [["", "— abre la carpeta —"]] });
-      this.targetCell = numberPair({ label: "Celda X / Y", values: [0, 0], min: 0, max: 4096, titles: ["Columna", "Fila"] });
-      this.saveN = checkbox({ label: "Guardar también el _n", value: true });
+      // Atlas solo desde Composer. Aquí: mapas del generador y descarga local.
       this.scaleSel = select({ label: "Escala descarga", value: String(this.exportScale),
-        options: [["1", "×1"], ["2", "×2"], ["4", "×4"], ["8", "×8"]],
+        options: [["1", "×1"], ["2", "×2"], ["4", "×4"]],
         onChange: (v) => { this.exportScale = Number(v); this.#save(); } });
-      this.mapChecks = MAPS.map(([k]) => checkbox({ label: { color: "Color", normal: "Normales", depth: "Profundidad", ao: "AO", gray: "Grises" }[k], value: k === "color" || k === "normal" }));
-      this.snippetEl = h("textarea", { class: "bk-snippet", rows: 4, readonly: true, spellcheck: false,
-        placeholder: "Aquí salen las celdas guardadas, para el JSON." });
-      const output = section({ id: "pl-out", title: "Salida" },
-        this.sizeSel.el, this.targetSel.el, this.targetCell.el, this.saveN.el,
-        h("button", { class: "primary", onclick: () => this.#saveVariants(), title: "Una celda por variante, seguidas desde la celda X / Y" }, "Guardar variantes en el atlas"),
-        h("button", { onclick: () => this.#saveVariants(true), title: "Solo la vista previa, en la celda X / Y" }, "Guardar solo la vista previa"),
-        h("button", { class: "primary", onclick: () => this.#addToComposer(),
-          title: "Mete la vista previa actual como una capa del Composer" }, "Añadir al Composer"),
-        this.snippetEl,
-        h("button", { onclick: () => this.#copySnippet() }, "Copiar celdas"),
-        h("div", { class: "bk-sep" }),
+      this.mapChecks = MAPS.map(([k]) => checkbox({
+        label: { color: "Color", normal: "Normales", depth: "Profundidad", ao: "AO", gray: "Grises" }[k],
+        value: k === "color" || k === "normal",
+      }));
+      const output = section({ id: "pl-out", title: "Vista previa" },
+        this.sizeSel.el,
+        h("p", { class: "note" }, "Para Atlas y multipart usa ", h("b", null, "Aplicar al Composer"), "."),
         h("div", { class: "bk-maps" }, this.mapChecks.map((c) => c.el)),
         this.scaleSel.el,
         h("button", { onclick: () => this.#download() }, "Descargar vista previa"),

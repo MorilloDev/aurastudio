@@ -373,10 +373,6 @@
 
       const toolbar = h("div", { class: "cp-toolbar" },
         h("div", { class: "cp-tool-group" },
-          h("button", { class: "primary", title: "Grupo normal (organización)", onclick: () => this.addGroup(false) }, "+ Grupo"),
-          h("button", { class: "primary", title: "Nueva celda multipart", onclick: () => this.addGroup(true) }, "+ Parte"),
-          h("button", { title: "Añadir forma a la parte activa", onclick: () => this.addShapeLayer() }, "+ Forma")),
-        h("div", { class: "cp-tool-group" },
           h("button", { title: "Ctrl+C", onclick: () => this.copyLayer() }, "Copiar"),
           h("button", { title: "Ctrl+X", onclick: () => this.cutLayer() }, "Cortar"),
           h("button", { title: "Ctrl+V", onclick: () => this.pasteLayer() }, "Pegar"),
@@ -386,7 +382,7 @@
           h("button", { title: "Alejar parte", onclick: () => this.bumpZoom("part", -1) }, "−"),
           this.zoomPartLabel,
           h("button", { title: "Acercar parte", onclick: () => this.bumpZoom("part", 1) }, "+"),
-          h("button", { title: "Ajustar parte al panel", onclick: () => { this.zoomPart = 0; this.paintPart(); this.syncZoomLabels(); } }, "Ajustar"),
+          h("button", { title: "Ajustar parte", onclick: () => { this.zoomPart = 0; this.paintPart(); this.syncZoomLabels(); } }, "Ajustar"),
           h("span", { class: "cp-sep" }),
           h("button", { title: "Alejar conjunto", onclick: () => this.bumpZoom("ens", -1) }, "−"),
           this.zoomEnsLabel,
@@ -402,15 +398,32 @@
       this.partView = h("div", { class: "cp-view" }, this.partCanvas);
       this.ensView = h("div", { class: "cp-view" }, this.ensembleCanvas);
 
-      host.appendChild(h("div", { class: "cp" },
-        h("div", { class: "cp-side" },
+      // Layout 3 columnas: árbol | lienzo | inspector
+      host.appendChild(h("div", { class: "cp cp-3col" },
+        h("aside", { class: "cp-left" },
           h("div", { class: "cp-side-head" },
             h("b", null, "Grupos / Partes"),
             h("span", { class: "hint" }, "MP = celda")),
           this.groupList,
-          h("div", { class: "cp-side-head" }, h("b", null, "Propiedades")),
-          this.propsHost),
-        h("div", { class: "cp-stage" },
+          h("div", { class: "cp-gen-block" },
+            h("div", { class: "cp-side-head" }, h("b", null, "Generar")),
+            h("button", {
+              type: "button", class: "cp-gen-btn",
+              title: "Abrir generador de bloques",
+              onclick: () => this.studio?.tools?.find?.((x) => x.id === "create")?.openGenerator?.("blocks")
+                || this.studio?.tools?.find?.((x) => x.id === "create")?.show?.("blocks"),
+            }, "▣ Bloque…"),
+            h("button", {
+              type: "button", class: "cp-gen-btn plant",
+              title: "Abrir generador de plantas",
+              onclick: () => this.studio?.tools?.find?.((x) => x.id === "create")?.openGenerator?.("plants")
+                || this.studio?.tools?.find?.((x) => x.id === "create")?.show?.("plants"),
+            }, "🌿 Planta…"),
+            h("button", {
+              type: "button", class: "cp-gen-btn form",
+              onclick: () => this.addShapeLayer(),
+            }, "◇ Forma"))),
+        h("div", { class: "cp-center" },
           toolbar,
           h("div", { class: "cp-views" },
             h("div", { class: "cp-view-block" },
@@ -422,7 +435,10 @@
               h("div", { class: "cp-view-label" },
                 h("span", null, "Conjunto"),
                 h("span", { class: "hint" }, "clic = elegir celda")),
-              this.ensView)))));
+              this.ensView))),
+        h("aside", { class: "cp-right" },
+          h("div", { class: "cp-side-head" }, h("b", null, "Inspector")),
+          this.propsHost)));
 
       this.bindCanvasEvents();
       this.bindKeys(host);
@@ -613,16 +629,16 @@
     // ── selection helpers ───────────────────────────────────────────────────
 
     group() {
-      const i = Math.max(0, Math.min(this.doc.selectedGroup, this.doc.groups.length - 1));
-      this.doc.selectedGroup = i;
+      const i = this.doc.selectedGroup;
+      if (i == null || i < 0 || i >= (this.doc.groups?.length || 0)) return null;
       return this.doc.groups[i];
     }
 
     layer() {
       const g = this.group();
-      if (!g?.layers?.length) return null;
-      const i = Math.max(0, Math.min(this.doc.selectedLayer, g.layers.length - 1));
-      this.doc.selectedLayer = i;
+      if (!g || !g.layers?.length) return null;
+      const i = this.doc.selectedLayer;
+      if (i == null || i < 0 || i >= g.layers.length) return null;
       return g.layers[i];
     }
 
@@ -639,12 +655,16 @@
       }
       this.doc.groups.push(g);
       this.doc.selectedGroup = this.doc.groups.length - 1;
-      this.doc.selectedLayer = 0;
+      this.doc.selectedLayer = -1; // grupo puede quedar sin capas
       this.touch();
     }
 
     addShapeLayer() {
-      const g = this.group();
+      let g = this.group();
+      if (!g) {
+        this.addGroup(false);
+        g = this.group();
+      }
       if (!g) return;
       g.layers.push(defaultShapeLayer(g.layers.length));
       this.doc.selectedLayer = g.layers.length - 1;
@@ -669,35 +689,36 @@
 
     removeSelected() {
       const g = this.group();
-      if (!g) return;
-      // Si hay capa seleccionada y el grupo tiene capas, quitar capa; si no, quitar grupo.
-      if (g.layers.length && this.layer()) {
-        if (g.layers.length <= 1 && this.doc.groups.length <= 1) {
-          this.studio?.toast("Deja al menos una capa", { kind: "warn" });
-          return;
-        }
-        g.layers.splice(this.doc.selectedLayer, 1);
-        if (!g.layers.length) {
-          // Grupo vac\u00edo: quitar grupo si hay m\u00e1s
-          if (this.doc.groups.length > 1) {
-            this.doc.groups.splice(this.doc.selectedGroup, 1);
-            this.doc.selectedGroup = Math.min(this.doc.selectedGroup, this.doc.groups.length - 1);
-          } else {
-            g.layers.push(defaultShapeLayer(0));
-          }
-        }
-        this.doc.selectedLayer = Math.min(this.doc.selectedLayer, Math.max(0, g.layers.length - 1));
-      } else {
-        if (this.doc.groups.length <= 1) {
-          this.studio?.toast("Deja al menos un grupo", { kind: "warn" });
-          return;
-        }
-        this.doc.groups.splice(this.doc.selectedGroup, 1);
-        this.doc.selectedGroup = Math.min(this.doc.selectedGroup, this.doc.groups.length - 1);
-        this.doc.selectedLayer = 0;
+      if (!g) {
+        // Sin selección: no hacer nada
+        return;
       }
+      // Si hay capa seleccionada, quitar solo esa capa (el grupo puede quedar vacío).
+      if (g.layers && g.layers.length && this.doc.selectedLayer >= 0 && this.doc.selectedLayer < g.layers.length) {
+        g.layers.splice(this.doc.selectedLayer, 1);
+        if (g.layers.length === 0) {
+          this.doc.selectedLayer = -1;
+        } else {
+          this.doc.selectedLayer = Math.min(this.doc.selectedLayer, g.layers.length - 1);
+        }
+        this.touch();
+        return;
+      }
+      // Sin capas (o sin capa seleccionada): borrar el grupo solo si el usuario lo pide con el grupo activo vacío
+      // y hay más de un grupo — o siempre permitir borrar grupo con Quitar si no hay capa.
+      if (this.doc.groups.length <= 1) {
+        // Último grupo: vaciar capas, no borrar el grupo.
+        g.layers = [];
+        this.doc.selectedLayer = -1;
+        this.touch();
+        return;
+      }
+      this.doc.groups.splice(this.doc.selectedGroup, 1);
+      this.doc.selectedGroup = Math.min(this.doc.selectedGroup, this.doc.groups.length - 1);
+      this.doc.selectedLayer = (this.group()?.layers?.length) ? 0 : -1;
       this.touch();
     }
+
 
     pushResult(result, meta = {}) {
       // Planta multipart: result.parts = [abajo…arriba], una celda por parte.
@@ -897,8 +918,13 @@
     rebuildProps() {
       const g = this.group();
       const L = this.layer();
-      if (!g) return;
       const set = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); this.rebuildGroupList(); };
+      // Sin grupo seleccionado: inspector vacío (no error).
+      if (!g) {
+        this.propsHost.replaceChildren(
+          h("p", { class: "note" }, "Ningún grupo seleccionado. Crea un grupo o parte, o elige uno en la lista."));
+        return;
+      }
 
       const kids = [];
       const ao = this.doc.ao || (this.doc.ao = { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true });
@@ -972,6 +998,11 @@
         return;
       }
 
+      if (!L) {
+        kids.push(h("div", { class: "cp-sub" }, "Capa"));
+        kids.push(h("p", { class: "note" }, "Este grupo no tiene capas. Añade una forma o aplica un bloque/planta."));
+        kids.push(h("button", { type: "button", class: "primary", onclick: () => this.addShapeLayer() }, "+ Forma"));
+      } else {
       kids.push(h("div", { class: "cp-sub" }, "Capa"));
       kids.push(h("label", { class: "field" }, h("span", null, "Nombre"),
         h("input", {
@@ -1044,6 +1075,8 @@
           h("button", { onclick: () => set(() => { L.tint = null; this.rebuildProps(); }) }, "Sin tint")),
       ).el);
 
+      
+      }
       this.propsHost.replaceChildren(...kids);
     }
 

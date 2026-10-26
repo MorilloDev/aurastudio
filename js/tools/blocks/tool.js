@@ -556,26 +556,17 @@
       this.sizeSel = select({ label: "Tamaño sprite", value: String(this.o.size),
         options: [["32", "32 px"], ["48", "48 px"], ["64", "64 px"], ["96", "96 px"], ["128", "128 px"]],
         onChange: (v) => this.#set("size", Number(v)) });
-      this.targetSel = select({ label: "Hoja destino", value: "", options: [["", "— abre la carpeta —"]] });
-      this.targetCell = numberPair({ label: "Celda X / Y", values: [0, 0], min: 0, max: 4096, titles: ["Columna", "Fila"] });
-      this.saveN = checkbox({ label: "Guardar también el _n", value: true });
+      // Atlas / tile JSON: solo desde Composer. Aquí solo vista previa y descarga local.
       this.scaleSel = select({ label: "Escala descarga", value: String(this.exportScale),
-        options: [["1", "×1"], ["2", "×2"], ["4", "×4"], ["8", "×8"]],
+        options: [["1", "×1"], ["2", "×2"], ["4", "×4"]],
         onChange: (v) => { this.exportScale = Number(v); this.#save(); } });
-      this.mapChecks = MAPS.map(([k]) => checkbox({ label: { color: "Color", normal: "Normales", depth: "Profundidad", ao: "AO", gray: "Grises" }[k], value: k === "color" || k === "normal" }));
-      this.snippetEl = h("textarea", { class: "bk-snippet", rows: 5, readonly: true, spellcheck: false,
-        placeholder: "Aquí sale el \"art\" para el JSON del tile al guardar las variantes." });
-      const output = section({ id: "bk-out", title: "Salida" },
+      this.mapChecks = MAPS.map(([k]) => checkbox({
+        label: { color: "Color", normal: "Normales", depth: "Profundidad", ao: "AO", gray: "Grises" }[k],
+        value: k === "color" || k === "normal",
+      }));
+      const output = section({ id: "bk-out", title: "Vista previa" },
         this.sizeSel.el,
-        this.targetSel.el, this.targetCell.el, this.saveN.el,
-        h("button", { class: "primary", onclick: () => this.#saveVariantsToAtlas(),
-          title: "Una celda por variante, seguidas desde la celda X / Y" }, "Guardar variantes en el atlas"),
-        h("button", { onclick: () => this.#saveToAtlas(), title: "Solo la vista previa, en la celda X / Y" }, "Guardar solo la vista previa"),
-        h("button", { class: "primary", onclick: () => this.#addToComposer(),
-          title: "Mete la vista previa actual como una capa del Composer para componer multipart / fusionar" }, "Añadir al Composer"),
-        this.snippetEl,
-        h("button", { onclick: () => this.#copySnippet() }, "Copiar \"art\""),
-        h("div", { class: "bk-sep" }),
+        h("p", { class: "note" }, "Para Atlas, multipart y composici\u00f3n usa ", h("b", null, "Aplicar al Composer"), "."),
         h("div", { class: "bk-maps" }, this.mapChecks.map((c) => c.el)),
         this.scaleSel.el,
         h("button", { onclick: () => this.#download() }, "Descargar vista previa"),
