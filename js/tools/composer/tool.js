@@ -726,7 +726,7 @@
 
     /** Compone las capas visibles de un grupo en un buffer size\u00d7size. */
     renderGroup(g) {
-      const S = this.doc.size;
+      const S = this.doc.size || 64;
       const color = new Uint8ClampedArray(S * S * 4);
       let normal = null;
       for (const L of g.layers || []) {
@@ -747,81 +747,148 @@
     }
 
     /**
-     * Celdas de exportaci\u00f3n: grupos multipart visibles.
-     * Si no hay ninguno multipart, todos los grupos visibles se fusionan en (0,0,0).
+     * IsoProjection del juego (North):
+     *   HalfTileW = 32, HalfTileH = 16, LayerStepY = 32  (con tile 64×64)
+     *   TileSpritePos delta desde (0,0,0) a (dx,dy,dz):
+     *     sx = (dx - dz) * 32
+     *     sy = (dx + dz) * 16 - dy * 32
+     * Cada parte es un sprite 64×64 independiente; el conjunto solo los coloca.
      */
-    exportCells() {
-      const multi = this.doc.groups.filter((g) => g.visible && g.multipart);
-      if (multi.length) {
-        return multi
-          .map((g) => ({
-            offsetX: g.offsetX | 0,
-            offsetY: g.offsetY | 0,
-            offsetZ: g.offsetZ | 0,
-            group: g,
+    isoDelta(dx, dy, dz) {
+      const S = this.doc.size || 64;
+      const halfW = S / 2;       // 32
+      const halfH = S / 4;       // 16
+      const layer = S / 2;       // 32
+      return {
+        x: Math.round((dx - dz) * halfW),
+        y: Math.round((dx + dz) * halfH - dy * layer),
+      };
+    }
+
+    /** SortDepth del juego (North): X+Z; luego altura para pintar encima. */
+    sortKey(dx, dy, dz) {
+      return (dx + dz) * 1000 + dy;
+    }
+
+    /**
+     * Celdas únicas: fusiona grupos que comparten el mismo offset multipart.
+     * Grupos sin multipart → ancla (0,0,0).
+     * Cada celda se rasteriza a exactamente size×size (64×64).
+     */
+    buildCells() {
+      const S = this.doc.size || 64;
+      const map = new Map();
+      for (const g of this.doc.groups) {
+        if (!g.visible) continue;
+        const ox = g.multipart ? (g.offsetX | 0) : 0;
+        const oy = g.multipart ? (g.offsetY | 0) : 0;
+        const oz = g.multipart ? (g.offsetZ | 0) : 0;
+        const key = ox + "," + oy + "," + oz;
+        if (!map.has(key)) {
+          map.set(key, {
+            offsetX: ox, offsetY: oy, offsetZ: oz,
+            groups: [],
             label: g.name,
-          }))
-          .sort((a, b) => a.offsetY - b.offsetY || a.offsetZ - b.offsetZ || a.offsetX - b.offsetX);
+            active: false,
+          });
+        }
+        const cell = map.get(key);
+        cell.groups.push(g);
+        if (g === this.group()) cell.active = true;
+        // Prefer multipart group name for label
+        if (g.multipart) cell.label = g.name;
       }
-      // Sin multipart: una sola celda con todos los grupos visibles
-      const normals = this.doc.groups.filter((g) => g.visible);
-      if (!normals.length) return [];
-      return [{ offsetX: 0, offsetY: 0, offsetZ: 0, groups: normals, label: "principal" }];
+      const cells = [...map.values()].map((c) => {
+        // Componer todas las capas de todos los grupos de esta celda → un 64×64
+        const color = new Uint8ClampedArray(S * S * 4);
+        let normal = null;
+        for (const g of c.groups) {
+          const r = this.renderGroup(g);
+          for (let i = 0; i < color.length; i += 4) {
+            if (r.color[i + 3] < 1) continue;
+            const d = [color[i], color[i + 1], color[i + 2], color[i + 3]];
+            const s = [r.color[i], r.color[i + 1], r.color[i + 2], r.color[i + 3]];
+            blendPixel(d, s, "normal", 1);
+            color[i] = d[0]; color[i + 1] = d[1]; color[i + 2] = d[2]; color[i + 3] = d[3];
+          }
+          if (r.normal) {
+            if (!normal) normal = new Uint8ClampedArray(S * S * 4);
+            for (let i = 0; i < normal.length; i += 4) {
+              if (r.normal[i + 3] < 1) continue;
+              normal[i] = r.normal[i]; normal[i + 1] = r.normal[i + 1];
+              normal[i + 2] = r.normal[i + 2]; normal[i + 3] = r.normal[i + 3];
+            }
+          }
+        }
+        const d = this.isoDelta(c.offsetX, c.offsetY, c.offsetZ);
+        return {
+          ...c,
+          size: S,
+          color,
+          normal,
+          px: d.x,
+          py: d.y,
+          sort: this.sortKey(c.offsetX, c.offsetY, c.offsetZ),
+        };
+      });
+      cells.sort((a, b) => a.sort - b.sort);
+      return cells;
+    }
+
+    exportCells() {
+      return this.buildCells().map((c) => ({
+        offsetX: c.offsetX,
+        offsetY: c.offsetY,
+        offsetZ: c.offsetZ,
+        label: c.label,
+        color: c.color,
+        normal: c.normal,
+        size: c.size,
+      }));
     }
 
     render() {
-      const S = this.doc.size;
-      this.cellCache.clear();
+      const S = this.doc.size || 64;
+      const cells = this.buildCells();
 
-      // 1) Parte activa = grupo seleccionado
+      // Parte activa: siempre el 64×64 del grupo seleccionado (su celda).
       const ag = this.group();
       if (ag && ag.visible) {
-        this.activeCell = this.renderGroup(ag);
+        // Buscar la celda que contiene al grupo activo
+        const active = cells.find((c) => c.groups.includes(ag));
+        this.activeCell = active
+          ? { size: S, color: active.color, normal: active.normal }
+          : this.renderGroup(ag);
       } else {
         this.activeCell = { size: S, color: new Uint8ClampedArray(S * S * 4), normal: null };
       }
 
-      // 2) Conjunto: cada grupo visible en su sitio iso
-      //    multipart \u2192 su offset; no multipart \u2192 (0,0,0)
-      const placed = [];
-      for (const g of this.doc.groups) {
-        if (!g.visible) continue;
-        const rendered = this.renderGroup(g);
-        const ox = g.multipart ? (g.offsetX | 0) : 0;
-        const oy = g.multipart ? (g.offsetY | 0) : 0;
-        const oz = g.multipart ? (g.offsetZ | 0) : 0;
-        const px = Math.round((ox - oz) * (S * 0.5));
-        const py = Math.round((ox + oz) * (S * 0.25) - oy * (S * 0.5));
-        placed.push({ g, rendered, ox, oy, oz, px, py, active: g === ag });
-        this.cellCache.set(g.id, rendered);
-      }
-
+      // Conjunto: colocar cada celda 64×64 en su sitio iso (sin reescalar ni cortar).
       let minX = 0, minY = 0, maxX = S, maxY = S;
-      for (const p of placed) {
-        minX = Math.min(minX, p.px);
-        minY = Math.min(minY, p.py);
-        maxX = Math.max(maxX, p.px + S);
-        maxY = Math.max(maxY, p.py + S);
+      for (const c of cells) {
+        minX = Math.min(minX, c.px);
+        minY = Math.min(minY, c.py);
+        maxX = Math.max(maxX, c.px + S);
+        maxY = Math.max(maxY, c.py + S);
       }
-      const pad = 6;
+      const pad = 4;
       minX -= pad; minY -= pad; maxX += pad; maxY += pad;
       const W = Math.max(S, maxX - minX);
       const H = Math.max(S, maxY - minY);
       const color = new Uint8ClampedArray(W * H * 4);
 
-      // Dibujar no-activos primero, activo encima
-      const order = [...placed].sort((a, b) => (a.active ? 1 : 0) - (b.active ? 1 : 0));
-      for (const p of order) {
-        const dx = p.px - minX;
-        const dy = p.py - minY;
+      for (const c of cells) {
+        const dx = c.px - minX;
+        const dy = c.py - minY;
         for (let y = 0; y < S; y++) {
           for (let x = 0; x < S; x++) {
             const si = (y * S + x) * 4;
-            if (p.rendered.color[si + 3] < 1) continue;
+            if (c.color[si + 3] < 1) continue;
             const di = ((dy + y) * W + (dx + x)) * 4;
             const d = [color[di], color[di + 1], color[di + 2], color[di + 3]];
-            const s = [p.rendered.color[si], p.rendered.color[si + 1], p.rendered.color[si + 2], p.rendered.color[si + 3]];
-            blendPixel(d, s, "normal", p.active ? 1 : 0.92);
+            const s = [c.color[si], c.color[si + 1], c.color[si + 2], c.color[si + 3]];
+            // Activa un poco más opaca visualmente no hace falta; mismo blit
+            blendPixel(d, s, "normal", 1);
             color[di] = d[0]; color[di + 1] = d[1]; color[di + 2] = d[2]; color[di + 3] = d[3];
           }
         }
@@ -829,10 +896,13 @@
 
       this.preview = {
         size: S, w: W, h: H, color,
-        cells: placed.length,
-        outlines: placed.map((p) => ({
-          x: p.px - minX, y: p.py - minY, w: S, h: S,
-          active: p.active, multipart: p.g.multipart, name: p.g.name,
+        cells: cells.length,
+        outlines: cells.map((c) => ({
+          x: c.px - minX, y: c.py - minY, w: S, h: S,
+          active: c.active,
+          multipart: c.groups.some((g) => g.multipart),
+          name: c.label,
+          ox: c.offsetX, oy: c.offsetY, oz: c.offsetZ,
         })),
       };
 
@@ -841,10 +911,13 @@
     }
 
     paintPart() {
-      const S = this.activeCell?.size || this.doc.size;
+      // Siempre S×S (64×64): la celda completa, centrada en el panel.
+      const S = this.activeCell?.size || this.doc.size || 64;
       const c = this.partCanvas;
       const box = c.parentElement;
-      const scale = Math.max(1, Math.floor(Math.min((box?.clientWidth || 320), (box?.clientHeight || 320)) / S));
+      const availW = box?.clientWidth || 320;
+      const availH = box?.clientHeight || 320;
+      const scale = Math.max(1, Math.floor(Math.min(availW, availH) * 0.92 / S));
       c.width = S * scale;
       c.height = S * scale;
       const ctx = c.getContext("2d");
@@ -853,20 +926,25 @@
       if (!this.activeCell) return;
       const off = document.createElement("canvas");
       off.width = S; off.height = S;
-      off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(this.activeCell.color), S, S), 0, 0);
+      off.getContext("2d").putImageData(
+        new ImageData(new Uint8ClampedArray(this.activeCell.color), S, S), 0, 0);
       ctx.drawImage(off, 0, 0, c.width, c.height);
-      // Contorno de celda
-      ctx.strokeStyle = "rgba(95, 211, 176, 0.7)";
-      ctx.lineWidth = Math.max(1, scale);
+      // Contorno exacto de la celda 64×64
+      ctx.strokeStyle = "rgba(95, 211, 176, 0.85)";
+      ctx.lineWidth = Math.max(1, Math.round(scale / 2));
       ctx.strokeRect(0.5, 0.5, c.width - 1, c.height - 1);
     }
 
     paintEnsemble() {
       const W = this.preview?.w || this.doc.size;
       const H = this.preview?.h || this.doc.size;
+      const S = this.preview?.size || this.doc.size;
       const c = this.ensembleCanvas;
       const box = c.parentElement;
-      const scale = Math.max(1, Math.floor(Math.min((box?.clientWidth || 480) / W, (box?.clientHeight || 480) / H, 6)));
+      const scale = Math.max(1, Math.floor(Math.min(
+        (box?.clientWidth || 480) / W,
+        (box?.clientHeight || 480) / H,
+        6)));
       c.width = W * scale;
       c.height = H * scale;
       const ctx = c.getContext("2d");
@@ -875,14 +953,22 @@
       if (!this.preview) return;
       const off = document.createElement("canvas");
       off.width = W; off.height = H;
-      off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(this.preview.color), W, H), 0, 0);
+      off.getContext("2d").putImageData(
+        new ImageData(new Uint8ClampedArray(this.preview.color), W, H), 0, 0);
       ctx.drawImage(off, 0, 0, c.width, c.height);
-      // Contornos por celda
+      // Contorno por celda 64×64 + etiqueta de offset
       if (this.preview.outlines) {
+        ctx.font = `${Math.max(10, 9 * scale)}px sans-serif`;
         for (const o of this.preview.outlines) {
-          ctx.strokeStyle = o.active ? "rgba(95, 211, 176, 0.95)" : (o.multipart ? "rgba(127, 178, 255, 0.55)" : "rgba(255, 255, 255, 0.25)");
+          ctx.strokeStyle = o.active
+            ? "rgba(95, 211, 176, 0.95)"
+            : (o.multipart ? "rgba(127, 178, 255, 0.6)" : "rgba(255,255,255,0.28)");
           ctx.lineWidth = o.active ? 2 : 1;
           ctx.strokeRect(o.x * scale + 0.5, o.y * scale + 0.5, o.w * scale - 1, o.h * scale - 1);
+          if (scale >= 2) {
+            ctx.fillStyle = o.active ? "rgba(95, 211, 176, 0.9)" : "rgba(180,190,200,0.7)";
+            ctx.fillText(`${o.ox},${o.oy},${o.oz}`, o.x * scale + 3, o.y * scale + 12);
+          }
         }
       }
     }
@@ -894,8 +980,6 @@
         ctx.fillRect(x, y, g, g);
       }
     }
-
-    // ── export ──────────────────────────────────────────────────────────────
 
     async exportPng() {
       if (!this.preview) this.render();
@@ -929,45 +1013,18 @@
         this.studio?.toast("No hay grupos visibles", { kind: "warn" });
         return;
       }
-
-      const items = cells.map((c) => {
-        let rendered;
-        if (c.group) {
-          rendered = this.renderGroup(c.group);
-        } else {
-          // Fusionar varios grupos no-multipart en una celda
-          const S = this.doc.size;
-          const color = new Uint8ClampedArray(S * S * 4);
-          for (const g of c.groups) {
-            const r = this.renderGroup(g);
-            for (let i = 0; i < color.length; i += 4) {
-              if (r.color[i + 3] < 1) continue;
-              const d = [color[i], color[i + 1], color[i + 2], color[i + 3]];
-              const s = [r.color[i], r.color[i + 1], r.color[i + 2], r.color[i + 3]];
-              blendPixel(d, s, "normal", 1);
-              color[i] = d[0]; color[i + 1] = d[1]; color[i + 2] = d[2]; color[i + 3] = d[3];
-            }
-          }
-          rendered = { size: S, color, normal: null };
-        }
-        return {
-          color: rendered.color,
-          normal: rendered.normal,
-          label: c.label || ("celda " + c.offsetX + "," + c.offsetY + "," + c.offsetZ),
-          offsetX: c.offsetX,
-          offsetY: c.offsetY,
-          offsetZ: c.offsetZ,
-        };
-      });
-
-      const S = this.doc.size;
+      const S = this.doc.size || 64;
       this.studio.pendingPlacement = {
         label: "Composer",
         name: "",
         kind: "composer",
         size: S,
         sheetKey: null,
-        items: items.map((it) => ({ color: it.color, normal: it.normal, label: it.label })),
+        items: cells.map((c) => ({
+          color: c.color,
+          normal: c.normal,
+          label: c.label || ("celda " + c.offsetX + "," + c.offsetY + "," + c.offsetZ),
+        })),
         buildTile: (coords) => {
           if (coords.length === 1) return { art: { default: { front: coords[0] } } };
           return {
