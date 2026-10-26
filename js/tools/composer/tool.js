@@ -929,10 +929,20 @@
       off.getContext("2d").putImageData(
         new ImageData(new Uint8ClampedArray(this.activeCell.color), S, S), 0, 0);
       ctx.drawImage(off, 0, 0, c.width, c.height);
-      // Contorno exacto de la celda 64×64
-      ctx.strokeStyle = "rgba(95, 211, 176, 0.85)";
+      // Marco de la celda 64×64 (el arte iso deja las esquinas vacías a propósito)
+      ctx.strokeStyle = "rgba(95, 211, 176, 0.35)";
       ctx.lineWidth = Math.max(1, Math.round(scale / 2));
       ctx.strokeRect(0.5, 0.5, c.width - 1, c.height - 1);
+      // Diamante del suelo del tile (donde ancla el juego: centro en 32,16)
+      const hw = c.width / 2, hh = c.height / 4;
+      ctx.strokeStyle = "rgba(95, 211, 176, 0.9)";
+      ctx.beginPath();
+      ctx.moveTo(hw, 0.5);
+      ctx.lineTo(c.width - 0.5, hh);
+      ctx.lineTo(hw, hh * 2);
+      ctx.lineTo(0.5, hh);
+      ctx.closePath();
+      ctx.stroke();
     }
 
     paintEnsemble() {
@@ -956,18 +966,33 @@
       off.getContext("2d").putImageData(
         new ImageData(new Uint8ClampedArray(this.preview.color), W, H), 0, 0);
       ctx.drawImage(off, 0, 0, c.width, c.height);
-      // Contorno por celda 64×64 + etiqueta de offset
+      // Contorno: diamante isométrico de la celda (no el cuadrado vacío de las esquinas).
+      // El cuadrado 64×64 tiene esquinas transparentes por diseño del iso; el diamante es el “suelo” real.
       if (this.preview.outlines) {
         ctx.font = `${Math.max(10, 9 * scale)}px sans-serif`;
         for (const o of this.preview.outlines) {
+          const x = o.x * scale, y = o.y * scale, s = S * scale;
+          const hw = s / 2, hh = s / 4; // HalfTileW / HalfTileH en pantalla
           ctx.strokeStyle = o.active
             ? "rgba(95, 211, 176, 0.95)"
-            : (o.multipart ? "rgba(127, 178, 255, 0.6)" : "rgba(255,255,255,0.28)");
+            : (o.multipart ? "rgba(127, 178, 255, 0.65)" : "rgba(255,255,255,0.3)");
           ctx.lineWidth = o.active ? 2 : 1;
-          ctx.strokeRect(o.x * scale + 0.5, o.y * scale + 0.5, o.w * scale - 1, o.h * scale - 1);
+          // Diamante superior (centro del tile en y = hh desde el top-left del sprite)
+          ctx.beginPath();
+          ctx.moveTo(x + hw, y);           // top
+          ctx.lineTo(x + s, y + hh);       // right
+          ctx.lineTo(x + hw, y + hh * 2);  // bottom of diamond
+          ctx.lineTo(x, y + hh);           // left
+          ctx.closePath();
+          ctx.stroke();
+          // Línea vertical de altura de bloque (LayerStepY = s/2) para ver el “cuerpo”
+          ctx.beginPath();
+          ctx.moveTo(x + hw, y + hh * 2);
+          ctx.lineTo(x + hw, y + s);
+          ctx.stroke();
           if (scale >= 2) {
-            ctx.fillStyle = o.active ? "rgba(95, 211, 176, 0.9)" : "rgba(180,190,200,0.7)";
-            ctx.fillText(`${o.ox},${o.oy},${o.oz}`, o.x * scale + 3, o.y * scale + 12);
+            ctx.fillStyle = o.active ? "rgba(95, 211, 176, 0.9)" : "rgba(180,190,200,0.75)";
+            ctx.fillText(`${o.ox},${o.oy},${o.oz}`, x + 4, y + 12);
           }
         }
       }
