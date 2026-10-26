@@ -61,8 +61,13 @@
     states: { ...PIECE_DEFAULTS.states, ...(p.states || {}) },
     rot3d: { ...PIECE_DEFAULTS.rot3d, ...(p.rot3d || {}) },
     holes: Array.isArray(p.holes) ? p.holes.map((h) => ({
-      x: h.x ?? 4, y: h.y ?? 4, z: h.z ?? 4,
-      w: h.w ?? 8, h: h.h ?? 8, d: h.d ?? 8,
+      cx: h.cx ?? ((h.x ?? 4) + (h.w ?? h.sx ?? 8) / 2),
+      cy: h.cy ?? ((h.y ?? 4) + (h.h ?? h.sy ?? 8) / 2),
+      cz: h.cz ?? ((h.z ?? 4) + (h.d ?? h.sz ?? 8) / 2),
+      sx: h.sx ?? h.w ?? 8,
+      sy: h.sy ?? h.h ?? 8,
+      sz: h.sz ?? h.d ?? 8,
+      rx: h.rx || 0, ry: h.ry || 0, rz: h.rz || 0,
       solid: h.solid || "box",
     })) : [],
   });
@@ -176,15 +181,7 @@
         onchange: () => { this.cellSize = Math.max(0, Number(this.cellInput.value) || 0); this.#save(); this.#drawPicker(); this.#schedule(); } });
       // One row per face, so each face's texture is turned on its own; «Cara a asignar» only decides where a click goes.
       this.faceRot = {};
-      const faceRows = SLOTS.map(([k, t, c]) => {
-        const rot = select({ label: t, value: String(this.slots[k].rot),
-          options: [["0", "0°"], ["90", "90°"], ["180", "180°"], ["270", "270°"]],
-          title: "Gira la textura dentro de esta cara (no el tile)",
-          onChange: (v) => { this.slots[k].rot = Number(v); this.#schedule(); } });
-        const flip = checkbox({ label: "Espejo", value: this.slots[k].flip, onChange: (v) => { this.slots[k].flip = v; this.#schedule(); } });
-        this.faceRot[k] = { rot, flip };
-        return h("div", { class: "pair2 bk-facerow", style: { borderLeft: "3px solid " + c, paddingLeft: "6px" } }, rot.el, flip.el);
-      });
+      // Orientación de caras se monta en el panel derecho (más espacio en el picker).
       this.pickerCanvas = h("canvas", { class: "bk-picker", onclick: (e) => this.#pickCell(e) });
       this.slotInfo = h("div", { class: "bk-slotinfo" });
       const left = h("div", { class: "bk-list" },
@@ -196,9 +193,7 @@
           h("div", { class: "field" }, h("label", null, "Celda (px)"), this.cellInput),
           this.slotSeg.el,
           h("div", { class: "bk-picker-wrap scroll" }, this.pickerCanvas),
-          this.slotInfo,
-          h("div", { class: "at-sub" }, "Orientación de cada cara"),
-          ...faceRows));
+          this.slotInfo));
 
       // Centre: the preview, its maps and the variants.
       this.viewSeg = segmented({ label: "Vista", value: this.view, options: VIEWS, onChange: (v) => { this.view = v; this.#drawPreview(); this.#drawStrip(); } });
@@ -274,23 +269,40 @@
         axis("z", "Z", "Gira alrededor del eje hacia el que mira la cara izquierda"));
     }
 
+
+    #buildFaceOrient() {
+      this.faceRot = {};
+      const faceRows = SLOTS.map(([k, t, c]) => {
+        const rot = select({ label: t, value: String(this.slots[k].rot),
+          options: [["0", "0°"], ["90", "90°"], ["180", "180°"], ["270", "270°"]],
+          title: "Gira la textura dentro de esta cara (no el tile)",
+          onChange: (v) => { this.slots[k].rot = Number(v); this.#schedule(); } });
+        const flip = checkbox({ label: "Espejo", value: this.slots[k].flip, onChange: (v) => { this.slots[k].flip = v; this.#schedule(); } });
+        this.faceRot[k] = { rot, flip };
+        return h("div", { class: "pair2 bk-facerow", style: { borderLeft: "3px solid " + c, paddingLeft: "6px" } }, rot.el, flip.el);
+      });
+      return section({ id: "bk-face-orient", title: "Orientación de caras" },
+        h("p", { class: "note" }, "Gira o espeja la textura de cada cara (arriba / izq. / der.)."),
+        ...faceRows);
+    }
+
     #holesSection() {
       const holes = this.piece.holes || (this.piece.holes = []);
       const set = (fn) => { fn(); this.#save(); this.#schedule(); this.#rebuildPanel(); };
       const kids = [
         h("p", { class: "note" },
-          "Resta volumen del bloque. El interior se ve en 3D (caras internas iluminadas). ",
-          "Unidades: dieciseisavos del bloque (0–16)."),
+          "Boolean 3D: un volumen que atraviesa el bloque (como en Blender). ",
+          "Muévelo, estíralo y rótalo; el interior se ve en 3D."),
         h("button", {
           type: "button", class: "primary",
           onclick: () => set(() => {
-            holes.push({ x: 4, y: 4, z: 4, w: 8, h: 8, d: 8, solid: "box" });
+            holes.push({ cx: 8, cy: 8, cz: 8, sx: 8, sy: 8, sz: 8, rx: 0, ry: 0, rz: 0, solid: "box" });
           }),
         }, "+ Agujero"),
       ];
       holes.forEach((hole, i) => {
-        const slide = (key, label, min, max) => slider({
-          label, min, max, step: 1,
+        const slide = (key, label, min, max, step = 1) => slider({
+          label, min, max, step,
           value: hole[key] ?? min,
           onChange: (v) => {
             hole[key] = Number(v);
@@ -298,28 +310,33 @@
             this.#schedule();
           },
         }).el;
-        kids.push(h("div", { class: "bk-hole", style: "border:1px solid var(--line);border-radius:6px;padding:8px;margin-top:8px" },
-          h("div", { style: "display:flex;align-items:center;gap:8px;margin-bottom:6px" },
-            h("b", { style: "font-size:12px" }, "Agujero " + (i + 1)),
-            h("span", { class: "grow" }),
+        kids.push(h("div", { class: "bk-hole" },
+          h("div", { class: "bk-hole-head" },
+            h("b", null, "Agujero " + (i + 1)),
             select({
               label: "", value: hole.solid || "box",
               options: [["box", "Caja"], ["sphere", "Esfera"], ["cylinder", "Cilindro"]],
               onChange: (v) => { hole.solid = v; this.#save(); this.#schedule(); },
             }).el,
             h("button", {
-              type: "button", title: "Quitar",
+              type: "button", title: "Quitar agujero",
               onclick: () => set(() => { holes.splice(i, 1); }),
             }, "×")),
-          slide("x", "X", 0, 15),
-          slide("y", "Y", 0, 15),
-          slide("z", "Z", 0, 15),
-          slide("w", "Ancho", 1, 16),
-          slide("h", "Alto", 1, 16),
-          slide("d", "Prof.", 1, 16),
+          h("div", { class: "bk-hole-sub" }, "Posición (centro)"),
+          slide("cx", "X", 0, 16, 0.5),
+          slide("cy", "Y", 0, 16, 0.5),
+          slide("cz", "Z", 0, 16, 0.5),
+          h("div", { class: "bk-hole-sub" }, "Tamaño"),
+          slide("sx", "Ancho X", 1, 16, 0.5),
+          slide("sy", "Alto Y", 1, 16, 0.5),
+          slide("sz", "Largo Z", 1, 16, 0.5),
+          h("div", { class: "bk-hole-sub" }, "Rotación"),
+          slide("rx", "Rot X", -180, 180, 5),
+          slide("ry", "Rot Y", -180, 180, 5),
+          slide("rz", "Rot Z", -180, 180, 5),
         ));
       });
-      return section({ id: "bk-holes", title: "Agujeros" }, ...kids);
+      return section({ id: "bk-holes", title: "Agujeros (boolean)" }, ...kids);
     }
 
 
@@ -574,7 +591,7 @@
 
       this.tintUi = TP.tintSection({ id: "bk-tint", state: this.tint, biomes: this.biomes,
         onChange: () => { this.#save(); this.#schedule(); } });
-      this.panelScroll = h("div", { class: "scroll" }, shape.el, this.#holesSection().el, stone.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
+      this.panelScroll = h("div", { class: "scroll" }, shape.el, this.#holesSection().el, stone.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.#buildFaceOrient().el, this.tintUi.el, output.el);
       for (const sec of [maskSection, cover, hair, light, pixel]) sec.el.classList.add("adv");
       const detail = h("span");
       this.panel = h("div", { class: "bk-panel" },

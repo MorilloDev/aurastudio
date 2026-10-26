@@ -339,7 +339,7 @@
       const lo = worldBoxes[pi].min.map((v) => Math.floor(v * R - 1e-6));
       const hi = worldBoxes[pi].max.map((v) => Math.ceil(v * R + 1e-6));
       const sloped = !!b.cuts?.length;
-      const curved = !!b.solid;
+      const curved = !!b.solid || !!(b.hole && b.center);
       for (let k = lo[2]; k < hi[2]; k++) for (let j = lo[1]; j < hi[1]; j++) for (let i = lo[0]; i < hi[0]; i++) {
         if (!inCell(i, j, k)) continue;
         if ((sloped || curved) && !touchesPart(b, tf, i, j, k, R)) continue;
@@ -489,6 +489,10 @@
 
   /** True when local point lp (0..1) lies inside part b: its box, cuts, and optional implicit solid. */
   function inPart(b, lp, eps = 1e-6) {
+    // Agujero boolean con rotación: test OBB/esfera/cilindro en espacio local del agujero.
+    if (b.hole && b.center && Shapes.inHoleVolume) {
+      return Shapes.inHoleVolume(b, lp);
+    }
     for (let a = 0; a < 3; a++) if (lp[a] < b.min[a] - eps || lp[a] > b.max[a] + eps) return false;
     for (const c of b.cuts ?? []) if (c.n[0] * lp[0] + c.n[1] * lp[1] + c.n[2] * lp[2] > c.d + eps) return false;
     if (b.solid && Shapes.inSolid && !Shapes.inSolid(b, lp)) return false;
@@ -506,8 +510,8 @@
     for (const c of b.cuts ?? []) {
       if (corners.every((q) => c.n[0] * q[0] + c.n[1] * q[1] + c.n[2] * q[2] > c.d - eps)) return false;
     }
-    // Implicit solids: voxel counts if its centre is inside (smooth spheres/cylinders without stair-step holes).
-    if (b.solid) {
+    // Sólidos implícitos y agujeros rotados: el centro del voxel decide.
+    if (b.solid || (b.hole && b.center)) {
       const mid = tf.toLocal([(i + 0.5) / R, (j + 0.5) / R, (k + 0.5) / R]);
       if (!inPart(b, mid)) return false;
     }

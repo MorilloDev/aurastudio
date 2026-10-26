@@ -109,22 +109,107 @@
   const FULL = box(0, 0, 0, 16, 16, 16);
 
   /**
-   * Agujeros en dieciseisavos (0..16). Se restan del sólido en el motor.
-   * solid: "box" (default) | "sphere" | "cylinder" — el interior se ve 3D por el raymarch.
+   * Agujeros tipo boolean 3D (como Blender): volumen que atraviesa el bloque.
+   * Entrada en dieciseisavos: centro (cx,cy,cz), tamaño (sx,sy,sz), rotación ° (rx,ry,rz).
+   * solid: "box" | "sphere" | "cylinder". El motor resta el volumen; el interior se ve 3D.
    */
+  function invRotateEuler(p, rx, ry, rz) {
+    // Inversa de ZYX (mismo orden que rot3d del motor, pero en local del agujero).
+    const ax = -(rx || 0) * Math.PI / 180, ay = -(ry || 0) * Math.PI / 180, az = -(rz || 0) * Math.PI / 180;
+    const cx = Math.cos(ax), sx = Math.sin(ax);
+    const cy = Math.cos(ay), sy = Math.sin(ay);
+    const cz = Math.cos(az), sz = Math.sin(az);
+    let [x, y, z] = p;
+    // inv Rz
+    let x1 = x * cz + y * sz, y1 = -x * sz + y * cz, z1 = z;
+    // inv Ry
+    let x2 = x1 * cy - z1 * sy, y2 = y1, z2 = x1 * sy + z1 * cy;
+    // inv Rx
+    return [x2, y2 * cx + z2 * sx, -y2 * sx + z2 * cx];
+  }
+
+  function rotateEuler(p, rx, ry, rz) {
+    const ax = (rx || 0) * Math.PI / 180, ay = (ry || 0) * Math.PI / 180, az = (rz || 0) * Math.PI / 180;
+    const cx = Math.cos(ax), sx = Math.sin(ax);
+    const cy = Math.cos(ay), sy = Math.sin(ay);
+    const cz = Math.cos(az), sz = Math.sin(az);
+    let [x, y, z] = p;
+    // Rx
+    let y1 = y * cx - z * sx, z1 = y * sx + z * cx, x1 = x;
+    // Ry
+    let x2 = x1 * cy + z1 * sy, z2 = -x1 * sy + z1 * cy, y2 = y1;
+    // Rz
+    return [x2 * cz - y2 * sz, x2 * sz + y2 * cz, z2];
+  }
+
+  /** ¿Punto local del bloque (0..1) dentro del volumen del agujero? */
+  function inHoleVolume(b, lp) {
+    if (!b.hole) return false;
+    const c = b.center || [
+      (b.min[0] + b.max[0]) * 0.5,
+      (b.min[1] + b.max[1]) * 0.5,
+      (b.min[2] + b.max[2]) * 0.5,
+    ];
+    let p = [lp[0] - c[0], lp[1] - c[1], lp[2] - c[2]];
+    const r = b.rot || [0, 0, 0];
+    if (r[0] || r[1] || r[2]) p = invRotateEuler(p, r[0], r[1], r[2]);
+    const h = b.half || [
+      (b.max[0] - b.min[0]) * 0.5,
+      (b.max[1] - b.min[1]) * 0.5,
+      (b.max[2] - b.min[2]) * 0.5,
+    ];
+    const solid = b.solid || "box";
+    if (solid === "sphere") {
+      const rad = Math.max(h[0], h[1], h[2]);
+      return p[0] * p[0] + p[1] * p[1] + p[2] * p[2] <= rad * rad;
+    }
+    if (solid === "cylinder") {
+      // Eje Y local del agujero (después de rotar = dirección del boolean).
+      return Math.abs(p[1]) <= h[1] && (p[0] * p[0] + p[2] * p[2]) <= h[0] * h[0];
+    }
+    // Caja OBB
+    return Math.abs(p[0]) <= h[0] && Math.abs(p[1]) <= h[1] && Math.abs(p[2]) <= h[2];
+  }
+
   function holeBoxes(holes) {
     if (!holes?.length) return [];
     return holes.map((h) => {
-      const x = Math.max(0, Math.min(15, h.x ?? 4));
-      const y = Math.max(0, Math.min(15, h.y ?? 4));
-      const z = Math.max(0, Math.min(15, h.z ?? 4));
-      const w = Math.max(1, Math.min(16 - x, h.w ?? 8));
-      const ht = Math.max(1, Math.min(16 - y, h.h ?? 8));
-      const d = Math.max(1, Math.min(16 - z, h.d ?? 8));
-      const b = box(x, y, z, x + w, y + ht, z + d);
-      b.hole = true;
-      if (h.solid && h.solid !== "box") b.solid = h.solid;
-      return b;
+      // Prefer center+size; fallback a esquina x,y,z + w,h,d.
+      let cx = h.cx, cy = h.cy, cz = h.cz;
+      let sx = h.sx ?? h.w ?? 8, sy = h.sy ?? h.h ?? 8, sz = h.sz ?? h.d ?? 8;
+      if (cx == null) { cx = (h.x ?? 4) + sx / 2; }
+      if (cy == null) { cy = (h.y ?? 4) + sy / 2; }
+      if (cz == null) { cz = (h.z ?? 4) + sz / 2; }
+      cx = Math.max(0, Math.min(16, cx));
+      cy = Math.max(0, Math.min(16, cy));
+      cz = Math.max(0, Math.min(16, cz));
+      sx = Math.max(1, Math.min(16, sx));
+      sy = Math.max(1, Math.min(16, sy));
+      sz = Math.max(1, Math.min(16, sz));
+      const rx = h.rx || 0, ry = h.ry || 0, rz = h.rz || 0;
+      const half = [sx / 32, sy / 32, sz / 32]; // en unidades 0..1
+      const center = [cx / 16, cy / 16, cz / 16];
+      // AABB del OBB rotado (para el barrido de voxels).
+      let min = [1, 1, 1], max = [0, 0, 0];
+      for (const ix of [-1, 1]) for (const iy of [-1, 1]) for (const iz of [-1, 1]) {
+        const q = rotateEuler([ix * half[0], iy * half[1], iz * half[2]], rx, ry, rz);
+        const w = [center[0] + q[0], center[1] + q[1], center[2] + q[2]];
+        for (let a = 0; a < 3; a++) {
+          if (w[a] < min[a]) min[a] = w[a];
+          if (w[a] > max[a]) max[a] = w[a];
+        }
+      }
+      // Margen para no perder voxels en el borde.
+      for (let a = 0; a < 3; a++) {
+        min[a] = Math.max(0, min[a] - 0.02);
+        max[a] = Math.min(1, max[a] + 0.02);
+      }
+      return {
+        min, max,
+        hole: true,
+        solid: h.solid && h.solid !== "box" ? h.solid : "box",
+        center, half, rot: [rx, ry, rz],
+      };
     });
   }
 
@@ -484,6 +569,6 @@
 
   Aura.blockShapes = {
     SHAPES, PARAM_DEFAULTS, STATE_LABEL, FACING_LABEL, DIRS,
-    transform, boxesToWorld, variants, holeBoxes, artSnippet, parseCustom, turnLocal, isoMatrix, hasIso, inSolid, scaleBoxes,
+    transform, boxesToWorld, variants, holeBoxes, inHoleVolume, artSnippet, parseCustom, turnLocal, isoMatrix, hasIso, inSolid, scaleBoxes,
   };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));
