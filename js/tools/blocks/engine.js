@@ -332,20 +332,27 @@
     const bIdx = (i, j, k) => (k * R + j) * R + i;
     const inCell = (i, j, k) => i >= 0 && i < R && j >= 0 && j < R && k >= 0 && k < R;
     const parts = piece.boxes.map((b, pi) => slopePart(b, tf, o.blockHeight));
-    piece.boxes.forEach((b, pi) => {
-      const lo = worldBoxes[pi].min.map((v) => Math.round(v * R)), hi = worldBoxes[pi].max.map((v) => Math.round(v * R));
+    // Primero los sólidos (union), luego los agujeros (resta). Así un marco = panel + hole central queda bien.
+    const order = piece.boxes.map((b, pi) => pi).sort((a, b) => (piece.boxes[a].hole ? 1 : 0) - (piece.boxes[b].hole ? 1 : 0));
+    for (const pi of order) {
+      const b = piece.boxes[pi];
+      const lo = worldBoxes[pi].min.map((v) => Math.floor(v * R - 1e-6));
+      const hi = worldBoxes[pi].max.map((v) => Math.ceil(v * R + 1e-6));
       const sloped = !!b.cuts?.length;
+      const curved = !!b.solid;
       for (let k = lo[2]; k < hi[2]; k++) for (let j = lo[1]; j < hi[1]; j++) for (let i = lo[0]; i < hi[0]; i++) {
         if (!inCell(i, j, k)) continue;
-        // A sloped part fills every voxel any part of it touches (27 sample points), so its true surface never lies
-        // in front of the voxels: render() then finds the exact plane inside the first voxel the ray reaches.
-        if (sloped && !touchesPart(b, tf, i, j, k, R)) continue;
-        // A voxel any plain box fills is solid all through, so a plain part wins it over a sloped one.
+        if ((sloped || curved) && !touchesPart(b, tf, i, j, k, R)) continue;
         const n = bIdx(i, j, k);
+        if (b.hole) {
+          base[n] = 0;
+          partOf[n] = 0;
+          continue;
+        }
         if (!base[n] || !sloped) partOf[n] = pi + 1;
         base[n] = 1;
       }
-    });
+    }
     const isBase = (i, j, k) => inCell(i, j, k) && base[bIdx(i, j, k)] === 1;
     // Voxels of a sloped part are only the steps under a smooth surface: top edge masks, cover, chips and top hairs
     // skip them, or every step would sprout a tongue. Bottom edges of a ramp are real edges and keep theirs.
@@ -480,10 +487,11 @@
 
   // ── Slopes ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
-  /** True when local point lp (0..1) lies inside part b: its box and every cut (n·p ≤ d). */
+  /** True when local point lp (0..1) lies inside part b: its box, cuts, and optional implicit solid. */
   function inPart(b, lp, eps = 1e-6) {
     for (let a = 0; a < 3; a++) if (lp[a] < b.min[a] - eps || lp[a] > b.max[a] + eps) return false;
     for (const c of b.cuts ?? []) if (c.n[0] * lp[0] + c.n[1] * lp[1] + c.n[2] * lp[2] > c.d + eps) return false;
+    if (b.solid && Shapes.inSolid && !Shapes.inSolid(b, lp)) return false;
     return true;
   }
 
@@ -495,8 +503,13 @@
     for (let a = 0; a < 3; a++) {
       if (corners.every((c) => c[a] < b.min[a] + eps) || corners.every((c) => c[a] > b.max[a] - eps)) return false;
     }
-    for (const c of b.cuts) {
+    for (const c of b.cuts ?? []) {
       if (corners.every((q) => c.n[0] * q[0] + c.n[1] * q[1] + c.n[2] * q[2] > c.d - eps)) return false;
+    }
+    // Implicit solids: voxel counts if its centre is inside (smooth spheres/cylinders without stair-step holes).
+    if (b.solid) {
+      const mid = tf.toLocal([(i + 0.5) / R, (j + 0.5) / R, (k + 0.5) / R]);
+      if (!inPart(b, mid)) return false;
     }
     return true;
   }

@@ -356,12 +356,20 @@
         params.push(this.#pieceSlider("Ancho", "small", 2, 16), this.#pieceSlider("Alto", "smallHeight", 1, 16));
       }
       if (this.piece.shape === "pillar") params.push(this.#pieceSlider("Grosor", "pillar", 2, 16));
-      if (["panel", "slopePanel", "diagonalWall"].includes(this.piece.shape)) params.push(this.#pieceSlider("Grosor", "panel", 1, 8));
+      if (["panel", "slopePanel", "diagonalWall", "semicircle", "frame", "frameRound"].includes(this.piece.shape)) {
+        params.push(this.#pieceSlider("Grosor", "panel", 1, 8));
+      }
+      if (["sphere", "hemisphere", "cylinder", "semicircle", "arch", "frameRound", "tube"].includes(this.piece.shape)) {
+        params.push(this.#pieceSlider("Radio", "radius", 2, 8, "Radio en dieciseisavos del bloque"));
+      }
+      if (["frame", "frameRound", "arch", "tube"].includes(this.piece.shape)) {
+        params.push(this.#pieceSlider("Grosor marco", "frameThick", 1, 6, "Grosor del marco o pared del tubo"));
+      }
       if (this.piece.shape === "custom") {
         const area = h("textarea", { rows: 6, spellcheck: false }, this.piece.params.custom);
         params.push(
           h("p", { class: "note" }, "Cajas como en el ", h("b", null, "\"collision\""), " del tile: min/max en 0..1 (o en dieciseisavos), y hacia arriba, mirando al frente. ",
-            "Para inclinar una caja añade ", h("b", null, "\"cuts\": [{ \"n\": [0, 1, -1], \"d\": 0 }]"), " (sólido donde n·p ≤ d; ese ejemplo es una rampa)."),
+            "Para inclinar: ", h("b", null, "\"cuts\""), ". Agujero: ", h("b", null, "\"hole\": true"), ". Curva: ", h("b", null, "\"solid\": \"sphere\"|\"cylinder\""), "."),
           area,
           h("button", { onclick: () => {
             try {

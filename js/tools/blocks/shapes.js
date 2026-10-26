@@ -208,6 +208,94 @@
       post: () => [box(4, 0, 4, 12, 16, 12)],
       arm: () => [box(5, 0, 0, 11, 14, 4)],
     },
+
+    // Curvas y marcos: solid "sphere"|"cylinder"|… se rellena por distancia en el motor;
+    // hole: true resta del sólido (agujeros / marcos huecos).
+    sphere: {
+      label: "Esfera", states: ["default"],
+      boxes: (p) => {
+        const r = (p.radius ?? 8) / 16;
+        const c = 0.5;
+        return [{ min: [c - r, c - r, c - r], max: [c + r, c + r, c + r], solid: "sphere", center: [c, c, c], radius: r }];
+      },
+    },
+    hemisphere: {
+      label: "Semiesfera", states: ["default", "inverted"],
+      boxes: (p) => {
+        const r = (p.radius ?? 8) / 16;
+        const c = 0.5;
+        return [{ min: [c - r, 0, c - r], max: [c + r, c, c + r], solid: "hemisphere", center: [c, c, c], radius: r }];
+      },
+    },
+    cylinder: {
+      label: "Cilindro", states: ["default", "horizontal"],
+      boxes: (p) => {
+        const r = (p.radius ?? 6) / 16;
+        const c = 0.5;
+        return [{ min: [c - r, 0, c - r], max: [c + r, 1, c + r], solid: "cylinder", center: [c, 0.5, c], radius: r, axis: "y" }];
+      },
+    },
+    semicircle: {
+      label: "Semicírculo", states: ["default", "inverted"],
+      boxes: (p) => {
+        const r = (p.radius ?? 8) / 16;
+        const h = (p.panel ?? 2) / 16;
+        const c = 0.5;
+        return [{ min: [c - r, 0, c - r], max: [c + r, h, c + r], solid: "semicircle", center: [c, h / 2, c], radius: r }];
+      },
+    },
+    arch: {
+      label: "Arco", states: ["default"],
+      boxes: (p) => {
+        const thick = p.frameThick ?? 2;
+        const r = (p.radius ?? 7) / 16;
+        const c = 0.5;
+        return [
+          box(0, 0, 0, thick, 8, 16),
+          box(16 - thick, 0, 0, 16, 8, 16),
+          {
+            min: [0, 0.5, 0], max: [1, 0.5 + r, 1],
+            solid: "arch", center: [c, 0.5, c], radius: r,
+            inner: Math.max(0.05, r - thick / 16),
+          },
+        ];
+      },
+    },
+    frame: {
+      label: "Marco", states: ["default"],
+      boxes: (p) => {
+        const t = p.frameThick ?? 2;
+        const d = p.panel ?? 2;
+        const o = (16 - d) / 2;
+        return [box(0, 0, o, 16, 16, o + d), { ...box(t, t, o - 1, 16 - t, 16 - t, o + d + 1), hole: true }];
+      },
+    },
+    frameRound: {
+      label: "Marco redondo", states: ["default"],
+      boxes: (p) => {
+        const t = p.frameThick ?? 2;
+        const d = p.panel ?? 2;
+        const r = (p.radius ?? 7) / 16;
+        const o = (16 - d) / 2;
+        const c = 0.5;
+        return [
+          { min: [c - r, c - r, o / 16], max: [c + r, c + r, (o + d) / 16], solid: "cylinder", center: [c, c, 0.5], radius: r, axis: "z" },
+          { min: [c - r, c - r, o / 16 - 0.05], max: [c + r, c + r, (o + d) / 16 + 0.05], solid: "cylinder", center: [c, c, 0.5], radius: Math.max(0.05, r - t / 16), axis: "z", hole: true },
+        ];
+      },
+    },
+    tube: {
+      label: "Tubo", states: ["default", "horizontal"],
+      boxes: (p) => {
+        const r = (p.radius ?? 6) / 16;
+        const t = (p.frameThick ?? 2) / 16;
+        const c = 0.5;
+        return [
+          { min: [c - r, 0, c - r], max: [c + r, 1, c + r], solid: "cylinder", center: [c, 0.5, c], radius: r, axis: "y" },
+          { min: [c - r, -0.05, c - r], max: [c + r, 1.05, c + r], solid: "cylinder", center: [c, 0.5, c], radius: Math.max(0.05, r - t), axis: "y", hole: true },
+        ];
+      },
+    },
     custom: {
       label: "Personalizada", states: ["default", "inverted", "vertical", "horizontal"],
       boxes: (p) => parseCustom(p.custom),
@@ -216,6 +304,7 @@
 
   const PARAM_DEFAULTS = {
     layer: 4, small: 8, smallHeight: 8, pillar: 8, panel: 2,
+    radius: 7, frameThick: 2,
     custom: '[ { "min": [0, 0, 0], "max": [1, 0.5, 1] } ]',
   };
 
@@ -242,8 +331,44 @@
           return { n: c.n.map(Number), d: c.d * k };
         });
       }
+      // Agujero: resta este volumen del sólido ya pintado. solid: "sphere"|"cylinder"|… para formas implícitas.
+      if (b.hole) out.hole = true;
+      if (typeof b.solid === "string") {
+        out.solid = b.solid;
+        if (Array.isArray(b.center) && b.center.length === 3) out.center = b.center.map((v) => v * k);
+        if (typeof b.radius === "number") out.radius = b.radius * (sixteenths && b.radius > 1 ? 1 / 16 : 1);
+        if (typeof b.inner === "number") out.inner = b.inner * (sixteenths && b.inner > 1 ? 1 / 16 : 1);
+        if (b.axis) out.axis = b.axis;
+      }
       return out;
     });
+  }
+
+  /** True when local point lp (0..1) is inside an implicit solid box (sphere, cylinder…). */
+  function inSolid(b, lp) {
+    if (!b.solid) return true;
+    const c = b.center || [0.5, 0.5, 0.5];
+    const r = b.radius ?? 0.5;
+    const dx = lp[0] - c[0], dy = lp[1] - c[1], dz = lp[2] - c[2];
+    if (b.solid === "sphere") return dx * dx + dy * dy + dz * dz <= r * r;
+    if (b.solid === "hemisphere") return dy <= 0 && dx * dx + dy * dy + dz * dz <= r * r;
+    if (b.solid === "cylinder") {
+      const axis = b.axis || "y";
+      if (axis === "y") return dx * dx + dz * dz <= r * r;
+      if (axis === "z") return dx * dx + dy * dy <= r * r;
+      return dy * dy + dz * dz <= r * r;
+    }
+    if (b.solid === "semicircle") {
+      // Disco plano: cilindro en Y corto; solo la mitad frontal (z ≤ centro).
+      return dx * dx + dz * dz <= r * r && dz <= 0;
+    }
+    if (b.solid === "arch") {
+      // Medio anillo sobre y = center.y: entre radius e inner, solo la mitad superior.
+      const dist = Math.hypot(dx, dy);
+      const inner = b.inner ?? r * 0.6;
+      return dy >= 0 && dist <= r && dist >= inner;
+    }
+    return true;
   }
 
   /**
@@ -309,6 +434,6 @@
 
   Aura.blockShapes = {
     SHAPES, PARAM_DEFAULTS, STATE_LABEL, FACING_LABEL, DIRS,
-    transform, boxesToWorld, variants, artSnippet, parseCustom, turnLocal, isoMatrix, hasIso,
+    transform, boxesToWorld, variants, artSnippet, parseCustom, turnLocal, isoMatrix, hasIso, inSolid,
   };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));

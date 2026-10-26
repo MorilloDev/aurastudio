@@ -4,3 +4,21 @@
 .cr-bar .hint { color: var(--muted); font-size: 12px; }
 .cr-host { position: absolute; inset: 0; display: none; }
 .cr-host.active { display: block; }
+
+
+/* Composer mode */
+.cp { position: absolute; inset: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); }
+.cp-side { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.cp-side-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.cp-layers { flex: 0 1 40%; min-height: 100px; overflow: auto; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.cp-layer { display: grid; grid-template-columns: auto 1fr auto auto auto; gap: 6px; align-items: center; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; border: 1px solid transparent; }
+.cp-layer:hover { background: var(--panel-2); }
+.cp-layer.active { background: var(--accent-soft); border-color: var(--accent); }
+.cp-layer-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.cp-layer button { padding: 0 6px; font-size: 12px; }
+.cp-props { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px 16px; display: flex; flex-direction: column; gap: 8px; }
+.cp-stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.cp-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.cp-view { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--canvas-bg); }
+.cp-preview { image-rendering: pixelated; max-width: 100%; max-height: 100%; }
+.cp-hint { padding: 6px 10px; margin: 0; border-top: 1px solid var(--line); background: var(--panel); }
