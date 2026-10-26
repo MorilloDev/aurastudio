@@ -1,7 +1,7 @@
 "use strict";
 
-// Composer: apila piezas 3D (formas del motor de bloques) en capas, con offsets multipart,
-// agujeros/marcos, tint y modos de fusion. Exporta PNG o el JSON de parts del juego.
+// Composer: capas de piezas generadas (bloque, planta) o formas del motor, con offsets multipart,
+// fusion, tint y export. Bloques/Plantas envian su preview aqui con "Anadir al Composer".
 (function (Aura) {
   const { h } = Aura.dom;
   const { section, slider, select } = Aura.controls;
@@ -10,7 +10,6 @@
   const { prefs } = Aura.storage;
   const E = Aura.blockEngine;
   const Sh = Aura.blockShapes;
-  const Tint = Aura.tint;
 
   const BLENDS = [
     ["normal", "Normal"],
@@ -21,25 +20,59 @@
   ];
 
   const PREFS_KEY = "composer:doc";
+  const QUEUE_KEY = "composer:queue";
 
-  function defaultLayer(i = 0) {
+  function defaultShapeLayer(i = 0) {
     return {
-      id: "L" + Date.now().toString(36) + i,
-      name: "Pieza " + (i + 1),
+      id: "L" + Date.now().toString(36) + "_" + i,
+      kind: "shape",
+      name: "Forma " + (i + 1),
       visible: true,
       shape: "cube",
-      params: { ...Sh.PARAM_DEFAULTS },
+      params: { ...(Sh?.PARAM_DEFAULTS || {}) },
       offsetX: 0, offsetY: 0, offsetZ: 0,
       shiftX: 0, shiftY: 0, shiftZ: 0,
       rot3d: { x: 0, y: 0, z: 0 },
       blend: "normal",
       opacity: 1,
       tint: null,
+      size: 64,
+      color: null,
+      source: null,
+    };
+  }
+
+  /** Capa raster desde un result de Bloque o Planta (o PNG). */
+  function spriteLayerFromResult(result, meta = {}) {
+    const size = result.size || result.w || 64;
+    const color = result.color ? new Uint8ClampedArray(result.color) : null;
+    const normal = result.normal ? new Uint8ClampedArray(result.normal) : null;
+    return {
+      id: "L" + Date.now().toString(36),
+      kind: "sprite",
+      name: meta.name || meta.source || "Sprite",
+      visible: true,
+      offsetX: meta.offsetX || 0,
+      offsetY: meta.offsetY || 0,
+      offsetZ: meta.offsetZ || 0,
+      shiftX: 0, shiftY: 0, shiftZ: 0,
+      blend: "normal",
+      opacity: 1,
+      tint: null,
+      size,
+      w: result.w || size,
+      h: result.h || size,
+      color,
+      normal,
+      source: meta.source || "sprite",
+      shape: null,
+      params: {},
+      rot3d: { x: 0, y: 0, z: 0 },
     };
   }
 
   function defaultDoc() {
-    return { size: 64, layers: [defaultLayer(0)], selected: 0 };
+    return { size: 64, layers: [defaultShapeLayer(0)], selected: 0 };
   }
 
   function composerTool() {
@@ -58,7 +91,21 @@
       this.studio = studio;
       try {
         const raw = prefs.get(PREFS_KEY, null);
-        if (raw) this.doc = { ...defaultDoc(), ...raw, layers: (raw.layers || []).map((l) => ({ ...defaultLayer(), ...l })) };
+        if (raw) {
+          this.doc = {
+            ...defaultDoc(),
+            ...raw,
+            layers: (raw.layers || []).map((l) => {
+              const base = l.kind === "sprite" ? spriteLayerFromResult({ size: l.size || 64, color: null }, l) : defaultShapeLayer();
+              const layer = { ...base, ...l };
+              // Color no se serializa bien en prefs (TypedArray); se pierde al recargar — ok.
+              if (l.color && !(l.color instanceof Uint8ClampedArray)) {
+                try { layer.color = new Uint8ClampedArray(Object.values(l.color)); } catch { layer.color = null; }
+              }
+              return layer;
+            }),
+          };
+        }
       } catch { /* ignore */ }
 
       this.canvas = h("canvas", { class: "cp-preview" });
@@ -66,7 +113,7 @@
       this.propsHost = h("div", { class: "cp-props" });
 
       const toolbar = h("div", { class: "cp-toolbar" },
-        h("button", { class: "primary", onclick: () => this.addLayer() }, "+ Pieza"),
+        h("button", { class: "primary", onclick: () => this.addShapeLayer() }, "+ Forma"),
         h("button", { onclick: () => this.duplicateLayer() }, "Duplicar"),
         h("button", { onclick: () => this.removeLayer() }, "Quitar"),
         h("span", { class: "grow" }),
@@ -85,22 +132,78 @@
           toolbar,
           h("div", { class: "cp-view" }, this.canvas),
           h("p", { class: "hint cp-hint" },
-            "Offsets X/Z = celdas multipart (TilePart). Shift fino pega piezas. Formas: esfera, cilindro, marco, tubo\u2026 Agujeros con marco/tubo o custom ",
-            h("code", null, '"hole": true'), "."))));
+            "En ", h("b", null, "Bloque"), " o ", h("b", null, "Planta"), " usa ",
+            h("b", null, "\u00abA\u00f1adir al Composer\u00bb"),
+            " para meter ese tile en una capa. Aqu\u00ed ordenas, mueves (offset multipart), fusionas y exportas."))));
 
+      // Cola pendiente desde Bloque/Planta (si se anadio antes de montar).
+      this.drainQueue();
       this.rebuildLayerList();
       this.rebuildProps();
       this.schedule();
+
+      // API global: create tool y generadores empujan capas aqui.
+      Aura.composerBridge = {
+        pushResult: (result, meta) => this.pushResult(result, meta),
+        focus: () => this.studio?.showTool?.("create"),
+      };
     }
 
-    activate() { this.schedule(); }
+    activate() {
+      this.drainQueue();
+      this.schedule();
+    }
     deactivate() {}
     onProject(project) { this.project = project; }
     isDirty() { return this.dirty; }
 
-    savePrefs() {
-      prefs.set(PREFS_KEY, this.doc);
+    /** Anade una capa sprite desde result de Bloque/Planta. */
+    pushResult(result, meta = {}) {
+      if (!result?.color) {
+        this.studio?.toast("No hay preview para anadir", { kind: "warn" });
+        return;
+      }
+      const layer = spriteLayerFromResult(result, meta);
+      this.doc.layers.push(layer);
+      this.doc.selected = this.doc.layers.length - 1;
+      if (result.size) this.doc.size = Math.max(this.doc.size, result.size);
       this.dirty = true;
+      this.savePrefsMeta();
+      this.rebuildLayerList();
+      this.rebuildProps();
+      this.schedule();
+      this.studio?.toast(`Capa \u00ab${layer.name}\u00bb anadida al Composer`, { kind: "ok" });
+    }
+
+    drainQueue() {
+      try {
+        const q = prefs.get(QUEUE_KEY, []);
+        if (!Array.isArray(q) || !q.length) return;
+        prefs.set(QUEUE_KEY, []);
+        for (const item of q) {
+          if (!item?.color) continue;
+          const color = new Uint8ClampedArray(item.color);
+          this.pushResult({ size: item.size || 64, color, normal: item.normal ? new Uint8ClampedArray(item.normal) : null, w: item.w, h: item.h }, item.meta || {});
+        }
+      } catch { /* ignore */ }
+    }
+
+    savePrefsMeta() {
+      // Solo metadatos (sin buffers grandes) para no hinchar localStorage.
+      const slim = {
+        size: this.doc.size,
+        selected: this.doc.selected,
+        layers: this.doc.layers.map((l) => ({
+          id: l.id, kind: l.kind, name: l.name, visible: l.visible,
+          offsetX: l.offsetX, offsetY: l.offsetY, offsetZ: l.offsetZ,
+          shiftX: l.shiftX, shiftY: l.shiftY, shiftZ: l.shiftZ,
+          blend: l.blend, opacity: l.opacity, tint: l.tint,
+          shape: l.shape, params: l.params, rot3d: l.rot3d,
+          size: l.size, source: l.source,
+          // sprite color no se guarda en prefs
+        })),
+      };
+      prefs.set(PREFS_KEY, slim);
     }
 
     selected() {
@@ -109,39 +212,41 @@
       return this.doc.layers[i];
     }
 
-    addLayer() {
-      this.doc.layers.push(defaultLayer(this.doc.layers.length));
+    addShapeLayer() {
+      this.doc.layers.push(defaultShapeLayer(this.doc.layers.length));
       this.doc.selected = this.doc.layers.length - 1;
       this.rebuildLayerList();
       this.rebuildProps();
-      this.savePrefs();
+      this.savePrefsMeta();
       this.schedule();
     }
 
     duplicateLayer() {
       const src = this.selected();
       if (!src) return;
-      const copy = structuredClone(src);
+      const copy = structuredClone({ ...src, color: null, normal: null });
       copy.id = "L" + Date.now().toString(36);
-      copy.name = src.name + " copia";
+      copy.name = (src.name || "Pieza") + " copia";
+      if (src.color) copy.color = new Uint8ClampedArray(src.color);
+      if (src.normal) copy.normal = new Uint8ClampedArray(src.normal);
       this.doc.layers.splice(this.doc.selected + 1, 0, copy);
       this.doc.selected++;
       this.rebuildLayerList();
       this.rebuildProps();
-      this.savePrefs();
+      this.savePrefsMeta();
       this.schedule();
     }
 
     removeLayer() {
       if (this.doc.layers.length <= 1) {
-        this.studio?.toast("Deja al menos una pieza", { kind: "warn" });
+        this.studio?.toast("Deja al menos una capa", { kind: "warn" });
         return;
       }
       this.doc.layers.splice(this.doc.selected, 1);
       this.doc.selected = Math.min(this.doc.selected, this.doc.layers.length - 1);
       this.rebuildLayerList();
       this.rebuildProps();
-      this.savePrefs();
+      this.savePrefsMeta();
       this.schedule();
     }
 
@@ -150,6 +255,7 @@
       const order = this.doc.layers.map((_, i) => i).reverse();
       for (const i of order) {
         const L = this.doc.layers[i];
+        const kindTag = L.kind === "sprite" ? (L.source || "sprite") : (L.shape || "shape");
         const row = h("div", {
           class: ["cp-layer", i === this.doc.selected && "active"],
           onclick: () => { this.doc.selected = i; this.rebuildLayerList(); this.rebuildProps(); },
@@ -157,12 +263,12 @@
           h("input", {
             type: "checkbox", checked: L.visible || null,
             onclick: (e) => e.stopPropagation(),
-            onchange: (e) => { L.visible = e.target.checked; this.savePrefs(); this.schedule(); },
+            onchange: (e) => { L.visible = e.target.checked; this.savePrefsMeta(); this.schedule(); },
           }),
-          h("span", { class: "cp-layer-name" }, L.name || "Pieza"),
+          h("span", { class: "cp-layer-name", title: kindTag }, L.name || "Pieza"),
           h("span", { class: "mono faint" }, `${L.offsetX},${L.offsetY},${L.offsetZ}`),
-          h("button", { title: "Subir", onclick: (e) => { e.stopPropagation(); this.moveLayer(i, 1); } }, "\u2191"),
-          h("button", { title: "Bajar", onclick: (e) => { e.stopPropagation(); this.moveLayer(i, -1); } }, "\u2193"));
+          h("button", { title: "Subir (delante)", onclick: (e) => { e.stopPropagation(); this.moveLayer(i, 1); } }, "\u2191"),
+          h("button", { title: "Bajar (atras)", onclick: (e) => { e.stopPropagation(); this.moveLayer(i, -1); } }, "\u2193"));
         this.layerList.appendChild(row);
       }
     }
@@ -174,39 +280,47 @@
       [arr[i], arr[j]] = [arr[j], arr[i]];
       this.doc.selected = j;
       this.rebuildLayerList();
-      this.savePrefs();
+      this.savePrefsMeta();
       this.schedule();
     }
 
     rebuildProps() {
       const L = this.selected();
       if (!L) return;
-      const set = (fn) => { fn(); this.savePrefs(); this.schedule(); this.rebuildLayerList(); };
+      const set = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); this.rebuildLayerList(); };
 
-      this.propsHost.replaceChildren(
+      const kids = [
         h("label", { class: "field" }, h("span", null, "Nombre"),
           h("input", { value: L.name, oninput: (e) => set(() => { L.name = e.target.value; this.rebuildProps(); }) })),
-        select({
-          label: "Forma", value: L.shape,
+        h("p", { class: "note" }, L.kind === "sprite"
+          ? `Capa raster (${L.source || "sprite"}, ${L.size || 64}px). Generada en Bloque/Planta.`
+          : "Capa de forma procedural del motor de bloques."),
+      ];
+
+      if (L.kind !== "sprite") {
+        kids.push(select({
+          label: "Forma", value: L.shape || "cube",
           options: Object.entries(Sh.SHAPES).map(([k, s]) => [k, s.label]),
           onChange: (v) => set(() => { L.shape = v; this.rebuildProps(); }),
-        }).el,
-        ...this.paramControls(L, set),
-        section({ id: "cp-off", title: "Multipart (celdas)" },
-          this.num(L, "offsetX", "Offset X", -4, 4, set, "TilePart.OffsetX"),
-          this.num(L, "offsetY", "Offset Y", -4, 4, set, "TilePart.OffsetY"),
-          this.num(L, "offsetZ", "Offset Z", -4, 4, set, "TilePart.OffsetZ")),
-        section({ id: "cp-shift", title: "Ajuste fino (pegar)" },
-          this.num(L, "shiftX", "Shift X", -0.5, 0.5, set, null, 0.01),
-          this.num(L, "shiftY", "Shift Y", -0.5, 0.5, set, null, 0.01),
-          this.num(L, "shiftZ", "Shift Z", -0.5, 0.5, set, null, 0.01)),
-        section({ id: "cp-rot", title: "Rotacion 3D" },
+        }).el);
+        kids.push(...this.paramControls(L, set));
+        kids.push(section({ id: "cp-rot", title: "Rotacion 3D" },
           this.num(L, "rot3d.x", "Rot X\u00b0", -180, 180, set),
           this.num(L, "rot3d.y", "Rot Y\u00b0", -180, 180, set),
-          this.num(L, "rot3d.z", "Rot Z\u00b0", -180, 180, set)),
+          this.num(L, "rot3d.z", "Rot Z\u00b0", -180, 180, set)));
+      }
+
+      kids.push(
+        section({ id: "cp-off", title: "Multipart (celdas del juego)" },
+          this.num(L, "offsetX", "Offset X", -4, 4, set, "TilePart.OffsetX"),
+          this.num(L, "offsetY", "Offset Y", -4, 4, set, "TilePart.OffsetY (altura)"),
+          this.num(L, "offsetZ", "Offset Z", -4, 4, set, "TilePart.OffsetZ")),
+        section({ id: "cp-shift", title: "Ajuste fino en el sprite" },
+          this.num(L, "shiftX", "Shift X px", -32, 32, set, null, 1),
+          this.num(L, "shiftY", "Shift Y px", -32, 32, set, null, 1)),
         section({ id: "cp-blend", title: "Fusion y tint" },
           select({
-            label: "Modo fusion", value: L.blend,
+            label: "Modo fusion", value: L.blend || "normal",
             options: BLENDS,
             onChange: (v) => set(() => { L.blend = v; }),
           }).el,
@@ -218,11 +332,14 @@
             }),
             h("button", { onclick: () => set(() => { L.tint = null; this.rebuildProps(); }) }, "Sin tint"))),
       );
+
+      this.propsHost.replaceChildren(...kids);
     }
 
     paramControls(L, set) {
       const out = [];
       const shape = L.shape;
+      if (!Sh?.PARAM_DEFAULTS) return out;
       if (shape === "layer") out.push(this.paramSlider(L, "layer", "Altura", 1, 15, set));
       if (shape === "small") {
         out.push(this.paramSlider(L, "small", "Ancho", 2, 16, set));
@@ -243,8 +360,8 @@
 
     paramSlider(L, key, label, min, max, set) {
       return slider({
-        label, min, max, step: 1, value: L.params[key] ?? Sh.PARAM_DEFAULTS[key],
-        onChange: (v) => set(() => { L.params[key] = Number(v); }),
+        label, min, max, step: 1, value: L.params?.[key] ?? Sh.PARAM_DEFAULTS[key],
+        onChange: (v) => set(() => { L.params = L.params || {}; L.params[key] = Number(v); }),
       }).el;
     }
 
@@ -252,13 +369,16 @@
       const get = () => {
         const parts = path.split(".");
         let o = L;
-        for (const p of parts) o = o[p];
-        return o;
+        for (const p of parts) o = o?.[p];
+        return o ?? 0;
       };
       const put = (v) => {
         const parts = path.split(".");
         let o = L;
-        for (let i = 0; i < parts.length - 1; i++) o = o[parts[i]];
+        for (let i = 0; i < parts.length - 1; i++) {
+          o[parts[i]] = o[parts[i]] || {};
+          o = o[parts[i]];
+        }
         o[parts[parts.length - 1]] = v;
       };
       return slider({
@@ -288,24 +408,17 @@
       };
     }
 
-    renderLayer(L) {
+    renderShapeLayer(L) {
       const def = Sh.SHAPES[L.shape] ?? Sh.SHAPES.cube;
       let boxes;
       try {
-        boxes = def.boxes ? def.boxes({ ...Sh.PARAM_DEFAULTS, ...L.params }) : [{ min: [0, 0, 0], max: [1, 1, 1] }];
+        boxes = def.boxes ? def.boxes({ ...Sh.PARAM_DEFAULTS, ...(L.params || {}) }) : [{ min: [0, 0, 0], max: [1, 1, 1] }];
       } catch (err) {
         this.studio?.toast(err.message, { kind: "warn" });
         boxes = Sh.SHAPES.cube.boxes();
       }
-      if (L.shiftX || L.shiftY || L.shiftZ) {
-        boxes = boxes.map((b) => ({
-          ...b,
-          min: [b.min[0] + L.shiftX, b.min[1] + L.shiftY, b.min[2] + L.shiftZ],
-          max: [b.max[0] + L.shiftX, b.max[1] + L.shiftY, b.max[2] + L.shiftZ],
-        }));
-      }
-      const piece = { boxes, state: "default", facing: "front", rot3d: { ...L.rot3d } };
-      return E.render(E.merge({ size: this.doc.size, shading: true }), this.faceTex(), piece);
+      const piece = { boxes, state: "default", facing: "front", rot3d: { ...(L.rot3d || {}) } };
+      return E.render(E.merge({ size: L.size || this.doc.size, shading: true }), this.faceTex(), piece);
     }
 
     blendPixel(dst, src, mode, opacity) {
@@ -347,32 +460,48 @@
       return out;
     }
 
+    /** RGBA de una capa (sprite ya tiene color; shape se renderiza). */
+    layerRgba(L) {
+      if (L.kind === "sprite") {
+        if (!L.color) return null;
+        return { size: L.size || this.doc.size, color: L.color, w: L.w || L.size, h: L.h || L.size };
+      }
+      try {
+        const r = this.renderShapeLayer(L);
+        return { size: r.size, color: r.color, w: r.size, h: r.size };
+      } catch (err) {
+        console.warn(err);
+        return null;
+      }
+    }
+
     render() {
       const S = this.doc.size;
-      const n = S * S;
-      const color = new Uint8ClampedArray(n * 4);
-      const zbuf = new Float32Array(n).fill(-Infinity);
+      const color = new Uint8ClampedArray(S * S * 4);
+      const zbuf = new Float32Array(S * S).fill(-Infinity);
 
       for (let i = 0; i < this.doc.layers.length; i++) {
         const L = this.doc.layers[i];
         if (!L.visible) continue;
-        let result;
-        try { result = this.renderLayer(L); } catch (err) { console.warn(err); continue; }
-        let rgba = result.color;
+        const srcImg = this.layerRgba(L);
+        if (!srcImg?.color) continue;
+        let rgba = srcImg.color;
         if (L.tint) rgba = this.applyTint(rgba, L.tint);
 
-        const ox = (L.offsetX - L.offsetZ) * (S * 0.5);
-        const oy = (L.offsetX + L.offsetZ) * (S * 0.25) - L.offsetY * (S * 0.5);
+        const srcS = srcImg.size || S;
+        // Multipart iso offset + fine pixel shift
+        const ox = (L.offsetX - L.offsetZ) * (S * 0.5) + (L.shiftX || 0);
+        const oy = (L.offsetX + L.offsetZ) * (S * 0.25) - L.offsetY * (S * 0.5) + (L.shiftY || 0);
 
-        for (let y = 0; y < S; y++) {
-          for (let x = 0; x < S; x++) {
-            const si = (y * S + x) * 4;
+        for (let y = 0; y < srcS; y++) {
+          for (let x = 0; x < srcS; x++) {
+            const si = (y * srcS + x) * 4;
             if (rgba[si + 3] < 1) continue;
             const dx = Math.round(x + ox);
             const dy = Math.round(y + oy);
             if (dx < 0 || dy < 0 || dx >= S || dy >= S) continue;
             const di = (dy * S + dx) * 4;
-            const depthKey = i + (result.depth ? result.depth[(y * S + x) * 4] / 255 : 0);
+            const depthKey = i;
             if (depthKey < zbuf[dy * S + dx] - 0.001) continue;
             zbuf[dy * S + dx] = depthKey;
             const dst = [color[di], color[di + 1], color[di + 2], color[di + 3]];
@@ -422,8 +551,7 @@
       for (const L of this.doc.layers) {
         if (!L.visible) continue;
         const key = `${L.offsetX},${L.offsetY},${L.offsetZ}`;
-        if (!cells.has(key)) cells.set(key, { offsetX: L.offsetX, offsetY: L.offsetY, offsetZ: L.offsetZ, layers: [] });
-        cells.get(key).layers.push(L);
+        if (!cells.has(key)) cells.set(key, { offsetX: L.offsetX, offsetY: L.offsetY, offsetZ: L.offsetZ });
       }
       if (!cells.has("0,0,0") && cells.size) {
         const first = [...cells.values()][0];
@@ -442,34 +570,55 @@
         offsetZ: c.offsetZ,
         art: { default: { front: [0, 0] } },
       }));
-      const json = {
+      const blob = new Blob([JSON.stringify({
         name: "ComposerPiece",
         category: "furniture",
         parts,
-        _note: "Coords de ejemplo: al enviar al atlas se rellenan las celdas reales.",
-      };
-      const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
+        _note: "Coords de ejemplo; al colocar en el atlas se rellenan las celdas reales.",
+      }, null, 2)], { type: "application/json" });
       downloadBlob(blob, "composer-multipart.json");
       this.studio?.toast(`Multipart: ${parts.length} parte(s)`, { kind: "ok" });
     }
 
     sendToAtlas() {
       if (!this.preview) this.render();
-      const studio = this.studio;
-      if (studio) {
-        studio.pendingAtlasSprite = {
+      if (this.studio) {
+        this.studio.pendingAtlasSprite = {
           name: "composer",
           size: this.preview.size,
           color: this.preview.color,
-          parts: this.multipartParts().map((c) => ({
-            offsetX: c.offsetX, offsetY: c.offsetY, offsetZ: c.offsetZ,
-          })),
+          parts: this.multipartParts(),
         };
       }
-      studio?.toast("Abre Atlas y coloca la celda (multipart en JSON aparte)", { kind: "ok" });
-      studio?.showTool?.("atlas");
+      this.studio?.toast("Abre Atlas y coloca la celda", { kind: "ok" });
+      this.studio?.showTool?.("atlas");
     }
   }
 
-  Aura.composerTool = { composerTool };
+  /**
+   * API estatica: Bloque/Planta pueden anadir sin tener el Composer montado.
+   * Encola en prefs y el Composer lo drena al activarse.
+   */
+  function queueResult(result, meta = {}) {
+    if (!result?.color) return false;
+    const item = {
+      size: result.size || result.w || 64,
+      w: result.w,
+      h: result.h,
+      color: Array.from(result.color),
+      normal: result.normal ? Array.from(result.normal) : null,
+      meta: { name: meta.name, source: meta.source, offsetX: 0, offsetY: 0, offsetZ: 0 },
+    };
+    // Si el bridge esta vivo, push directo.
+    if (Aura.composerBridge?.pushResult) {
+      Aura.composerBridge.pushResult(result, meta);
+      return true;
+    }
+    const q = prefs.get(QUEUE_KEY, []);
+    q.push(item);
+    prefs.set(QUEUE_KEY, q);
+    return true;
+  }
+
+  Aura.composerTool = { composerTool, queueResult, spriteLayerFromResult };
 })(window.Aura ??= {});

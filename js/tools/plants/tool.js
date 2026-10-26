@@ -357,6 +357,8 @@
         h("button", { class: "primary", onclick: () => this.#saveVariants(), title: "Una celda por variante, seguidas desde la celda X / Y" }, "Guardar variantes en el atlas"),
         h("button", { onclick: () => this.#saveVariants(true), title: "Solo la vista previa, en la celda X / Y" }, "Guardar solo la vista previa"),
         h("button", { onclick: () => this.#sendToAtlas(), title: "Abre la pestaña Atlas para elegir las celdas viendo la hoja; allí mismo creas su tile" }, "Enviar al Atlas →"),
+        h("button", { class: "primary", onclick: () => this.#addToComposer(),
+          title: "Mete la vista previa actual como una capa del Composer" }, "Añadir al Composer"),
         this.snippetEl,
         h("button", { onclick: () => this.#copySnippet() }, "Copiar celdas"),
         h("div", { class: "bk-sep" }),
@@ -862,6 +864,26 @@
      * Hands every variant to the Atlas tab (one cell per part, bottom first). One plant becomes one tile there — a tall
      * one as "parts" stacked upward; stages and seeds are several tiles, so they go over as their cells only.
      */
+
+    /** Copia la vista previa actual al Composer como capa (sprite). */
+    #addToComposer() {
+      if (!this.result) {
+        this.studio.toast("Genera una planta antes de añadirla", { kind: "warn" });
+        return;
+      }
+      const name = this.type || "planta";
+      const ok = Aura.composerTool?.queueResult?.(this.result, { name, source: "planta" });
+      if (!ok) {
+        this.studio.toast("Composer no disponible", { kind: "warn" });
+        return;
+      }
+      try { Aura.storage.prefs.set("create:mode", "composer"); } catch {}
+      this.studio.activate?.("create");
+      this.studio.tools?.find?.((t) => t.id === "create")?.show?.("composer");
+      this.studio.toast("Añadido al Composer como capa", { kind: "ok" });
+    }
+
+
     #sendToAtlas() {
       const all = this.#allVariantResults();
       if (!all.length) return;

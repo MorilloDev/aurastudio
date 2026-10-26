@@ -34,7 +34,7 @@
       const hosts = this.modes.map((m) => (m.host = h("div", { class: "cr-host" })));
       host.appendChild(h("div", { class: "cr" },
         h("div", { class: "cr-bar" }, this.seg.el, this.hint, h("span", { class: "grow" }),
-          h("span", { class: "hint" }, "Composer combina piezas; Bloque/Planta generan una forma.")),
+          h("span", { class: "hint" }, "En Bloque/Planta: «Añadir al Composer» mete el tile en una capa.")),
         h("div", { style: "position: relative; min-height: 0" }, hosts)));
       this.show(prefs.get("create:mode", "composer"));
     }

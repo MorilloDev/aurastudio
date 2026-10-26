@@ -509,6 +509,8 @@
           title: "Una celda por variante, seguidas desde la celda X / Y" }, "Guardar variantes en el atlas"),
         h("button", { onclick: () => this.#saveToAtlas(), title: "Solo la vista previa, en la celda X / Y" }, "Guardar solo la vista previa"),
         h("button", { onclick: () => this.#sendToAtlas(), title: "Abre la pestaña Atlas para elegir las celdas viendo la hoja; allí mismo creas su tile" }, "Enviar al Atlas →"),
+        h("button", { class: "primary", onclick: () => this.#addToComposer(),
+          title: "Mete la vista previa actual como una capa del Composer para componer multipart / fusionar" }, "Añadir al Composer"),
         this.snippetEl,
         h("button", { onclick: () => this.#copySnippet() }, "Copiar \"art\""),
         h("div", { class: "bk-sep" }),
@@ -1014,6 +1016,26 @@
     }
 
     /** Hands every variant to the Atlas tab, which places them where the user clicks and offers to make the tile. */
+
+    /** Copia la vista previa actual al Composer como capa (sprite). */
+    #addToComposer() {
+      if (!this.result) {
+        this.studio.toast("Genera una pieza antes de añadirla", { kind: "warn" });
+        return;
+      }
+      const name = (this.#baseName && this.#baseName()) || ("bloque_" + (this.piece?.shape || "cube"));
+      const ok = Aura.composerTool?.queueResult?.(this.result, { name, source: "bloque" });
+      if (!ok) {
+        this.studio.toast("Composer no disponible", { kind: "warn" });
+        return;
+      }
+      try { Aura.storage.prefs.set("create:mode", "composer"); } catch {}
+      this.studio.activate?.("create");
+      this.studio.tools?.find?.((t) => t.id === "create")?.show?.("composer");
+      this.studio.toast("Añadido al Composer como capa", { kind: "ok" });
+    }
+
+
     #sendToAtlas() {
       const all = this.#allVariantResults();
       if (!all.length) { this.studio.toast("Elige antes las texturas de las caras.", { kind: "warn" }); return; }
