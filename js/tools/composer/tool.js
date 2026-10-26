@@ -1472,43 +1472,58 @@
     }
 
     sendToAtlas() {
+      // Mismo contrato que Bloque → Atlas: pendingPlacement + activate("atlas").
+      // El usuario hace clic en la primera celda; el Atlas coloca N celdas en fila horizontal.
       this.render();
       const cells = this.exportCells();
       if (!cells.length) {
-        this.studio?.toast("No hay grupos visibles", { kind: "warn" });
+        this.studio?.toast("No hay grupos visibles para enviar", { kind: "warn" });
         return;
       }
-      const S = this.doc.size || 64;
+      const S = cells[0].size || this.doc.size || 64;
+      // Clonar buffers: el Composer puede re-renderizar y reutilizar arrays.
+      const items = cells.map((c) => ({
+        color: new Uint8ClampedArray(c.color),
+        normal: c.normal ? new Uint8ClampedArray(c.normal) : null,
+        label: c.label || ("celda " + c.offsetX + "," + c.offsetY + "," + c.offsetZ),
+      }));
+      const offsets = cells.map((c) => ({
+        offsetX: c.offsetX | 0,
+        offsetY: c.offsetY | 0,
+        offsetZ: c.offsetZ | 0,
+      }));
+
       this.studio.pendingPlacement = {
         label: "Composer",
         name: "",
         kind: "composer",
         size: S,
         sheetKey: null,
-        items: cells.map((c) => ({
-          color: c.color,
-          normal: c.normal,
-          label: c.label || ("celda " + c.offsetX + "," + c.offsetY + "," + c.offsetZ),
-        })),
+        items,
         buildTile: (coords) => {
-          if (coords.length === 1) return { art: { default: { front: coords[0] } } };
+          if (!coords?.length) return null;
+          if (coords.length === 1 && offsets.length === 1) {
+            return { art: { default: { front: coords[0] } } };
+          }
           return {
-            parts: cells.map((c, i) => ({
-              offsetX: c.offsetX,
-              offsetY: c.offsetY,
-              offsetZ: c.offsetZ,
+            parts: offsets.map((o, i) => ({
+              offsetX: o.offsetX,
+              offsetY: o.offsetY,
+              offsetZ: o.offsetZ,
               art: { default: { front: coords[i] || coords[0] } },
             })),
           };
         },
         snippet: (coords) => {
-          if (coords.length === 1) {
-            return '"art": { "default": { "front": ' + JSON.stringify(coords[0]).replace(",", ", ") + " } }";
+          if (!coords?.length) return "";
+          if (coords.length === 1 && offsets.length === 1) {
+            const cell = coords[0];
+            return '"art": { "default": { "front": [' + cell[0] + ", " + cell[1] + "] } }";
           }
-          const lines = cells.map((c, i) => {
+          const lines = offsets.map((o, i) => {
             const cell = coords[i] || coords[0];
-            return '    { "offsetX": ' + c.offsetX + ', "offsetY": ' + c.offsetY + ', "offsetZ": ' + c.offsetZ +
-              ', "art": { "default": { "front": ' + JSON.stringify(cell).replace(",", ", ") + " } } }";
+            return '    { "offsetX": ' + o.offsetX + ', "offsetY": ' + o.offsetY + ', "offsetZ": ' + o.offsetZ +
+              ', "art": { "default": { "front": [' + cell[0] + ", " + cell[1] + "] } } }";
           });
           return '"parts": [\n' + lines.join(",\n") + "\n]";
         },
