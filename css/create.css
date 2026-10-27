@@ -284,3 +284,27 @@
   border-color: rgba(95,211,176,0.4); color: var(--accent); background: rgba(95,211,176,0.12); font-weight: 600;
 }
 .cp-side-head .grow { flex: 1; }
+
+/* Tree: drag, nest, tools */
+.cp-tree-tools {
+  display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+  padding: 6px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0;
+  background: var(--panel); z-index: 1;
+}
+.cp-tree-filter {
+  flex: 1; min-width: 80px; padding: 4px 8px; border-radius: 5px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font-size: 12px;
+}
+.cp-grip { color: var(--faint); cursor: grab; font-size: 11px; letter-spacing: -1px; user-select: none; }
+.cp-group-head.folder { border-left: 2px solid var(--info, #7fb2ff); }
+.cp-group-head.locked, .cp-layer.locked { opacity: 0.75; }
+.cp-group-head.cp-drop, .cp-layer.cp-drop {
+  outline: 1px dashed var(--accent); background: var(--accent-soft);
+}
+.cp-collapse {
+  width: 18px; height: 18px; padding: 0; font-size: 9px; border: none;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.cp-group-head { cursor: pointer; }
+.cp-layer { cursor: pointer; }
+.shell-tab.active { color: var(--text); }

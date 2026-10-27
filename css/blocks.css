@@ -24,7 +24,7 @@
 .bk-toolbar .field { margin: 0; }
 .bk-view { position: relative; flex: 1; min-height: 0; background: var(--canvas-bg); }
 .bk-preview { position: absolute; inset: 0; width: 100%; height: 100%; }
-.bk-strip { display: flex; gap: 10px; padding: 8px 10px; background: var(--panel); border-top: 1px solid var(--line); overflow-x: auto; flex: none; }
+.bk-strip { display: flex; gap: 10px; padding: 8px 10px; background: var(--panel); border-top: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; flex: none; align-items: center; }
 .bk-varstrip { align-items: flex-start; }
 .bk-strip-title { writing-mode: vertical-rl; transform: rotate(180deg); color: var(--faint); font-size: 11px; white-space: nowrap; }
 .bk-thumb span { max-width: 72px; text-align: center; line-height: 1.2; }
@@ -97,14 +97,18 @@
 .bk-toolbar { flex-wrap: wrap; }
 
 .bk-bottom-bar {
-  display: flex; align-items: flex-start; gap: 12px;
+  display: flex; align-items: center; gap: 12px;
   padding: 6px 10px; background: var(--panel); border-top: 1px solid var(--line);
-  overflow-x: auto; flex: none;
+  overflow-x: auto; overflow-y: hidden; flex: none; max-height: none;
+  scrollbar-width: thin;
 }
-.bk-bottom-bar .bk-strip { border-top: none; padding: 0; background: transparent; flex: 0 0 auto; }
+.bk-bottom-bar .bk-strip {
+  border-top: none; padding: 0; background: transparent;
+  flex: 0 0 auto; overflow: visible; max-height: none;
+}
 .bk-facebar {
-  display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center;
-  padding: 4px 0; flex: 1 1 auto; min-width: 0;
+  display: inline-flex; flex-wrap: nowrap; gap: 6px; align-items: center;
+  padding: 0; flex: 0 1 auto; min-width: 0; overflow: visible;
 }
 .bk-facebar-label {
   font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.04em;

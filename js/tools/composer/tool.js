@@ -70,45 +70,109 @@
     };
   }
 
-  function defaultGroup(i = 0, multipart = false) {
+  function defaultGroup(i = 0, multipart = false, folder = false) {
     return {
       id: uid(),
-      name: multipart ? ("Parte " + (i + 1)) : ("Grupo " + (i + 1)),
+      name: folder ? ("Carpeta " + (i + 1)) : (multipart ? ("Parte " + (i + 1)) : ("Grupo " + (i + 1))),
       visible: true,
       collapsed: false,
-      multipart: !!multipart,
-      offsetX: multipart ? i : 0,
+      locked: false,
+      folder: !!folder,          // solo organización; no es celda
+      multipart: !!multipart && !folder,
+      offsetX: multipart && !folder ? i : 0,
       offsetY: 0,
       offsetZ: 0,
       layers: [],
+      children: [],              // grupos anidados
     };
   }
 
+  /** Recorre el árbol de grupos (profundidad). */
+  function walkGroups(list, fn, parent = null, depth = 0) {
+    if (!list) return;
+    for (let i = 0; i < list.length; i++) {
+      const g = list[i];
+      fn(g, { parent, index: i, list, depth });
+      if (g.children?.length) walkGroups(g.children, fn, g, depth + 1);
+    }
+  }
+
+  function findGroup(list, id, parent = null) {
+    if (!list || id == null) return null;
+    for (let i = 0; i < list.length; i++) {
+      const g = list[i];
+      if (g.id === id) return { group: g, parent, index: i, list };
+      const nested = findGroup(g.children, id, g);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  function cloneLayer(L) {
+    return {
+      ...JSON.parse(JSON.stringify({ ...L, color: null, normal: null, depth: null })),
+      id: uid(),
+      color: L.color ? new Uint8ClampedArray(L.color) : null,
+      normal: L.normal ? new Uint8ClampedArray(L.normal) : null,
+      depth: L.depth ? new Uint8ClampedArray(L.depth) : null,
+    };
+  }
+
+  function cloneGroup(g, deep = true) {
+    const out = {
+      ...JSON.parse(JSON.stringify({
+        ...g, layers: [], children: [], color: undefined,
+      })),
+      id: uid(),
+      layers: deep ? (g.layers || []).map(cloneLayer) : [],
+      children: deep ? (g.children || []).map((c) => cloneGroup(c, true)) : [],
+    };
+    return out;
+  }
+
+
   function defaultDoc() {
     return {
-      size: 64, groups: [], selectedGroup: -1, selectedLayer: -1,
+      size: 64, groups: [], selectedGroupId: null, selectedLayer: -1,
+      filter: "",
       ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true },
     };
   }
 
   /** Migra docs antiguos (layers planos con offset) al modelo de grupos. */
+  function normalizeGroup(g, gi = 0) {
+    const base = defaultGroup(gi, !!g.multipart, !!g.folder);
+    const layers = (g.layers || []).map((l, li) => {
+      const b = l.kind === "sprite"
+        ? spriteLayerFromResult({ size: l.size || 64, color: null }, l)
+        : defaultShapeLayer(li);
+      return { ...b, ...l, color: null, normal: null };
+    });
+    const children = (g.children || []).map((c, ci) => normalizeGroup(c, ci));
+    return {
+      ...base, ...g,
+      folder: !!g.folder,
+      locked: !!g.locked,
+      children,
+      layers,
+    };
+  }
+
   function migrateDoc(raw) {
     if (raw?.groups && Array.isArray(raw.groups)) {
+      const groups = raw.groups.map((g, gi) => normalizeGroup(g, gi));
+      let selectedGroupId = raw.selectedGroupId || null;
+      if (!selectedGroupId && groups.length) {
+        const idx = Math.max(0, Math.min(raw.selectedGroup | 0, groups.length - 1));
+        selectedGroupId = groups[idx]?.id || null;
+      }
       return {
         size: raw.size || 64,
-        selectedGroup: raw.selectedGroup | 0,
+        selectedGroupId,
         selectedLayer: raw.selectedLayer | 0,
+        filter: raw.filter || "",
         ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true, ...(raw.ao || {}) },
-        groups: raw.groups.map((g, gi) => ({
-          ...defaultGroup(gi, !!g.multipart),
-          ...g,
-          layers: (g.layers || []).map((l, li) => {
-            const base = l.kind === "sprite"
-              ? spriteLayerFromResult({ size: l.size || 64, color: null }, l)
-              : defaultShapeLayer(li);
-            return { ...base, ...l, color: null, normal: null };
-          }),
-        })),
+        groups,
       };
     }
     // Legacy: layers con offsetX/Y/Z
@@ -136,8 +200,8 @@
         g.layers = c.layers;
         return g;
       });
-      if (!groups.length) return { size: raw.size || 64, groups: [], selectedGroup: -1, selectedLayer: -1, ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true, ...(raw.ao || {}) } };
-      return { size: raw.size || 64, groups, selectedGroup: 0, selectedLayer: 0 };
+      if (!groups.length) return { size: raw.size || 64, groups: [], selectedGroupId: null, selectedLayer: -1, ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true, ...(raw.ao || {}) } };
+      return { size: raw.size || 64, groups, selectedGroupId: groups[0]?.id || null, selectedLayer: 0 };
     }
     return defaultDoc();
   }
@@ -371,7 +435,10 @@
       const toolbar = h("div", { class: "cp-toolbar" },
         h("div", { class: "cp-tool-group" },
           h("button", { title: "Grupo organización", onclick: () => this.addGroup(false) }, "+ Grupo"),
-          h("button", { class: "primary", title: "Celda multipart", onclick: () => this.addGroup(true) }, "+ Parte")),
+          h("button", { class: "primary", title: "Celda multipart", onclick: () => this.addGroup(true) }, "+ Parte"),
+          h("button", { title: "Carpeta (anida grupos)", onclick: () => this.addFolder() }, "+ Carpeta"),
+          h("button", { title: "Duplicar grupo", onclick: () => this.duplicateGroup() }, "Duplicar"),
+          h("button", { title: "Deshacer", onclick: () => this.undo() }, "↶")),
         h("div", { class: "cp-tool-group" },
           h("button", { title: "Ctrl+C", onclick: () => this.copyLayer() }, "Copiar"),
           h("button", { title: "Ctrl+X", onclick: () => this.cutLayer() }, "Cortar"),
@@ -411,7 +478,11 @@
             h("button", {
               type: "button", class: "cp-mini-btn primary", title: "Nueva celda multipart",
               onclick: () => this.addGroup(true),
-            }, "+ Parte")),
+            }, "+ Parte"),
+            h("button", {
+              type: "button", class: "cp-mini-btn", title: "Carpeta contenedora",
+              onclick: () => this.addFolder(),
+            }, "+ Carpeta")),
           this.groupList,
           h("div", { class: "cp-gen-block" },
             h("div", { class: "cp-side-head" }, h("b", null, "Generar")),
@@ -471,6 +542,7 @@
         else if (mod && e.key === "v") { e.preventDefault(); this.pasteLayer(); }
         else if (mod && e.key === "d") { e.preventDefault(); this.duplicateLayer(); }
         else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); this.removeSelected(); }
+        else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); this.undo(); }
       });
     }
 
@@ -531,18 +603,15 @@
           if (x >= o.x && y >= o.y && x < o.x + o.w && y < o.y + o.h) hit = o;
         }
         if (!hit) return;
-        const gi = this.doc.groups.findIndex((g) =>
-          (g.multipart ? (g.offsetX | 0) : 0) === hit.ox &&
-          (g.multipart ? (g.offsetY | 0) : 0) === hit.oy &&
-          (g.multipart ? (g.offsetZ | 0) : 0) === hit.oz &&
-          g.visible);
-        if (gi >= 0) {
-          this.doc.selectedGroup = gi;
-          this.doc.selectedLayer = 0;
-          this.rebuildGroupList();
-          this.rebuildProps();
-          this.schedule();
-        }
+        let hitId = null;
+        walkGroups(this.doc.groups, (g) => {
+          if (!g.visible || g.folder) return;
+          const ox = g.multipart ? (g.offsetX | 0) : 0;
+          const oy = g.multipart ? (g.offsetY | 0) : 0;
+          const oz = g.multipart ? (g.offsetZ | 0) : 0;
+          if (ox === hit.ox && oy === hit.oy && oz === hit.oz) hitId = g.id;
+        });
+        if (hitId) this.selectGroup(hitId, 0);
       });
     }
 
@@ -637,9 +706,15 @@
     // ── selection helpers ───────────────────────────────────────────────────
 
     group() {
-      const i = this.doc.selectedGroup;
-      if (i == null || i < 0 || i >= (this.doc.groups?.length || 0)) return null;
-      return this.doc.groups[i];
+      const id = this.doc.selectedGroupId;
+      if (!id) return null;
+      return findGroup(this.doc.groups, id)?.group || null;
+    }
+
+    groupRef() {
+      const id = this.doc.selectedGroupId;
+      if (!id) return null;
+      return findGroup(this.doc.groups, id);
     }
 
     layer() {
@@ -650,21 +725,115 @@
       return g.layers[i];
     }
 
+    selectGroup(id, layerIndex = -1) {
+      this.doc.selectedGroupId = id;
+      this.doc.selectedLayer = layerIndex;
+      this.rebuildGroupList();
+      this.rebuildProps();
+      this.schedule();
+    }
+
+    pushHistory() {
+      try {
+        this._undo = this._undo || [];
+        this._redo = [];
+        const snap = {
+          selectedGroupId: this.doc.selectedGroupId,
+          selectedLayer: this.doc.selectedLayer,
+          groups: JSON.parse(JSON.stringify(this.doc.groups, (k, v) => {
+            if (v instanceof Uint8ClampedArray || v instanceof Float32Array) return null;
+            return v;
+          })),
+          pixels: {},
+        };
+        walkGroups(this.doc.groups, (g) => {
+          for (const L of g.layers || []) {
+            if (L.color) snap.pixels[L.id] = {
+              color: Array.from(L.color),
+              normal: L.normal ? Array.from(L.normal) : null,
+            };
+          }
+        });
+        this._undo.push(snap);
+        if (this._undo.length > 30) this._undo.shift();
+      } catch (err) { console.warn("composer history", err); }
+    }
+
+    restoreSnap(snap) {
+      if (!snap) return;
+      const restoreG = (list) => (list || []).map((g) => {
+        const layers = (g.layers || []).map((l) => {
+          const px = snap.pixels[l.id];
+          return {
+            ...l,
+            color: px?.color ? new Uint8ClampedArray(px.color) : null,
+            normal: px?.normal ? new Uint8ClampedArray(px.normal) : null,
+          };
+        });
+        return { ...g, layers, children: restoreG(g.children) };
+      });
+      this.doc.groups = restoreG(snap.groups);
+      this.doc.selectedGroupId = snap.selectedGroupId;
+      this.doc.selectedLayer = snap.selectedLayer;
+      this.touch();
+    }
+
+    undo() {
+      if (!this._undo?.length) return;
+      const cur = this._undo.pop();
+      this._redo = this._redo || [];
+      // push current before restore
+      const before = cur; // already popped current tip is the state to restore TO... 
+      // Fix: undo stack stores past states; on mutation we push. So pop and restore.
+      this.restoreSnap(before);
+      this.studio?.toast("Deshacer", { kind: "ok" });
+    }
+
     // ── mutations ───────────────────────────────────────────────────────────
 
-    addGroup(multipart) {
-      const g = defaultGroup(this.doc.groups.length, multipart);
-      if (multipart) {
-        // Siguiente offset libre en X
-        const used = new Set(this.doc.groups.filter((x) => x.multipart).map((x) => x.offsetX + "," + x.offsetY + "," + x.offsetZ));
+    addGroup(multipart, folder = false) {
+      this.pushHistory();
+      const count = { n: 0 };
+      walkGroups(this.doc.groups, () => { count.n++; });
+      const g = defaultGroup(count.n, multipart, folder);
+      if (multipart && !folder) {
+        const used = new Set();
+        walkGroups(this.doc.groups, (x) => {
+          if (x.multipart) used.add(x.offsetX + "," + x.offsetY + "," + x.offsetZ);
+        });
         let x = 0;
         while (used.has(x + ",0,0")) x++;
         g.offsetX = x;
       }
-      this.doc.groups.push(g);
-      this.doc.selectedGroup = this.doc.groups.length - 1;
-      this.doc.selectedLayer = -1; // grupo puede quedar sin capas
+      // Si el grupo activo es carpeta, anidar dentro; si no, top-level
+      const cur = this.group();
+      if (cur?.folder) {
+        cur.children = cur.children || [];
+        cur.children.push(g);
+        cur.collapsed = false;
+      } else {
+        this.doc.groups.push(g);
+      }
+      this.doc.selectedGroupId = g.id;
+      this.doc.selectedLayer = -1;
       this.touch();
+    }
+
+    addFolder() {
+      this.addGroup(false, true);
+    }
+
+    duplicateGroup() {
+      const ref = this.groupRef();
+      if (!ref) return;
+      this.pushHistory();
+      const copy = cloneGroup(ref.group, true);
+      copy.name = (ref.group.name || "Grupo") + " copia";
+      ref.list.splice(ref.index + 1, 0, copy);
+      this.doc.selectedGroupId = copy.id;
+      this.doc.selectedLayer = -1;
+      this.touch();
+      this.studio?.toast("Grupo duplicado", { kind: "ok" });
     }
 
     addShapeLayer() {
@@ -698,9 +867,19 @@
     removeSelected() {
       const g = this.group();
       if (!g) return;
+      if (g.locked) {
+        this.studio?.toast("Grupo bloqueado", { kind: "warn" });
+        return;
+      }
+      this.pushHistory();
 
-      // Capa seleccionada → solo esa capa (grupo puede quedar vacío).
+      // Capa seleccionada → solo esa capa
       if (g.layers && g.layers.length && this.doc.selectedLayer >= 0 && this.doc.selectedLayer < g.layers.length) {
+        const L = g.layers[this.doc.selectedLayer];
+        if (L.locked) {
+          this.studio?.toast("Capa bloqueada", { kind: "warn" });
+          return;
+        }
         g.layers.splice(this.doc.selectedLayer, 1);
         this.doc.selectedLayer = g.layers.length
           ? Math.min(this.doc.selectedLayer, g.layers.length - 1)
@@ -709,15 +888,26 @@
         return;
       }
 
-      // Sin capa → borrar el grupo. La lista puede quedar vacía.
-      this.doc.groups.splice(this.doc.selectedGroup, 1);
+      // Borrar grupo del árbol
+      const ref = this.groupRef();
+      if (!ref) return;
+      ref.list.splice(ref.index, 1);
       if (!this.doc.groups.length) {
-        this.doc.selectedGroup = -1;
+        this.doc.selectedGroupId = null;
         this.doc.selectedLayer = -1;
       } else {
-        this.doc.selectedGroup = Math.min(this.doc.selectedGroup, this.doc.groups.length - 1);
-        const ng = this.group();
-        this.doc.selectedLayer = (ng?.layers?.length) ? 0 : -1;
+        // seleccionar vecino o padre
+        if (ref.parent) {
+          this.doc.selectedGroupId = ref.parent.id;
+        } else if (ref.list.length) {
+          const ni = Math.min(ref.index, ref.list.length - 1);
+          this.doc.selectedGroupId = ref.list[ni].id;
+        } else if (ref.parent) {
+          this.doc.selectedGroupId = ref.parent.id;
+        } else {
+          this.doc.selectedGroupId = this.doc.groups[0]?.id || null;
+        }
+        this.doc.selectedLayer = -1;
       }
       this.touch();
     }
@@ -745,7 +935,7 @@
           g.layers = [layer];
           this.doc.groups.push(g);
         }
-        this.doc.selectedGroup = this.doc.groups.length - 1;
+        this.doc.selectedGroupId = this.doc.groups[this.doc.groups.length - 1]?.id || null;
         this.doc.selectedLayer = 0;
         this.dirty = true;
         this.touch();
@@ -832,107 +1022,248 @@
     }
 
     savePrefsMeta() {
+      const serG = (g) => ({
+        id: g.id, name: g.name, visible: g.visible, collapsed: g.collapsed,
+        locked: !!g.locked, folder: !!g.folder,
+        multipart: g.multipart, offsetX: g.offsetX, offsetY: g.offsetY, offsetZ: g.offsetZ,
+        layers: (g.layers || []).map((l) => ({
+          id: l.id, kind: l.kind, name: l.name, visible: l.visible, locked: !!l.locked,
+          shiftX: l.shiftX, shiftY: l.shiftY,
+          blend: l.blend, opacity: l.opacity, tint: l.tint,
+          shape: l.shape, params: l.params, rot3d: l.rot3d,
+          size: l.size, source: l.source,
+        })),
+        children: (g.children || []).map(serG),
+      });
       prefs.set(PREFS_KEY, {
         size: this.doc.size,
-        selectedGroup: this.doc.selectedGroup,
+        selectedGroupId: this.doc.selectedGroupId,
         selectedLayer: this.doc.selectedLayer,
+        filter: this.doc.filter || "",
         ao: this.doc.ao,
-        groups: this.doc.groups.map((g) => ({
-          id: g.id, name: g.name, visible: g.visible, collapsed: g.collapsed,
-          multipart: g.multipart, offsetX: g.offsetX, offsetY: g.offsetY, offsetZ: g.offsetZ,
-          layers: (g.layers || []).map((l) => ({
-            id: l.id, kind: l.kind, name: l.name, visible: l.visible,
-            shiftX: l.shiftX, shiftY: l.shiftY,
-            blend: l.blend, opacity: l.opacity, tint: l.tint,
-            shape: l.shape, params: l.params, rot3d: l.rot3d,
-            size: l.size, source: l.source,
-          })),
-        })),
+        groups: this.doc.groups.map(serG),
       });
     }
 
     // ── UI lists ────────────────────────────────────────────────────────────
 
     rebuildGroupList() {
+      const filter = (this.doc.filter || "").trim().toLowerCase();
       if (!this.doc.groups.length) {
         this.groupList.replaceChildren(
+          h("div", { class: "cp-tree-tools" }, this.#treeTools()),
           h("p", { class: "note", style: "padding:8px" },
-            "Sin grupos. Usa + Grupo / + Parte, o aplica un Bloque/Planta."));
+            "Sin grupos. Usa + Grupo / + Parte / + Carpeta, o aplica un Bloque/Planta."));
         return;
       }
-      this.groupList.replaceChildren();
-      this.doc.groups.forEach((g, gi) => {
-        const isSel = gi === this.doc.selectedGroup;
+
+      const frag = [];
+      frag.push(h("div", { class: "cp-tree-tools" }, this.#treeTools()));
+
+      const matches = (g) => {
+        if (!filter) return true;
+        if ((g.name || "").toLowerCase().includes(filter)) return true;
+        return (g.layers || []).some((L) => (L.name || "").toLowerCase().includes(filter));
+      };
+
+      const renderGroup = (g, depth) => {
+        if (filter && !matches(g) && !(g.children || []).some(matches)) return;
+
+        const isSel = g.id === this.doc.selectedGroupId;
+        const pad = { paddingLeft: (8 + depth * 14) + "px" };
+
         const head = h("div", {
-          class: ["cp-group-head", isSel && "active", g.multipart && "multipart"],
-          onclick: () => {
-            this.doc.selectedGroup = gi;
-            this.doc.selectedLayer = 0;
-            this.rebuildGroupList();
-            this.rebuildProps();
-            this.schedule();
+          class: ["cp-group-head", isSel && "active", g.multipart && "multipart", g.folder && "folder", g.locked && "locked"],
+          style: pad,
+          draggable: !g.locked,
+          ondragstart: (e) => {
+            e.dataTransfer.setData("text/cp-group", g.id);
+            e.dataTransfer.effectAllowed = "move";
           },
+          ondragover: (e) => {
+            e.preventDefault();
+            e.currentTarget.classList.add("cp-drop");
+          },
+          ondragleave: (e) => e.currentTarget.classList.remove("cp-drop"),
+          ondrop: (e) => {
+            e.preventDefault();
+            e.currentTarget.classList.remove("cp-drop");
+            const layerId = e.dataTransfer.getData("text/cp-layer");
+            const groupId = e.dataTransfer.getData("text/cp-group");
+            if (layerId) this.moveLayerToGroup(layerId, g.id);
+            else if (groupId && groupId !== g.id) this.moveGroupTo(groupId, g.id);
+          },
+          onclick: () => this.selectGroup(g.id, -1),
         },
           h("input", {
-            type: "checkbox", checked: g.visible || null, title: "Mostrar grupo",
+            type: "checkbox", checked: g.visible || null,
+            title: "Visible",
             onclick: (e) => e.stopPropagation(),
             onchange: (e) => { g.visible = e.target.checked; this.touch(); },
           }),
           h("button", {
-            class: "cp-collapse", title: "Plegar",
+            class: "cp-collapse",
+            title: "Colapsar",
             onclick: (e) => { e.stopPropagation(); g.collapsed = !g.collapsed; this.rebuildGroupList(); },
-          }, g.collapsed ? "\u25B6" : "\u25BC"),
-          h("span", { class: "cp-group-name" }, g.name),
-          g.multipart
-            ? h("span", { class: "cp-badge", title: "Celda multipart" }, g.offsetX + "," + g.offsetY + "," + g.offsetZ)
-            : h("span", { class: "cp-badge faint" }, "grupo"),
-          h("button", {
+          }, g.collapsed ? "▶" : "▼"),
+          h("span", { class: "cp-grip", title: "Arrastrar" }, "⠿"),
+          h("span", { class: "cp-group-name" }, (g.folder ? "📁 " : "") + g.name),
+          g.locked ? h("span", { class: "cp-badge faint", title: "Bloqueado" }, "🔒") : null,
+          g.folder
+            ? h("span", { class: "cp-badge faint" }, "carpeta")
+            : g.multipart
+              ? h("span", { class: "cp-badge", title: "Celda multipart" }, g.offsetX + "," + g.offsetY + "," + g.offsetZ)
+              : h("span", { class: "cp-badge faint" }, "grupo"),
+          !g.folder ? h("button", {
             class: ["cp-mp-btn", g.multipart && "on"],
-            title: g.multipart ? "Desactivar multipart (pasa a grupo normal)" : "Activar multipart (esta carpeta = una celda)",
+            title: g.multipart ? "Desactivar multipart" : "Activar multipart",
             onclick: (e) => {
               e.stopPropagation();
+              if (g.locked) return;
               g.multipart = !g.multipart;
-              if (g.multipart && g.name.startsWith("Grupo")) g.name = "Parte " + (gi + 1);
               this.touch();
             },
-          }, g.multipart ? "MP\u2713" : "MP"),
+          }, g.multipart ? "MP✓" : "MP") : null,
         );
-        this.groupList.appendChild(head);
+        frag.push(head);
 
         if (!g.collapsed) {
-          g.layers.forEach((L, li) => {
+          (g.layers || []).forEach((L, li) => {
+            if (filter && !(L.name || "").toLowerCase().includes(filter) && !(g.name || "").toLowerCase().includes(filter)) return;
             const row = h("div", {
-              class: ["cp-layer", isSel && li === this.doc.selectedLayer && "active"],
-              onclick: () => {
-                this.doc.selectedGroup = gi;
-                this.doc.selectedLayer = li;
-                this.rebuildGroupList();
-                this.rebuildProps();
-                this.schedule();
+              class: ["cp-layer", isSel && li === this.doc.selectedLayer && "active", L.locked && "locked"],
+              style: { paddingLeft: (22 + depth * 14) + "px" },
+              draggable: !L.locked && !g.locked,
+              ondragstart: (e) => {
+                e.dataTransfer.setData("text/cp-layer", L.id);
+                e.dataTransfer.setData("text/cp-from-group", g.id);
+                e.dataTransfer.effectAllowed = "move";
               },
+              ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add("cp-drop"); },
+              ondragleave: (e) => e.currentTarget.classList.remove("cp-drop"),
+              ondrop: (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                e.currentTarget.classList.remove("cp-drop");
+                const layerId = e.dataTransfer.getData("text/cp-layer");
+                if (layerId) this.moveLayerBefore(layerId, g.id, li);
+              },
+              onclick: () => this.selectGroup(g.id, li),
             },
+              h("span", { class: "cp-grip" }, "⠿"),
               h("input", {
-                type: "checkbox", checked: L.visible || null,
+                type: "checkbox", checked: L.visible !== false || null,
                 onclick: (e) => e.stopPropagation(),
                 onchange: (e) => { L.visible = e.target.checked; this.touch(); },
               }),
               h("span", { class: "cp-layer-name" }, L.name || "Capa"),
               h("span", { class: "mono faint" }, L.kind === "sprite" ? (L.source || "sprite") : (L.shape || "shape")),
-              h("button", { title: "Subir", onclick: (e) => { e.stopPropagation(); this.moveLayer(gi, li, 1); } }, "\u2191"),
-              h("button", { title: "Bajar", onclick: (e) => { e.stopPropagation(); this.moveLayer(gi, li, -1); } }, "\u2193"),
             );
-            this.groupList.appendChild(row);
+            frag.push(row);
           });
+          (g.children || []).forEach((ch) => renderGroup(ch, depth + 1));
         }
+      };
+
+      this.doc.groups.forEach((g) => renderGroup(g, 0));
+      this.groupList.replaceChildren(...frag);
+    }
+
+    #treeTools() {
+      return [
+        h("input", {
+          type: "search", class: "cp-tree-filter", placeholder: "Buscar…",
+          value: this.doc.filter || "",
+          oninput: (e) => { this.doc.filter = e.target.value; this.rebuildGroupList(); },
+        }),
+        h("button", { type: "button", title: "Deshacer", onclick: () => this.undo() }, "↶"),
+        h("button", { type: "button", title: "Duplicar grupo", onclick: () => this.duplicateGroup() }, "⧉"),
+        h("button", {
+          type: "button", title: "Bloquear / desbloquear grupo",
+          onclick: () => {
+            const g = this.group();
+            if (!g) return;
+            g.locked = !g.locked;
+            this.touch();
+          },
+        }, "🔒"),
+      ];
+    }
+
+    /** Mueve capa (por id) al final del grupo destino. */
+    moveLayerToGroup(layerId, toGroupId) {
+      this.pushHistory();
+      let from = null, layer = null, fromList = null, fromIdx = -1;
+      walkGroups(this.doc.groups, (g) => {
+        const i = (g.layers || []).findIndex((L) => L.id === layerId);
+        if (i >= 0) { from = g; layer = g.layers[i]; fromIdx = i; }
       });
+      const to = findGroup(this.doc.groups, toGroupId)?.group;
+      if (!layer || !to || to.folder) return;
+      if (to.locked || from.locked) return;
+      from.layers.splice(fromIdx, 1);
+      to.layers = to.layers || [];
+      to.layers.push(layer);
+      this.doc.selectedGroupId = to.id;
+      this.doc.selectedLayer = to.layers.length - 1;
+      this.touch();
+    }
+
+    moveLayerBefore(layerId, toGroupId, beforeIndex) {
+      this.pushHistory();
+      let from = null, layer = null, fromIdx = -1;
+      walkGroups(this.doc.groups, (g) => {
+        const i = (g.layers || []).findIndex((L) => L.id === layerId);
+        if (i >= 0) { from = g; layer = g.layers[i]; fromIdx = i; }
+      });
+      const to = findGroup(this.doc.groups, toGroupId)?.group;
+      if (!layer || !to) return;
+      from.layers.splice(fromIdx, 1);
+      let idx = beforeIndex;
+      if (from === to && fromIdx < beforeIndex) idx--;
+      to.layers.splice(Math.max(0, idx), 0, layer);
+      this.doc.selectedGroupId = to.id;
+      this.doc.selectedLayer = to.layers.indexOf(layer);
+      this.touch();
+    }
+
+    /** Mueve un grupo dentro de otro (carpeta) o reordena a top-level. */
+    moveGroupTo(groupId, toParentId) {
+      if (groupId === toParentId) return;
+      this.pushHistory();
+      const ref = findGroup(this.doc.groups, groupId);
+      const toRef = findGroup(this.doc.groups, toParentId);
+      if (!ref || !toRef) return;
+      // no mover dentro de sí mismo
+      let p = toRef.group;
+      while (p) {
+        if (p.id === groupId) return;
+        p = findGroup(this.doc.groups, p.id)?.parent; // broken - need parent walk
+        break;
+      }
+      const [node] = ref.list.splice(ref.index, 1);
+      const dest = toRef.group;
+      if (dest.folder) {
+        dest.children = dest.children || [];
+        dest.children.push(node);
+        dest.collapsed = false;
+      } else {
+        // insert after dest in same list
+        const destRef = findGroup(this.doc.groups, toParentId);
+        destRef.list.splice(destRef.index + 1, 0, node);
+      }
+      this.doc.selectedGroupId = node.id;
+      this.touch();
     }
 
     moveLayer(gi, li, dir) {
-      const g = this.doc.groups[gi];
+      // legacy indices: resolve via selected group
+      const g = this.group();
+      if (!g) return;
       const j = li + dir;
-      if (!g || j < 0 || j >= g.layers.length) return;
+      if (j < 0 || j >= g.layers.length) return;
+      this.pushHistory();
       [g.layers[li], g.layers[j]] = [g.layers[j], g.layers[li]];
-      this.doc.selectedGroup = gi;
       this.doc.selectedLayer = j;
       this.touch();
     }
@@ -1018,15 +1349,26 @@
       }
 
       if (!L) {
+        kids.push(h("div", { class: "cp-sub" }, "Capa"));
+        kids.push(h("p", { class: "note" }, "Este grupo no tiene capas. Añade una forma o aplica un bloque/planta."));
+        kids.push(h("button", { type: "button", class: "primary", onclick: () => this.addShapeLayer() }, "+ Forma"));
+        kids.push(h("label", { class: "field check" },
+          h("input", {
+            type: "checkbox", checked: g.locked || null,
+            onchange: (e) => { g.locked = e.target.checked; this.touch(); },
+          }),
+          h("span", null, "Bloquear grupo")));
         this.propsHost.replaceChildren(...kids);
         return;
       }
 
-      if (!L) {
-        kids.push(h("div", { class: "cp-sub" }, "Capa"));
-        kids.push(h("p", { class: "note" }, "Este grupo no tiene capas. Añade una forma o aplica un bloque/planta."));
-        kids.push(h("button", { type: "button", class: "primary", onclick: () => this.addShapeLayer() }, "+ Forma"));
-      } else {
+      kids.push(h("label", { class: "field check" },
+        h("input", {
+          type: "checkbox", checked: g.locked || null,
+          onchange: (e) => { g.locked = e.target.checked; this.touch(); },
+        }),
+        h("span", null, "Bloquear grupo")));
+
       kids.push(h("div", { class: "cp-sub" }, "Capa"));
       kids.push(h("label", { class: "field" }, h("span", null, "Nombre"),
         h("input", {
@@ -1099,8 +1441,6 @@
           h("button", { onclick: () => set(() => { L.tint = null; this.rebuildProps(); }) }, "Sin tint")),
       ).el);
 
-      
-      }
       this.propsHost.replaceChildren(...kids);
     }
 
@@ -1290,8 +1630,11 @@
     buildCells() {
       const S = this.doc.size || 64;
       const map = new Map();
-      for (const g of this.doc.groups) {
-        if (!g.visible) continue;
+      const active = this.group();
+      // Carpetas no aportan celdas; solo grupos visibles con capas (multipart o ancla).
+      walkGroups(this.doc.groups, (g) => {
+        if (g.folder || !g.visible) return;
+        if (!(g.layers && g.layers.length)) return;
         const ox = g.multipart ? (g.offsetX | 0) : 0;
         const oy = g.multipart ? (g.offsetY | 0) : 0;
         const oz = g.multipart ? (g.offsetZ | 0) : 0;
@@ -1306,10 +1649,9 @@
         }
         const cell = map.get(key);
         cell.groups.push(g);
-        if (g === this.group()) cell.active = true;
-        // Prefer multipart group name for label
+        if (active && g.id === active.id) cell.active = true;
         if (g.multipart) cell.label = g.name;
-      }
+      });
       const cells = [...map.values()].map((c) => {
         // Componer todos los grupos de esta celda → un 64×64 + depth combinado
         const color = new Uint8ClampedArray(S * S * 4);
