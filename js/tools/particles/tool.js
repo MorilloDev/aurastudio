@@ -1,10 +1,11 @@
 "use strict";
 
-// Partículas: tool nativo — lista de efectos en Data/Particles, preview en canvas, inspector.
+// Partículas — tool nativo: Data/Particles, texturas Assets/Effects, curvas y sub-emisores.
 (function (Aura) {
   const { h, clear } = Aura.dom;
-  const { writeHandle, joinPath, baseName } = Aura.fs;
-  const { slider, checkbox, select, section } = Aura.controls;
+  const { writeHandle, joinPath } = Aura.fs;
+  const { slider, checkbox, select } = Aura.controls;
+  const { decodePng } = Aura.png;
   const M = Aura.particlesModel;
 
   function particlesTool() {
@@ -16,15 +17,17 @@
     title = "Partículas";
     project = null;
     docs = [];
+    texturePaths = [];
+    textures = new Map(); // path key -> HTMLImageElement | ImageBitmap-like canvas
     sel = 0;
     query = "";
     playing = true;
     loop = true;
     #raf = 0;
     #particles = [];
-    #t0 = 0;
     #emitAcc = 0;
     #burstOnce = false;
+    #subQueue = []; // { fxId, delay }
 
     mount(host, studio) {
       this.studio = studio;
@@ -60,19 +63,83 @@
 
     async #load() {
       this.docs = this.project ? await M.loadFiles(this.project) : [];
+      this.texturePaths = this.project ? M.listTextures(this.project) : [];
+      this.textures.clear();
+      // preload textures referenced by effects
+      for (const doc of this.docs) {
+        const tex = doc.data.texture || doc.fx?.texture;
+        if (tex) await this.#ensureTexture(tex);
+      }
       this.sel = Math.min(this.sel, Math.max(0, this.docs.length - 1));
-      this.#particles = [];
+      this.#restart();
       this.#renderAll();
       this.studio.setStatus(
         this.docs.length
-          ? `${this.docs.length} efecto(s) en Data/Particles`
-          : "Sin efectos · + Nuevo o abre un proyecto con Data/Particles",
+          ? `${this.docs.length} efecto(s) · ${this.texturePaths.length} texturas Effects`
+          : "Sin efectos en Data/Particles · + Nuevo",
         "ok",
       );
     }
 
-    #current() {
-      return this.docs[this.sel] || null;
+    #current() { return this.docs[this.sel] || null; }
+
+    #fx() {
+      const doc = this.#current();
+      if (!doc) return null;
+      if (!doc.fx) doc.fx = M.compile(doc.data);
+      return doc.fx;
+    }
+
+    #docById(id) {
+      const bare = M.bareId(id);
+      return this.docs.find((d) => M.bareId(d.data.id) === bare || d.name.replace(/\.json$/i, "") === bare);
+    }
+
+    async #ensureTexture(path) {
+      if (!path || !this.project) return null;
+      const key = path.replace(/\\/g, "/").replace(/\.png$/i, "");
+      if (this.textures.has(key)) return this.textures.get(key);
+      // match project entry
+      const lower = key.toLowerCase();
+      const entry = this.project.find((e) => {
+        const p = e.lower.replace(/\\/g, "/");
+        return p.includes(lower) && p.endsWith(".png");
+      });
+      if (!entry) return null;
+      try {
+        const file = await entry.handle.getFile();
+        const buf = await file.arrayBuffer();
+        return this.#pngToImage(key, buf);
+      } catch {
+        return null;
+      }
+    }
+
+    async #pngToImage(key, buf) {
+      try {
+        if (decodePng) {
+          const img = decodePng(buf);
+          const c = document.createElement("canvas");
+          c.width = img.width; c.height = img.height;
+          c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(img.rgba), img.width, img.height), 0, 0);
+          this.textures.set(key, c);
+          return c;
+        }
+      } catch { /* fall through */ }
+      try {
+        const blob = new Blob([buf], { type: "image/png" });
+        const url = URL.createObjectURL(blob);
+        const im = await new Promise((res, rej) => {
+          const i = new Image();
+          i.onload = () => res(i);
+          i.onerror = rej;
+          i.src = url;
+        });
+        this.textures.set(key, im);
+        return im;
+      } catch {
+        return null;
+      }
     }
 
     #buildLayout() {
@@ -80,6 +147,9 @@
       this.listEl = h("div", { class: "fx-list" });
       this.canvas = h("canvas", { class: "fx-canvas" });
       this.inspEl = h("div", { class: "fx-insp" });
+      this.saveBtn = h("button", { class: "primary", disabled: true, onclick: () => this.save() }, "Guardar");
+      this.playBtn = h("button", { onclick: () => { this.playing = !this.playing; this.#syncToolbar(); if (this.playing) this.#startLoop(); } }, "❚❚ Pausa");
+      this.loopBtn = h("button", { class: "on", onclick: () => { this.loop = !this.loop; this.#syncToolbar(); } }, "Loop");
       this.root.append(
         h("div", { class: "fx-side" },
           h("div", { class: "fx-head" },
@@ -95,18 +165,10 @@
         ),
         h("div", { class: "fx-stage" },
           h("div", { class: "fx-toolbar" },
-            h("button", {
-              onclick: () => { this.playing = !this.playing; this.#renderToolbar(); if (this.playing) this.#startLoop(); },
-            }, this.playing ? "❚❚ Pausa" : "▶ Play"),
-            h("button", {
-              onclick: () => { this.loop = !this.loop; this.#renderToolbar(); },
-            }, "Loop"),
+            this.playBtn, this.loopBtn,
             h("button", { onclick: () => this.#restart() }, "Reiniciar"),
             h("span", { style: "flex:1" }),
-            h("button", {
-              class: "primary", disabled: true,
-              onclick: () => this.save(),
-            }, "Guardar"),
+            this.saveBtn,
           ),
           h("div", { class: "fx-view" }, this.canvas),
         ),
@@ -115,22 +177,19 @@
           this.inspEl,
         ),
       );
-      this.saveBtn = this.root.querySelector(".fx-toolbar .primary");
-      this.playBtn = this.root.querySelector(".fx-toolbar button");
-      this.loopBtn = this.root.querySelectorAll(".fx-toolbar button")[1];
       return this.root;
     }
 
-    #renderToolbar() {
-      if (this.playBtn) this.playBtn.textContent = this.playing ? "❚❚ Pausa" : "▶ Play";
-      if (this.loopBtn) this.loopBtn.classList.toggle("on", this.loop);
-      if (this.saveBtn) this.saveBtn.disabled = !this.isDirty();
+    #syncToolbar() {
+      this.playBtn.textContent = this.playing ? "❚❚ Pausa" : "▶ Play";
+      this.loopBtn.classList.toggle("on", this.loop);
+      this.saveBtn.disabled = !this.isDirty();
     }
 
     #renderAll() {
       this.#renderList();
       this.#renderInsp();
-      this.#renderToolbar();
+      this.#syncToolbar();
       this.#resizeCanvas();
     }
 
@@ -141,10 +200,13 @@
         return;
       }
       const q = this.query.trim().toLowerCase();
-      const list = this.docs.filter((d) => !q || d.name.toLowerCase().includes(q) || (d.data.id || "").toLowerCase().includes(q));
+      const list = this.docs.filter((d) => {
+        const id = M.bareId(d.data.id || d.name);
+        return !q || id.includes(q) || d.name.toLowerCase().includes(q);
+      });
       if (!list.length) {
         this.listEl.append(h("div", { class: "empty-state" },
-          this.docs.length ? "Ningún efecto coincide." : "Sin efectos todavía.",
+          this.docs.length ? "Ningún efecto coincide." : "Sin efectos en Data/Particles.",
           h("div", null, h("button", { class: "primary", onclick: () => this.#addEffect() }, "+ Primer efecto")),
         ));
         return;
@@ -152,58 +214,78 @@
       for (const doc of list) {
         const i = this.docs.indexOf(doc);
         this.listEl.append(h("div", {
-          class: ["fx-item", i === this.sel && "on", M.isDirty(doc) && "dirty"],
+          class: ["fx-item", i === this.sel && "on"],
           onclick: () => { this.sel = i; this.#restart(); this.#renderAll(); },
         },
-          h("span", { class: "name" }, doc.data.id || doc.name),
+          h("span", { class: "name" }, M.bareId(doc.data.id || doc.name)),
           M.isDirty(doc) ? h("span", { class: "dot", title: "Sin guardar" }) : null,
         ));
       }
     }
 
-    #edit(label, fn) {
+    #touch(label) {
       const doc = this.#current();
       if (!doc) return;
-      fn(doc.data);
+      doc.fx = M.compile(doc.data);
       this.#renderInsp();
       this.#renderList();
-      this.#renderToolbar();
-      this.studio.setStatus(`${label} · ${doc.data.id}`, "ok");
+      this.#syncToolbar();
+      if (label) this.studio.setStatus(label + " · " + M.bareId(doc.data.id), "ok");
     }
 
-    #num(label, key, min, max, step = 0.05) {
-      const d = this.#current()?.data;
-      if (!d) return null;
-      const v = Array.isArray(d[key]) ? d[key][0] : (d[key] ?? 0);
-      return slider({
-        label, min, max, step, value: Number(v) || 0,
-        onInput: (n) => this.#edit(label, (data) => {
-          if (Array.isArray(data[key])) data[key] = [n, Math.max(n, data[key][1] ?? n)];
-          else data[key] = n;
-        }),
-      }).el;
+    #ensureBehaviors(d) {
+      d.behaviors = d.behaviors || {};
+      return d.behaviors;
     }
 
-    #rangePair(label, key, min, max, step = 0.05) {
+    #ensureEmission(d) {
+      d.emission = d.emission || { type: "burst", count: [8, 12], rate: 30 };
+      return d.emission;
+    }
+
+    #ensureSpawn(d) {
+      d.spawn = d.spawn || { shape: "sphere", radius: 0.35 };
+      return d.spawn;
+    }
+
+    #curveEditor(label, key) {
       const d = this.#current()?.data;
       if (!d) return null;
-      const arr = Array.isArray(d[key]) ? d[key] : [d[key] ?? 0, d[key] ?? 0];
-      return h("div", { class: "fx-pair" },
-        h("div", { class: "fx-pair-label" }, label),
-        slider({
-          label: "min", min, max, step, value: arr[0],
-          onInput: (n) => this.#edit(label, (data) => {
-            data[key] = [n, Math.max(n, (data[key] && data[key][1]) ?? n)];
-          }),
-        }).el,
-        slider({
-          label: "max", min, max, step, value: arr[1],
-          onInput: (n) => this.#edit(label, (data) => {
-            const a = data[key] || [0, 0];
-            data[key] = [Math.min(a[0], n), n];
-          }),
-        }).el,
+      const bh = this.#ensureBehaviors(d);
+      let c = Array.isArray(bh[key]) && bh[key].length >= 4 ? bh[key].slice() : [1, 1, 0.5, 0];
+      const set = (i, v) => {
+        c = c.slice();
+        c[i] = v;
+        bh[key] = c;
+        this.#touch(label);
+      };
+      return h("div", { class: "fx-curve" },
+        h("div", { class: "fx-pair-label" }, label + " (4 claves 0→1)"),
+        h("div", { class: "fx-curve-rows" },
+          [0, 1, 2, 3].map((i) => slider({
+            label: String(i + 1), min: 0, max: 1.5, step: 0.05, value: c[i],
+            onInput: (v) => set(i, v),
+          }).el),
+        ),
+        h("canvas", { class: "fx-curve-preview", width: 200, height: 36, $ref: (el) => this.#drawCurvePreview(el, c) }),
       );
+    }
+
+    #drawCurvePreview(canvas, c) {
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width, ht = canvas.height;
+      ctx.clearRect(0, 0, w, ht);
+      ctx.strokeStyle = "rgba(110,207,154,0.9)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let x = 0; x <= w; x++) {
+        const t = x / w;
+        const y = M.evalCurve(c, t);
+        const py = ht - 4 - Math.max(0, Math.min(1.2, y)) / 1.2 * (ht - 8);
+        if (x === 0) ctx.moveTo(x, py); else ctx.lineTo(x, py);
+      }
+      ctx.stroke();
     }
 
     #renderInsp() {
@@ -218,52 +300,217 @@
         return;
       }
       const d = doc.data;
+      const em = this.#ensureEmission(d);
+      const sp = this.#ensureSpawn(d);
+      const bh = this.#ensureBehaviors(d);
+      d.render = d.render || {};
+
       const field = (label, el) => h("div", { class: "field" }, h("label", null, label), el);
+
+      // Texture options
+      const texOpts = [["", "— ninguna —"], ...this.texturePaths.map((p) => [p, p.split("/").slice(-2).join("/")])];
+      const texVal = (d.texture || "").replace(/\.png$/i, "");
 
       this.inspEl.append(
         h("div", { class: "at-sub" }, "Identidad"),
         field("Id", h("input", {
-          type: "text", value: d.id || "",
-          onchange: (e) => this.#edit("Id", (x) => { x.id = e.target.value.trim() || x.id; }),
+          type: "text", value: M.bareId(d.id),
+          onchange: (e) => {
+            d.id = "aura:" + e.target.value.trim().replace(/^aura:/, "");
+            this.#touch("Id");
+          },
         })),
-        field("Textura", h("input", {
-          type: "text", value: d.texture || "", placeholder: "Assets/Effects/…",
-          onchange: (e) => this.#edit("Textura", (x) => { x.texture = e.target.value.trim(); }),
+        select({
+          label: "Textura",
+          value: texOpts.some(([v]) => v === texVal) ? texVal : "",
+          options: texOpts,
+          onChange: async (v) => {
+            d.texture = v;
+            if (v) await this.#ensureTexture(v);
+            this.#touch("Textura");
+            this.#restart();
+          },
+        }).el,
+        field("O ruta", h("input", {
+          type: "text", value: d.texture || "", placeholder: "Assets/Effects/Smoke/…",
+          onchange: async (e) => {
+            d.texture = e.target.value.trim();
+            if (d.texture) await this.#ensureTexture(d.texture);
+            this.#touch("Textura");
+            this.#restart();
+          },
         })),
+        slider({
+          label: "FPS sheet", min: 1, max: 60, step: 1, value: d.fps ?? 24,
+          onInput: (v) => { d.fps = v; this.#touch("FPS"); },
+        }).el,
+        slider({
+          label: "Frames", min: 1, max: 32, step: 1, value: d.frameCount ?? 1,
+          onInput: (v) => { d.frameCount = v | 0; this.#touch("Frames"); },
+        }).el,
+
         h("div", { class: "at-sub" }, "Emisión"),
         select({
-          label: "Modo", value: d.emission || "burst",
-          options: [["burst", "Ráfaga"], ["rate", "Continua"]],
-          onChange: (v) => this.#edit("Emisión", (x) => { x.emission = v; }),
+          label: "Modo",
+          value: em.type === "continuous" ? "continuous" : em.type === "interval" ? "interval" : "burst",
+          options: [["burst", "Ráfaga"], ["continuous", "Continua"], ["interval", "Intervalo"]],
+          onChange: (v) => { em.type = v; this.#touch("Emisión"); this.#restart(); },
         }).el,
-        this.#rangePair("Burst", "burst", 1, 64, 1),
-        this.#num("Rate", "rate", 1, 200, 1),
-        this.#num("Duración", "duration", -1, 10, 0.1),
-        h("div", { class: "at-sub" }, "Forma"),
+        slider({
+          label: "Burst min", min: 1, max: 64, step: 1,
+          value: Array.isArray(em.count) ? em.count[0] : 8,
+          onInput: (v) => {
+            const mx = Array.isArray(em.count) ? em.count[1] : v;
+            em.count = [v, Math.max(v, mx)];
+            this.#touch("Burst");
+          },
+        }).el,
+        slider({
+          label: "Burst max", min: 1, max: 64, step: 1,
+          value: Array.isArray(em.count) ? em.count[1] : 12,
+          onInput: (v) => {
+            const mn = Array.isArray(em.count) ? em.count[0] : 1;
+            em.count = [Math.min(mn, v), v];
+            this.#touch("Burst");
+          },
+        }).el,
+        slider({
+          label: "Rate", min: 1, max: 200, step: 1, value: em.rate ?? 30,
+          onInput: (v) => { em.rate = v; this.#touch("Rate"); },
+        }).el,
+
+        h("div", { class: "at-sub" }, "Spawn"),
         select({
-          label: "Shape", value: d.shape || "sphere",
-          options: [["point", "Punto"], ["sphere", "Esfera"], ["box", "Caja"], ["cone", "Cono"]],
-          onChange: (v) => this.#edit("Shape", (x) => { x.shape = v; }),
+          label: "Forma",
+          value: sp.shape || "sphere",
+          options: [["point", "Punto"], ["sphere", "Esfera"], ["box", "Caja"], ["cone", "Cono"], ["hemisphere", "Hemisferio"]],
+          onChange: (v) => { sp.shape = v; this.#touch("Forma"); },
         }).el,
-        this.#num("Radio", "radius", 0, 3, 0.05),
+        slider({
+          label: "Radio", min: 0, max: 3, step: 0.05, value: sp.radius ?? 0.35,
+          onInput: (v) => { sp.radius = v; this.#touch("Radio"); },
+        }).el,
+
         h("div", { class: "at-sub" }, "Partícula"),
-        this.#rangePair("Vida (s)", "lifetime", 0.05, 5, 0.05),
-        this.#rangePair("Tamaño ini", "startSize", 0.02, 2, 0.02),
-        this.#rangePair("Tamaño fin", "endSize", 0.02, 2, 0.02),
+        slider({
+          label: "Vida min", min: 0.05, max: 5, step: 0.05,
+          value: Array.isArray(d.lifetime) ? d.lifetime[0] : 0.6,
+          onInput: (v) => {
+            const mx = Array.isArray(d.lifetime) ? d.lifetime[1] : v;
+            d.lifetime = [v, Math.max(v, mx)];
+            this.#touch("Vida");
+          },
+        }).el,
+        slider({
+          label: "Vida max", min: 0.05, max: 5, step: 0.05,
+          value: Array.isArray(d.lifetime) ? d.lifetime[1] : 1.2,
+          onInput: (v) => {
+            const mn = Array.isArray(d.lifetime) ? d.lifetime[0] : 0.05;
+            d.lifetime = [Math.min(mn, v), v];
+            this.#touch("Vida");
+          },
+        }).el,
+        slider({
+          label: "Escala min", min: 0.02, max: 2, step: 0.02,
+          value: Array.isArray(d.scale) ? (Array.isArray(d.scale[0]) ? d.scale[0][0] : d.scale[0]) : 0.2,
+          onInput: (v) => {
+            const mx = Array.isArray(d.scale) ? (Array.isArray(d.scale[0]) ? d.scale[0][1] : d.scale[1]) : v;
+            d.scale = [v, Math.max(v, mx)];
+            this.#touch("Escala");
+          },
+        }).el,
+        slider({
+          label: "Escala max", min: 0.02, max: 2, step: 0.02,
+          value: Array.isArray(d.scale) ? (Array.isArray(d.scale[0]) ? d.scale[0][1] : d.scale[1]) : 0.35,
+          onInput: (v) => {
+            const mn = Array.isArray(d.scale) ? (Array.isArray(d.scale[0]) ? d.scale[0][0] : d.scale[0]) : 0.02;
+            d.scale = [Math.min(mn, v), v];
+            this.#touch("Escala");
+          },
+        }).el,
         slider({
           label: "Gravedad Y", min: -20, max: 5, step: 0.1,
-          value: Array.isArray(d.gravity) ? d.gravity[1] : (d.gravity ?? -2.5),
-          onInput: (n) => this.#edit("Gravedad", (x) => {
-            x.gravity = Array.isArray(x.gravity) ? [x.gravity[0], n, x.gravity[2]] : [0, n, 0];
-          }),
+          value: Array.isArray(bh.gravity) ? bh.gravity[1] : -2.5,
+          onInput: (v) => {
+            bh.gravity = Array.isArray(bh.gravity) ? [bh.gravity[0], v, bh.gravity[2]] : [0, v, 0];
+            this.#touch("Gravedad");
+          },
+        }).el,
+        slider({
+          label: "Drag", min: 0, max: 2, step: 0.02, value: bh.drag ?? 0,
+          onInput: (v) => { bh.drag = v; this.#touch("Drag"); },
         }).el,
         checkbox({
           label: "Alinear a velocidad",
-          value: !!d.alignToVelocity,
-          onChange: (v) => this.#edit("Alinear", (x) => { x.alignToVelocity = v; }),
+          value: !!d.render.alignToVelocity,
+          onChange: (v) => { d.render.alignToVelocity = v; this.#touch("Alinear"); },
         }).el,
+
+        h("div", { class: "at-sub" }, "Curvas (vida 0→1)"),
+        this.#curveEditor("Alpha", "alphaCurve"),
+        this.#curveEditor("Escala", "scaleCurve"),
+
+        h("div", { class: "at-sub" }, "Sub-emisores"),
+        this.#subEmittersSection(d),
+
         h("p", { class: "note" },
-          "Preview simplificado en el studio. El JSON se guarda como el juego lo lee en Data/Particles."),
+          "JSON anidado como el juego (emission / spawn / behaviors / subEmitters). ",
+          "Preview con textura si está en Assets/Effects."),
+      );
+
+      // draw curve previews after mount
+      this.inspEl.querySelectorAll(".fx-curve").forEach((wrap, idx) => {
+        const key = idx === 0 ? "alphaCurve" : "scaleCurve";
+        const c = bh[key] || [1, 1, 0.5, 0];
+        const cv = wrap.querySelector("canvas");
+        if (cv) this.#drawCurvePreview(cv, c);
+      });
+    }
+
+    #subEmittersSection(d) {
+      d.subEmitters = d.subEmitters || [];
+      const effectOpts = [
+        ["", "— efecto —"],
+        ...this.docs.map((doc) => {
+          const id = M.bareId(doc.data.id || doc.name);
+          return [id, id];
+        }),
+      ];
+      const rows = d.subEmitters.map((s, i) => h("div", { class: "fx-sub" },
+        select({
+          label: "Evento",
+          value: s.event || "death",
+          options: [["spawn", "Al nacer"], ["death", "Al morir"], ["collision", "Colisión"]],
+          onChange: (v) => { s.event = v; this.#touch("Sub"); },
+        }).el,
+        select({
+          label: "Efecto",
+          value: M.bareId(s.effect || ""),
+          options: effectOpts,
+          onChange: (v) => { s.effect = v; this.#touch("Sub"); },
+        }).el,
+        slider({
+          label: "Chance", min: 0, max: 1, step: 0.05, value: s.chance ?? 1,
+          onInput: (v) => { s.chance = v; this.#touch("Chance"); },
+        }).el,
+        slider({
+          label: "Count", min: 0, max: 16, step: 1, value: s.count ?? 1,
+          onInput: (v) => { s.count = v | 0; this.#touch("Count"); },
+        }).el,
+        h("button", {
+          class: "ghost",
+          onclick: () => { d.subEmitters.splice(i, 1); this.#touch("Quitar sub"); },
+        }, "Quitar"),
+      ));
+      return h("div", null,
+        ...rows,
+        h("button", {
+          class: "primary",
+          onclick: () => {
+            d.subEmitters.push({ event: "death", effect: "", chance: 1, count: 1 });
+            this.#touch("Sub +");
+          },
+        }, "+ Sub-emisor"),
       );
     }
 
@@ -277,46 +524,42 @@
       const dir = M.particlesDir(this.project, this.docs) || "Assets/Data/Particles";
       const doc = {
         entry: null, path: joinPath(dir, id + ".json"), name: id + ".json",
-        data, baseline: "", isNew: true, error: null,
+        data, baseline: "", isNew: true, error: null, fx: M.compile(data),
       };
       this.docs.push(doc);
       this.sel = this.docs.length - 1;
       this.#restart();
       this.#renderAll();
-      this.studio.setStatus("Efecto nuevo · guarda con Ctrl+S", "ok");
     }
 
     async save() {
       const dirty = this.docs.filter(M.isDirty);
       if (!dirty.length) return;
+      let n = 0;
       for (const doc of dirty) {
         const text = M.serialize(doc.data);
-        if (doc.isNew || !doc.entry) {
-          // New file: need folder handle — write via project helper if available
-          if (!doc.entry?.handle) {
-            this.studio.toast(
-              `«${doc.name}» es nuevo: créalo en ${doc.path} o guarda desde el sistema de archivos del proyecto.`,
-              { kind: "warn" },
-            );
-            // Still mark baseline so UI settles when we can't write yet
-            continue;
-          }
-          await writeHandle(doc.entry.handle, text);
-        } else {
-          await writeHandle(doc.entry.handle, text);
+        if (!doc.entry?.handle) {
+          this.studio.toast(
+            `«${doc.name}» es nuevo: crea el archivo en Data/Particles y vuelve a abrir el proyecto, o guarda los existentes.`,
+            { kind: "warn" },
+          );
+          continue;
         }
+        await writeHandle(doc.entry.handle, text);
         doc.baseline = text;
         doc.isNew = false;
+        doc.fx = M.compile(doc.data);
+        n++;
       }
       this.#renderAll();
-      this.studio.toast(`Guardados ${dirty.length} efecto(s).`, { kind: "ok" });
+      if (n) this.studio.toast(`Guardados ${n} efecto(s).`, { kind: "ok" });
     }
 
     #restart() {
       this.#particles = [];
       this.#emitAcc = 0;
-      this.#t0 = performance.now();
       this.#burstOnce = false;
+      this.#subQueue = [];
     }
 
     #resizeCanvas() {
@@ -343,64 +586,96 @@
         this.#draw();
       };
       this.#raf = requestAnimationFrame(tick);
-      new ResizeObserver(() => this.#resizeCanvas()).observe(this.canvas.parentElement || this.root);
+      if (this.canvas.parentElement) {
+        new ResizeObserver(() => this.#resizeCanvas()).observe(this.canvas.parentElement);
+      }
     }
 
-    #rand(a, b) { return a + Math.random() * (b - a); }
+    #rand(a, b) { return a + Math.random() * ((b ?? a) - a); }
 
-    #spawnOne(d) {
-      const life = Array.isArray(d.lifetime) ? this.#rand(d.lifetime[0], d.lifetime[1]) : (d.lifetime || 1);
-      const ss = Array.isArray(d.startSize) ? this.#rand(d.startSize[0], d.startSize[1]) : 0.2;
-      const es = Array.isArray(d.endSize) ? this.#rand(d.endSize[0], d.endSize[1]) : 0.05;
-      const r = d.radius || 0.2;
+    #spawnFromFx(fx, origin = null) {
+      if (!fx) return;
+      const life = this.#rand(fx.lifetime[0], fx.lifetime[1]);
+      const sx = this.#rand(fx.scaleX[0], fx.scaleX[1]);
+      const sy = this.#rand(fx.scaleY[0], fx.scaleY[1]);
+      const r = fx.radius || 0.2;
       const ang = Math.random() * Math.PI * 2;
-      const rad = Math.random() * r;
-      const vx = Array.isArray(d.velMin) ? this.#rand(d.velMin[0], d.velMax?.[0] ?? d.velMin[0]) : 0;
-      const vy = Array.isArray(d.velMin) ? this.#rand(d.velMin[1], d.velMax?.[1] ?? d.velMin[1]) : 1;
-      const vz = Array.isArray(d.velMin) ? this.#rand(d.velMin[2], d.velMax?.[2] ?? d.velMin[2]) : 0;
+      const rad = fx.shape === "point" ? 0 : Math.random() * r;
+      const ox = origin ? origin.x : 0;
+      const oy = origin ? origin.y : 0;
+      const oz = origin ? origin.z : 0;
       return {
-        x: Math.cos(ang) * rad, y: 0, z: Math.sin(ang) * rad,
-        vx, vy, vz,
+        x: ox + Math.cos(ang) * rad,
+        y: oy,
+        z: oz + Math.sin(ang) * rad,
+        vx: this.#rand(fx.velMin[0], fx.velMax[0]),
+        vy: this.#rand(fx.velMin[1], fx.velMax[1]),
+        vz: this.#rand(fx.velMin[2], fx.velMax[2]),
         age: 0, life,
-        ss, es,
-        sc: d.startColor || [255, 200, 100, 255],
-        ec: d.endColor || [40, 20, 10, 0],
+        baseScale: [sx, sy],
+        tint: (fx.tint || [255, 220, 140, 255]).slice(),
+        fxId: fx.id,
+        tex: fx.texture,
       };
     }
 
-    #step(dt) {
-      const doc = this.#current();
-      if (!doc) return;
-      const d = doc.data;
-      const gy = Array.isArray(d.gravity) ? d.gravity[1] : (typeof d.gravity === "number" ? d.gravity : -2.5);
+    #emitBurst(fx) {
+      const n = Math.floor(this.#rand(fx.burst[0], fx.burst[1]));
+      for (let i = 0; i < n && this.#particles.length < fx.maxParticles; i++) {
+        this.#particles.push(this.#spawnFromFx(fx));
+      }
+      // spawn sub-emitters
+      for (const s of fx.subEmitters || []) {
+        if (s.event !== "spawn") continue;
+        if (Math.random() > (s.chance ?? 1)) continue;
+        const sub = this.#docById(s.effect)?.fx || (this.#docById(s.effect) && M.compile(this.#docById(s.effect).data));
+        if (!sub) continue;
+        for (let i = 0; i < (s.count || 1); i++) this.#particles.push(this.#spawnFromFx(sub));
+      }
+    }
 
-      if (d.emission === "rate") {
-        this.#emitAcc += (d.rate || 10) * dt;
+    #step(dt) {
+      const fx = this.#fx();
+      if (!fx) return;
+
+      if (fx.emission === "continuous") {
+        this.#emitAcc += (fx.rate || 10) * dt;
         while (this.#emitAcc >= 1) {
           this.#emitAcc -= 1;
-          if (this.#particles.length < (d.maxParticles || 256)) this.#particles.push(this.#spawnOne(d));
+          if (this.#particles.length < fx.maxParticles) this.#particles.push(this.#spawnFromFx(fx));
         }
       } else if (!this.#burstOnce) {
-        const [a, b] = Array.isArray(d.burst) ? d.burst : [8, 12];
-        const n = Math.floor(this.#rand(a, b));
-        for (let i = 0; i < n; i++) this.#particles.push(this.#spawnOne(d));
+        this.#emitBurst(fx);
         this.#burstOnce = true;
       } else if (this.loop && this.#particles.length === 0) {
         this.#burstOnce = false;
       }
 
-      const drag = d.drag || 0;
+      const gy = fx.gravity ? fx.gravity[1] : -2.5;
+      const drag = fx.drag || 0;
+      const next = [];
       for (const p of this.#particles) {
         p.age += dt;
+        if (p.age >= p.life) {
+          // death sub-emitters
+          const parent = this.#docById(p.fxId)?.fx || fx;
+          for (const s of parent.subEmitters || []) {
+            if (s.event !== "death") continue;
+            if (Math.random() > (s.chance ?? 1)) continue;
+            const subDoc = this.#docById(s.effect);
+            const sub = subDoc?.fx || (subDoc && M.compile(subDoc.data));
+            if (!sub) continue;
+            for (let i = 0; i < (s.count || 1); i++) next.push(this.#spawnFromFx(sub, p));
+          }
+          continue;
+        }
         p.vy += gy * dt;
-        p.vx *= 1 - drag * dt;
-        p.vy *= 1 - drag * dt;
-        p.vz *= 1 - drag * dt;
-        p.x += p.vx * dt;
-        p.y += p.vy * dt;
-        p.z += p.vz * dt;
+        const damp = Math.max(0, 1 - drag * dt);
+        p.vx *= damp; p.vy *= damp; p.vz *= damp;
+        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+        next.push(p);
       }
-      this.#particles = this.#particles.filter((p) => p.age < p.life);
+      this.#particles = next;
     }
 
     #draw() {
@@ -409,31 +684,43 @@
       const ctx = c.getContext("2d");
       const w = c.width, ht = c.height;
       ctx.clearRect(0, 0, w, ht);
-      // soft ground
       ctx.fillStyle = "rgba(255,255,255,0.03)";
       ctx.fillRect(0, ht * 0.72, w, ht * 0.28);
 
+      const fx = this.#fx();
       const cx = w * 0.5, cy = ht * 0.65;
-      const scale = Math.min(w, ht) * 0.35;
+      const scale = Math.min(w, ht) * 0.38;
 
-      const sorted = this.#particles.slice().sort((a, b) => (a.z - b.z));
+      const sorted = this.#particles.slice().sort((a, b) => a.z - b.z);
       for (const p of sorted) {
         const t = Math.min(1, p.age / p.life);
-        const size = (p.ss * (1 - t) + p.es * t) * scale;
-        const r = (p.sc[0] * (1 - t) + p.ec[0] * t) | 0;
-        const g = (p.sc[1] * (1 - t) + p.ec[1] * t) | 0;
-        const b = (p.sc[2] * (1 - t) + p.ec[2] * t) | 0;
-        const a = ((p.sc[3] * (1 - t) + p.ec[3] * t) / 255) * (1 - t * 0.2);
-        // simple iso-ish projection
+        const parent = this.#docById(p.fxId)?.fx || fx;
+        const scMul = parent?.scaleCurve ? M.evalCurve(parent.scaleCurve, t) : 1;
+        const alMul = parent?.alphaCurve ? M.evalCurve(parent.alphaCurve, t) : (1 - t * 0.15);
+        let col = parent?.colorCurve ? M.evalColorCurve(parent.colorCurve, t) : p.tint;
+        if (!col) col = p.tint;
+        const size = (p.baseScale[0] * scMul) * scale;
         const sx = cx + (p.x - p.z) * scale * 0.7;
         const sy = cy - p.y * scale * 0.7 - (p.x + p.z) * scale * 0.25;
-        ctx.beginPath();
-        ctx.fillStyle = `rgba(${r},${g},${b},${Math.max(0, a)})`;
-        ctx.arc(sx, sy, Math.max(1.2, size * 0.5), 0, Math.PI * 2);
-        ctx.fill();
+        const alpha = Math.max(0, Math.min(1, (col[3] / 255) * alMul));
+
+        const texKey = (p.tex || parent?.texture || "").replace(/\.png$/i, "");
+        const img = texKey && this.textures.get(texKey);
+        if (img) {
+          ctx.save();
+          ctx.globalAlpha = alpha;
+          const iw = size * 1.2;
+          ctx.drawImage(img, sx - iw / 2, sy - iw / 2, iw, iw);
+          ctx.restore();
+        } else {
+          ctx.beginPath();
+          ctx.fillStyle = `rgba(${col[0]|0},${col[1]|0},${col[2]|0},${alpha})`;
+          ctx.arc(sx, sy, Math.max(1.2, size * 0.45), 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
 
-      if (!this.#current()) {
+      if (!fx) {
         ctx.fillStyle = "rgba(163,172,166,0.7)";
         ctx.font = `${13 * (this._dpr || 1)}px system-ui`;
         ctx.textAlign = "center";
