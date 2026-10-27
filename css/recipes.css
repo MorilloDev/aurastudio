@@ -83,3 +83,15 @@
 .bad-text { color: var(--bad); }
 .rc-fields .row { display: flex; gap: 6px; align-items: center; }
 .rc-fields .row button { flex: none; }
+
+.rc-slot.sel {
+  outline: 2px solid var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.rc-item.assign {
+  outline: 1px dashed var(--accent);
+  cursor: copy;
+}
+.rc-item.assign:hover {
+  background: var(--accent-soft);
+}

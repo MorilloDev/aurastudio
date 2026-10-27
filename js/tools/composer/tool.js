@@ -1272,7 +1272,11 @@
         );
       } else if (target.type === "group") {
         const g = findGroup(this.doc.groups, target.id)?.group;
+        const ref = findGroup(this.doc.groups, target.id);
         items.push(
+          { label: "Subir en la lista", disabled: !ref || ref.index <= 0, action: () => this.moveGroupInList(target.id, -1) },
+          { label: "Bajar en la lista", disabled: !ref || ref.index >= ref.list.length - 1, action: () => this.moveGroupInList(target.id, 1) },
+          { sep: true },
           { label: g?.locked ? "Desbloquear" : "Bloquear", action: () => { if (g) { g.locked = !g.locked; this.touch(); } } },
           { label: "Duplicar grupo", action: () => { this.selectGroup(target.id, -1); this.duplicateGroup(); } },
           { sep: true },

@@ -35,7 +35,8 @@
     query = "";
     listQuery = "";
     pickedItem = null;       // item record whose «Usos» show under the browser
-    cauldronSlots = 2;
+    selectedSlot = null;  // { kind:"ing"|"out"|"in"|"in2"|"fuel", cell?:number } casilla activa del editor
+    cauldronSlots = 5;
     history = new History({ limit: 300 });
     #sheets = new Map();
     #sprites = new Map();
@@ -74,10 +75,10 @@
       const [docs, itemDocs] = await Promise.all([M.loadFiles(this.project), T.loadDocs(this.project)]);
       this.docs = docs;
       this.index = M.indexItems(itemDocs);
-      // The cauldron's slots come from its tile ("stationSlots"); the biggest cauldron is what a recipe can count on.
+      // Caldero: hasta 5 casillas (tiers del juego desbloquean recetas de 1..5).
       const cauldrons = itemDocs.filter((d) => d.root && !T.isItemDoc(d)).flatMap((d) => d.root.tiles)
         .filter((t) => t?.stationType === "cauldron" && t.stationSlots > 0).map((t) => t.stationSlots);
-      this.cauldronSlots = Math.max(2, ...cauldrons);
+      this.cauldronSlots = Math.max(5, ...cauldrons, 5);
       this.#sheets.clear();
       this.#sprites.clear();
       this.history.clear();
@@ -296,11 +297,24 @@
     #itemButton(rec) {
       const c = h("canvas", { width: 32, height: 32 });
       this.#paintIcon(c, rec);
-      // A div, not a button: Firefox never starts a drag from a <button>.
-      return h("div", { class: ["rc-item", this.pickedItem === rec && "on"], draggable: true, role: "button", tabindex: 0, title: `${rec.name}  (${rec.id})\nArrástralo a una casilla · doble clic: a la primera casilla libre`,
-        ondragstart: (e) => { e.dataTransfer.setData(ITEM_MIME, rec.id); e.dataTransfer.effectAllowed = "copy"; },
-        onclick: () => { this.pickedItem = rec; this.#renderItems(); this.#renderUses(); },
-        ondblclick: () => this.#dropAnywhere(rec.id) }, c);
+      const hasSlot = this.selectedSlot != null;
+      return h("div", {
+        class: ["rc-item", this.pickedItem === rec && "on", hasSlot && "assign"],
+        role: "button", tabindex: 0,
+        title: hasSlot
+          ? `${rec.name} (${rec.id})\nClic: poner en la casilla seleccionada`
+          : `${rec.name} (${rec.id})\n1) Clic en una casilla de la receta\n2) Clic aquí para asignarlo`,
+        onclick: () => {
+          this.pickedItem = rec;
+          if (this.selectedSlot != null) {
+            this.#placeItemInSelected(rec.id);
+          } else {
+            this.#renderItems();
+            this.#renderUses();
+            this.studio?.setStatus?.("Selecciona una casilla de la receta y vuelve a hacer clic en el item.", "warn");
+          }
+        },
+      }, c);
     }
 
     /** «Usos»: what makes the picked item, what uses it, whether it burns — each a link to that recipe. */
@@ -337,32 +351,130 @@
       this.editorEl.append(station.kind === "furnace" ? this.#furnaceEditor(e.value, station) : this.#craftingEditor(e.value, station));
     }
 
-    /** One slot: icon, quantity badge, its number; a drop target for items and for other slots. */
-    #slot({ key, label, itemKey, qty, onDrop, onSwap, onQty, onClear, marks = [], disabled = false, big = false, title = "" }) {
+    /** One slot: click selects it; then click an item in the browser to fill. Wheel = qty; right-click = clear. */
+    #slot({ key, label, itemKey, qty, onDrop, onSwap, onQty, onClear, marks = [], disabled = false, big = false, title = "", selectKey = null }) {
       const rec = M.resolveItem(this.index, itemKey);
       const c = h("canvas", { width: big ? 48 : 40, height: big ? 48 : 40 });
       if (rec) this.#paintIcon(c, rec);
       const unknown = itemKey && !rec;
-      const badge = itemKey && qty != null ? h("span", { class: "rc-qty", title: "Clic para escribir · rueda: ±1",
+      const selKey = selectKey != null ? selectKey : key;
+      const isSel = this.selectedSlot != null && String(this.selectedSlot) === String(selKey);
+      const badge = itemKey && qty != null ? h("span", { class: "rc-qty", title: "Clic para cantidad · rueda ±1",
         onclick: (ev) => { ev.stopPropagation(); this.#askQty(qty, onQty); } }, "×" + qty) : null;
-      const el = h("div", { class: ["rc-slot", big && "big", itemKey && "full", unknown && "bad", disabled && "off"], draggable: !!itemKey && !!onSwap,
-        title: disabled ? title : (itemKey ? `${rec?.name ?? itemKey} (${itemKey})\n${title}Arrastra a otra casilla para intercambiar · rueda: cantidad · clic derecho: vaciar` : `${title}Suelta aquí un item`),
-        ondragstart: (ev) => { ev.dataTransfer.setData(CELL_MIME, String(key)); ev.dataTransfer.effectAllowed = "move"; },
-        ondragover: (ev) => { if (disabled) return; if ([...ev.dataTransfer.types].some((t) => t === ITEM_MIME || (onSwap && t === CELL_MIME))) { ev.preventDefault(); el.classList.add("hot"); } },
-        ondragleave: () => el.classList.remove("hot"),
-        ondrop: (ev) => {
+      const el = h("div", {
+        class: ["rc-slot", big && "big", itemKey && "full", unknown && "bad", disabled && "off", isSel && "sel"],
+        title: disabled ? title : (itemKey
+          ? `${rec?.name ?? itemKey} (${itemKey})\nClic: seleccionar · luego clic en un item de la lista\nRueda: cantidad · clic derecho: vaciar`
+          : `${title}Clic: seleccionar casilla · luego clic en un item de la lista`),
+        onclick: (ev) => {
+          if (disabled) return;
+          if (ev.target.closest?.(".rc-qty")) return;
+          this.selectedSlot = selKey;
+          this.#renderEditor();
+          this.#renderItems();
+          this.studio?.setStatus?.("Casilla seleccionada · clic en un item de la lista para asignarlo", "ok");
+        },
+        onwheel: (ev) => { if (!itemKey || qty == null || !onQty) return; ev.preventDefault(); onQty(Math.max(1, qty + (ev.deltaY < 0 ? 1 : -1))); },
+        oncontextmenu: (ev) => {
+          ev.preventDefault();
+          if (disabled) return;
+          if (itemKey) onClear?.();
+          else { this.selectedSlot = selKey; this.#renderEditor(); }
+        },
+      }, h("span", { class: "rc-num" }, label), c, unknown ? h("span", { class: "rc-unknown" }, itemKey) : null, badge, ...marks);
+      // Keep drop as secondary (desktop) if handlers exist
+      if (onDrop) {
+        el.addEventListener("dragover", (ev) => {
+          if (disabled) return;
+          if ([...ev.dataTransfer.types].includes(ITEM_MIME)) { ev.preventDefault(); el.classList.add("hot"); }
+        });
+        el.addEventListener("dragleave", () => el.classList.remove("hot"));
+        el.addEventListener("drop", (ev) => {
           el.classList.remove("hot");
           if (disabled) return;
           ev.preventDefault();
-          const item = ev.dataTransfer.getData(ITEM_MIME), cell = ev.dataTransfer.getData(CELL_MIME);
-          if (item) onDrop?.(item);
-          else if (cell !== "" && onSwap) onSwap(cell);
-        },
-        onwheel: (ev) => { if (!itemKey || qty == null || !onQty) return; ev.preventDefault(); onQty(Math.max(1, qty + (ev.deltaY < 0 ? 1 : -1))); },
-        oncontextmenu: (ev) => { ev.preventDefault(); if (itemKey) onClear?.(); },
-      }, h("span", { class: "rc-num" }, label), c, unknown ? h("span", { class: "rc-unknown" }, itemKey) : null, badge, ...marks);
+          const item = ev.dataTransfer.getData(ITEM_MIME);
+          if (item) onDrop(item);
+        });
+      }
       return el;
     }
+
+    /** Place item id into the currently selected slot (or first free ingredient). */
+    #placeItemInSelected(itemId) {
+      if (!itemId) return;
+      const station = this.#station();
+      const doc = this.#docOf(station);
+      if (!doc || station.kind === "fuels") return;
+      const e = doc.entries[this.sel];
+      if (!e) return;
+
+      if (station.kind === "furnace") {
+        const key = this.selectedSlot;
+        if (key === "out" || key === "output") {
+          this.#editRecipe("Resultado", (v) => {
+            v.output = itemId;
+            if (station.inputs > 1) v.outputQty = v.outputQty ?? 1;
+          });
+        } else if (key === "in2" || key === "input2") {
+          this.#editRecipe("Entrada 2", (v) => { v.input2 = itemId; v.input2Qty = v.input2Qty ?? 1; });
+        } else {
+          this.#editRecipe("Entrada", (v) => {
+            v.input = itemId;
+            if (station.inputs > 1) v.inputQty = v.inputQty ?? 1;
+          });
+          this.selectedSlot = "in1";
+        }
+        this.#renderEditor();
+        this.#renderItems();
+        return;
+      }
+
+      const key = this.selectedSlot;
+      if (key === "out" || key === "output") {
+        this.#editRecipe("Resultado", (v) => {
+          v.output = { ...(v.output ?? {}), item: itemId, qty: v.output?.qty ?? 1 };
+        });
+        this.#renderEditor();
+        this.#renderItems();
+        return;
+      }
+      if (key === "in1" || key === "in" || key === "input") {
+        this.#editRecipe("Entrada", (v) => { v.input = itemId; });
+        this.#renderEditor();
+        this.#renderItems();
+        return;
+      }
+
+      if (typeof key === "number" || (typeof key === "string" && /^\d+$/.test(String(key)))) {
+        const cell = Number(key);
+        const N = station.slots;
+        this.#editRecipe("Ingrediente", (v) => {
+          v.ingredients ??= [];
+          const ings = v.ingredients;
+          const fixed = ings.some((g) => Number.isInteger(g.slot));
+          const cells = Array(N).fill(null);
+          if (fixed) ings.forEach((g, i) => {
+            if (Number.isInteger(g.slot) && g.slot < N && cells[g.slot] === null) cells[g.slot] = i;
+          });
+          ings.forEach((g, i) => {
+            if (cells.includes(i)) return;
+            if (fixed && Number.isInteger(g.slot)) return;
+            const free = cells.indexOf(null);
+            if (free >= 0) cells[free] = i;
+          });
+          const i = cells[cell];
+          if (i !== null && i !== undefined) ings[i].item = itemId;
+          else ings.push(fixed ? { item: itemId, qty: 1, slot: cell } : { item: itemId, qty: 1 });
+        });
+        this.#renderEditor();
+        this.#renderItems();
+        return;
+      }
+      this.#dropAnywhere(itemId);
+    }
+
+
 
     async #askQty(qty, onQty) {
       if (!onQty) return;
