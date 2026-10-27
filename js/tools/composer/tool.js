@@ -85,11 +85,8 @@
   }
 
   function defaultDoc() {
-    const g = defaultGroup(0, false);
-    g.name = "Principal";
-    g.layers = [defaultShapeLayer(0)];
     return {
-      size: 64, groups: [g], selectedGroup: 0, selectedLayer: 0,
+      size: 64, groups: [], selectedGroup: -1, selectedLayer: -1,
       ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true },
     };
   }
@@ -139,7 +136,7 @@
         g.layers = c.layers;
         return g;
       });
-      if (!groups.length) return defaultDoc();
+      if (!groups.length) return { size: raw.size || 64, groups: [], selectedGroup: -1, selectedLayer: -1, ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true, ...(raw.ao || {}) } };
       return { size: raw.size || 64, groups, selectedGroup: 0, selectedLayer: 0 };
     }
     return defaultDoc();
@@ -700,33 +697,28 @@
 
     removeSelected() {
       const g = this.group();
-      if (!g) {
-        // Sin selección: no hacer nada
-        return;
-      }
-      // Si hay capa seleccionada, quitar solo esa capa (el grupo puede quedar vacío).
+      if (!g) return;
+
+      // Capa seleccionada → solo esa capa (grupo puede quedar vacío).
       if (g.layers && g.layers.length && this.doc.selectedLayer >= 0 && this.doc.selectedLayer < g.layers.length) {
         g.layers.splice(this.doc.selectedLayer, 1);
-        if (g.layers.length === 0) {
-          this.doc.selectedLayer = -1;
-        } else {
-          this.doc.selectedLayer = Math.min(this.doc.selectedLayer, g.layers.length - 1);
-        }
+        this.doc.selectedLayer = g.layers.length
+          ? Math.min(this.doc.selectedLayer, g.layers.length - 1)
+          : -1;
         this.touch();
         return;
       }
-      // Sin capas (o sin capa seleccionada): borrar el grupo solo si el usuario lo pide con el grupo activo vacío
-      // y hay más de un grupo — o siempre permitir borrar grupo con Quitar si no hay capa.
-      if (this.doc.groups.length <= 1) {
-        // Último grupo: vaciar capas, no borrar el grupo.
-        g.layers = [];
-        this.doc.selectedLayer = -1;
-        this.touch();
-        return;
-      }
+
+      // Sin capa → borrar el grupo. La lista puede quedar vacía.
       this.doc.groups.splice(this.doc.selectedGroup, 1);
-      this.doc.selectedGroup = Math.min(this.doc.selectedGroup, this.doc.groups.length - 1);
-      this.doc.selectedLayer = (this.group()?.layers?.length) ? 0 : -1;
+      if (!this.doc.groups.length) {
+        this.doc.selectedGroup = -1;
+        this.doc.selectedLayer = -1;
+      } else {
+        this.doc.selectedGroup = Math.min(this.doc.selectedGroup, this.doc.groups.length - 1);
+        const ng = this.group();
+        this.doc.selectedLayer = (ng?.layers?.length) ? 0 : -1;
+      }
       this.touch();
     }
 
@@ -862,6 +854,12 @@
     // ── UI lists ────────────────────────────────────────────────────────────
 
     rebuildGroupList() {
+      if (!this.doc.groups.length) {
+        this.groupList.replaceChildren(
+          h("p", { class: "note", style: "padding:8px" },
+            "Sin grupos. Usa + Grupo / + Parte, o aplica un Bloque/Planta."));
+        return;
+      }
       this.groupList.replaceChildren();
       this.doc.groups.forEach((g, gi) => {
         const isSel = gi === this.doc.selectedGroup;

@@ -208,9 +208,10 @@
       this.previewLabel = h("div", { class: "bk-preview-label" });
       this.strip = h("div", { class: "bk-strip" });
       this.varStrip = h("div", { class: "bk-strip bk-varstrip" });
-      // Orientación de caras: junto a Color/Normales/… (barra horizontal, sin scroll extra)
+      // Orientación de caras: al lado de la tira Color/Normales (abajo)
       this.faceRot = {};
-      const faceOrientBar = h("div", { class: "bk-facebar" },
+      this.faceOrientBar = h("div", { class: "bk-facebar" },
+        h("span", { class: "bk-facebar-label" }, "Caras"),
         ...SLOTS.map(([k, t, c]) => {
           const rot = select({
             label: t, value: String(this.slots[k].rot),
@@ -230,15 +231,14 @@
       const stage = h("div", { class: "bk-stage" },
         h("div", { class: "bk-toolbar" },
           this.viewSeg.el,
-          h("span", { class: "bk-tb-sep" }),
-          faceOrientBar,
-          h("span", { class: "bk-tb-sep" }),
           this.facingSeg.el,
           h("span", { class: "grow" }),
           this.contextChk.el,
           this.guideChk.el),
         this.viewEl = h("div", { class: "bk-view" }, this.previewCanvas, this.previewLabel),
-        this.strip,
+        h("div", { class: "bk-bottom-bar" },
+          this.strip,
+          this.faceOrientBar),
         this.varStrip);
 
       this.root = h("div", { class: "bk" }, left, stage, this.#buildPanel());
