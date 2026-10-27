@@ -190,3 +190,12 @@
   .bk-bottom-split { grid-template-columns: 1fr; max-height: none; }
   .bk-maps-panel { border-right: none; border-bottom: 1px solid var(--line); }
 }
+
+
+/* organic blocks */
+.bk-iso .field, .blocks-tool .field {
+  min-height: 34px;
+}
+.blocks-tool button, .bk-panel button {
+  border-radius: 999px;
+}

@@ -1,27 +1,52 @@
 /* The studio frame: header with tool tabs and the project, the tool area, the status bar, and the overlays every tool
    shares (toasts, command palette, dialogs, shortcut help). */
-#app { display: grid; grid-template-rows: 44px 1fr 26px; height: 100vh; }
+#app { display: grid; grid-template-rows: 52px 1fr 30px; height: 100vh; }
 
 .shell-head {
-  display: flex; align-items: center; gap: 10px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 12px; padding: 0 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.03), transparent), var(--panel);
+  border-bottom: 1px solid var(--line);
   min-width: 0;
 }
-.shell-logo { font-weight: 750; letter-spacing: .3px; white-space: nowrap; display: flex; align-items: center; gap: 7px; }
-.shell-logo i { width: 18px; height: 18px; border-radius: 5px; background: conic-gradient(from 210deg, #5fd3b0, #7fb2ff, #c48cff, #5fd3b0); display: inline-block; }
-.shell-tabs { display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.shell-logo {
+  font-weight: 750; letter-spacing: -0.01em; white-space: nowrap;
+  display: flex; align-items: center; gap: 8px; font-size: 14px;
+}
+.shell-logo i {
+  width: 22px; height: 22px; border-radius: 7px;
+  background: conic-gradient(from 200deg, #6ecf9a, #8bb8ff, #c49bff, #6ecf9a);
+  display: inline-block;
+  box-shadow: 0 0 16px rgba(110, 207, 154, 0.3);
+}
+.shell-tabs { display: flex; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .shell-tabs::-webkit-scrollbar { display: none; }
 .shell-tab {
-  position: relative; min-height: 32px; border: 0; background: transparent; color: var(--muted); padding: 0 12px; gap: 7px;
+  position: relative; min-height: 34px; border: 1px solid transparent;
+  background: transparent; color: var(--muted); padding: 0 14px; gap: 7px;
+  border-radius: 999px; font-size: 13px; font-weight: 500;
 }
-.shell-tab:hover:not(:disabled) { background: var(--panel-2); border: 0; color: var(--text); }
-.shell-tab.active { color: var(--text); background: var(--panel-2); }
-.shell-tab.active::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -6px; height: 2px; background: var(--accent); border-radius: 2px; }
+.shell-tab:hover:not(:disabled) {
+  background: var(--panel-2); border-color: var(--line); color: var(--text);
+}
+.shell-tab.active {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-color: rgba(110, 207, 154, 0.28);
+  font-weight: 600;
+}
+.shell-tab.active::after { display: none; }
 .shell-tab .dot { display: none; }
 .shell-tab.dirty .dot { display: inline-block; }
-.shell-tab .legacy { font-size: 9.5px; color: var(--faint); border: 1px solid var(--line); border-radius: 4px; padding: 0 3px; }
+.shell-tab .legacy {
+  font-size: 10px; color: var(--faint);
+  border: 1px solid var(--line); border-radius: 999px; padding: 1px 6px;
+}
 .shell-spacer { flex: 1; }
-.shell-project { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.shell-project .name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.shell-project { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.shell-project .name {
+  max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-size: 13px;
+}
 .shell-project .name b { color: var(--text); font-weight: 600; }
 
 .shell-body { position: relative; min-height: 0; min-width: 0; }
@@ -47,8 +72,8 @@
 .toasts { position: fixed; left: 50%; transform: translateX(-50%); bottom: 38px; align-items: center; display: flex; flex-direction: column; gap: 8px; z-index: 50; pointer-events: none; max-width: min(440px, calc(100vw - 28px)); }
 .toast {
   pointer-events: auto; display: flex; gap: 10px; align-items: flex-start; background: var(--panel-2); border: 1px solid var(--line);
-  border-left: 3px solid var(--info); border-radius: var(--radius); padding: 9px 10px 9px 12px; box-shadow: var(--shadow);
-  animation: toast-in .16s ease-out; line-height: 1.45;
+  border-left: 3px solid var(--info); border-radius: var(--radius); padding: 11px 12px 11px 14px; box-shadow: var(--shadow);
+  animation: toast-in .16s ease-out; line-height: 1.5; font-size: 13px;
 }
 .toast.ok { border-left-color: var(--accent); }
 .toast.warn { border-left-color: var(--warn); }
@@ -92,8 +117,8 @@
 /* Welcome screen shown until a project is open. */
 .welcome { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .welcome .card { width: min(560px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 26px; box-shadow: var(--shadow); }
-.welcome h1 { margin: 0 0 6px; font-size: 20px; }
-.welcome p { color: var(--muted); line-height: 1.6; margin: 0 0 16px; }
+.welcome h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: -0.02em; }
+.welcome p { color: var(--muted); line-height: 1.65; margin: 0 0 18px; font-size: 14px; }
 .welcome .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .welcome .actions button { min-height: 36px; }
 .welcome .tip { margin-top: 18px; font-size: 12px; color: var(--faint); }

@@ -127,3 +127,30 @@
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
 }
 .rc-slots.wrap { max-width: 320px; }
+
+
+/* organic recipes */
+.rc-slot {
+  border-radius: 12px !important;
+  min-width: 48px;
+  min-height: 48px;
+}
+.rc-slot.sel {
+  outline: 2px solid var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+.rc-item {
+  border-radius: 10px !important;
+}
+.rc-machine {
+  border-radius: 16px !important;
+  padding: 14px 16px !important;
+}
+.rc-guide {
+  border-radius: 10px;
+  font-size: 13px;
+  padding: 10px 14px;
+}
+.st, .rc-st {
+  border-radius: 999px !important;
+}
