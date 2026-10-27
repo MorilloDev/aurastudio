@@ -1,0 +1,29 @@
+{
+  "emission": {
+    "type": "burst",
+    "count": [ 12, 18 ]
+  },
+  "spawn": {
+    "shape": "sphere",
+    "radius": 2.0,
+    "velocity": {
+      "min": [ 0, 0, 0 ],
+      "max": [ 0, 0, 0 ]
+    }
+  },
+  "lifetime": [ 1.2, 1.6 ],
+  "scale": [ 0.15, 0.25 ],
+  "render": {
+    "tint": [ 180, 120, 255, 255 ],
+    "lighting": "emissive"
+  },
+  "behaviors": {
+    "custom": "soul_pull_attractor",
+    "alphaCurve": [ 0, 1, 1, 0 ],
+    "colorCurve": {
+      "start": [ 200, 140, 255, 255 ],
+      "mid": [ 255, 200, 255, 240 ],
+      "end": [ 100, 60, 200, 0 ]
+    }
+  }
+}

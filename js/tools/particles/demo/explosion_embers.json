@@ -1,0 +1,30 @@
+{
+  "emission": {
+    "type": "burst",
+    "count": [ 10, 16 ]
+  },
+  "spawn": {
+    "shape": "sphere",
+    "radius": 0.4,
+    "velocity": {
+      "min": [ -2, 2, -2 ],
+      "max": [ 2, 5, 2 ]
+    }
+  },
+  "lifetime": [ 0.8, 1.4 ],
+  "scale": [ 0.75, 0.125 ],
+  "render": {
+    "tint": [ 255, 140, 60, 255 ],
+    "lighting": "emissive"
+  },
+  "behaviors": {
+    "gravity": [ 0, -3, 0 ],
+    "drag": 0.6,
+    "alphaCurve": [ 1, 1, 0.4, 0 ],
+    "colorCurve": {
+      "start": [ 255, 200, 100, 255 ],
+      "mid": [ 255, 100, 40, 220 ],
+      "end": [ 80, 30, 20, 0 ]
+    }
+  }
+}

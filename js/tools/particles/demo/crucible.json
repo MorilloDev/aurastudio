@@ -1,0 +1,35 @@
+[
+  {
+    "id": "alloy_bronze",
+    "input": "copper_ingot",
+    "inputQty": 3,
+    "input2": "tin_ingot",
+    "input2Qty": 1,
+    "output": "bronze_ingot",
+    "outputQty": 4,
+    "craftTime": 10.0,
+    "minTemp": 500
+  },
+  {
+    "id": "alloy_steel",
+    "input": "iron_ingot",
+    "inputQty": 1,
+    "input2": "coal",
+    "input2Qty": 2,
+    "output": "steel_ingot",
+    "outputQty": 1,
+    "craftTime": 14.0,
+    "minTemp": 900
+  },
+  {
+    "id": "alloy_electrum",
+    "input": "gold_ingot",
+    "inputQty": 1,
+    "input2": "silver_ingot",
+    "input2Qty": 1,
+    "output": "electrum_ingot",
+    "outputQty": 2,
+    "craftTime": 10.0,
+    "minTemp": 500
+  }
+]

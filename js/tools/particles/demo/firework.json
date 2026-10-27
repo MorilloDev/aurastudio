@@ -1,0 +1,33 @@
+{
+  "emission": {
+    "type": "burst",
+    "count": [ 1, 1 ]
+  },
+  "spawn": {
+    "velocity": {
+      "min": [ 0, 8, 0 ],
+      "max": [ 0, 10, 0 ]
+    }
+  },
+  "lifetime": [ 0.9, 1.2 ],
+  "scale": [ 0.2, 0.3 ],
+  "render": {
+    "tint": [ 255, 240, 200, 255 ],
+    "lighting": "emissive"
+  },
+  "behaviors": {
+    "gravity": [ 0, -8, 0 ],
+    "alphaCurve": [ 1, 1, 1, 0 ]
+  },
+  "trail": {
+    "effect": "trail_dot",
+    "rate": 25
+  },
+  "subEmitters": [
+    {
+      "event": "death",
+      "effect": "shockwave",
+      "chance": 1.0
+    }
+  ]
+}

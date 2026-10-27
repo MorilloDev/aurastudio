@@ -1,0 +1,49 @@
+{
+  "emission": {
+    "type": "burst",
+    "count": [ 1, 1 ]
+  },
+  "spawn": {
+    "velocity": {
+      "min": [ 0, 0, 0 ],
+      "max": [ 0, 0, 0 ]
+    }
+  },
+  "lifetime": [ 0.5, 0.5 ],
+  "scale": [ 0.1, 0.1 ],
+  "render": {
+    "tint": [ 255, 250, 210, 255 ],
+    "lighting": "emissive"
+  },
+  "behaviors": {
+    "alphaCurve": [ 1, 1, 1, 0.6, 0 ],
+    "scaleCurve": [ 0.5, 1, 1.5, 2, 2.5 ],
+    "colorCurve": {
+      "start": [ 255, 250, 210, 255 ],
+      "mid": [ 255, 120, 30, 250 ],
+      "end": [ 40, 25, 20, 0 ]
+    }
+  },
+  "subEmitters": [
+    {
+      "event": "death",
+      "effect": "explosion_shockwave",
+      "chance": 1.0
+    },
+    {
+      "event": "death",
+      "effect": "explosion_sparks",
+      "chance": 1.0
+    },
+    {
+      "event": "death",
+      "effect": "smoke_explosion",
+      "chance": 1.0
+    },
+    {
+      "event": "death",
+      "effect": "explosion_embers",
+      "chance": 0.9
+    }
+  ]
+}

@@ -1,0 +1,122 @@
+[
+  {
+    "item": "plant_fiber",
+    "burnTime": 3,
+    "tempBoost": 30
+  },
+  {
+    "item": "oakleaves",
+    "burnTime": 2,
+    "tempBoost": 20
+  },
+  {
+    "item": "stick",
+    "burnTime": 5,
+    "tempBoost": 50
+  },
+
+  {
+    "item": "oak_log",
+    "burnTime": 20,
+    "tempBoost": 150
+  },
+  {
+    "item": "birch_log",
+    "burnTime": 20,
+    "tempBoost": 150
+  },
+  {
+    "item": "pine_log",
+    "burnTime": 20,
+    "tempBoost": 150
+  },
+
+  {
+    "item": "oak_planks",
+    "burnTime": 15,
+    "tempBoost": 120
+  },
+  {
+    "item": "oak_stairs",
+    "burnTime": 15,
+    "tempBoost": 120
+  },
+  {
+    "item": "oak_slab",
+    "burnTime": 7.5,
+    "tempBoost": 120
+  },
+  {
+    "item": "oak_fence",
+    "burnTime": 15,
+    "tempBoost": 120
+  },
+  {
+    "item": "oak_ladder",
+    "burnTime": 15,
+    "tempBoost": 120
+  },
+
+  {
+    "item": "birch_planks",
+    "burnTime": 15,
+    "tempBoost": 120
+  },
+  {
+    "item": "birch_stairs",
+    "burnTime": 15,
+    "tempBoost": 120
+  },
+  {
+    "item": "birch_slab",
+    "burnTime": 7.5,
+    "tempBoost": 120
+  },
+  {
+    "item": "birch_fence",
+    "burnTime": 15,
+    "tempBoost": 120
+  },
+  {
+    "item": "birch_ladder",
+    "burnTime": 15,
+    "tempBoost": 120
+  },
+
+  {
+    "item": "pine_planks",
+    "burnTime": 15,
+    "tempBoost": 120
+  },
+  {
+    "item": "pine_stairs",
+    "burnTime": 15,
+    "tempBoost": 120
+  },
+  {
+    "item": "pine_slab",
+    "burnTime": 7.5,
+    "tempBoost": 120
+  },
+  {
+    "item": "pine_fence",
+    "burnTime": 15,
+    "tempBoost": 120
+  },
+  {
+    "item": "pine_ladder",
+    "burnTime": 15,
+    "tempBoost": 120
+  },
+
+  {
+    "item": "charcoal",
+    "burnTime": 60,
+    "tempBoost": 400
+  },
+  {
+    "item": "coal",
+    "burnTime": 90,
+    "tempBoost": 600
+  }
+]

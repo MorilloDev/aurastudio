@@ -1,0 +1,25 @@
+{
+  "emission": {
+    "type": "burst",
+    "count": [ 24, 36 ]
+  },
+  "spawn": {
+    "shape": "ring",
+    "radius": 1.2,
+    "innerRadius": 1.0,
+    "velocity": {
+      "min": [ -3, 0.5, -3 ],
+      "max": [ 3, 1.5, 3 ]
+    }
+  },
+  "lifetime": [ 0.4, 0.7 ],
+  "scale": [ 0.15, 0.25 ],
+  "render": {
+    "tint": [ 255, 200, 100, 255 ],
+    "lighting": "emissive"
+  },
+  "behaviors": {
+    "drag": 0.4,
+    "alphaCurve": [ 0, 1, 0.6, 0 ]
+  }
+}

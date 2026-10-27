@@ -1,0 +1,32 @@
+{
+  "emission": {
+    "type": "continuous",
+    "rate": 20,
+    "duration": -1
+  },
+  "spawn": {
+    "shape": "cone",
+    "direction": [ 0, 1, 0 ],
+    "angle": 25,
+    "radius": 0.1,
+    "velocity": {
+      "min": [ 0, 3, 0 ],
+      "max": [ 0, 5, 0 ]
+    }
+  },
+  "lifetime": [ 1.0, 1.6 ],
+  "scale": [ 0.15, 0.25 ],
+  "render": {
+    "tint": [ 180, 220, 255, 220 ]
+  },
+  "behaviors": {
+    "gravity": [ 0, -9.8, 0 ],
+    "drag": 0.9,
+    "alphaCurve": [ 0, 1, 1, 0 ],
+    "collision": {
+      "mode": "bounce",
+      "bounciness": 0.4,
+      "friction": 0.3
+    }
+  }
+}

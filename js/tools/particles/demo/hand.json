@@ -1,0 +1,261 @@
+[
+  // Weapons
+  {
+    "id": "crude_sword",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "rock",
+        "qty": 2,
+        "slot": 0
+      },
+      {
+        "item": "rope",
+        "qty": 2,
+        "slot": 1
+      },
+      {
+        "item": "stick",
+        "qty": 2,
+        "slot": 2
+      }
+    ],
+    "output": {
+      "item": "crude_sword",
+      "qty": 1
+    }
+  },
+
+  // Tools
+  {
+    "id": "crude_pickaxe",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "rock",
+        "qty": 2,
+        "slot": 0
+      },
+      {
+        "item": "rope",
+        "qty": 2,
+        "slot": 1
+      },
+      {
+        "item": "stick",
+        "qty": 1,
+        "slot": 2
+      }
+    ],
+    "output": {
+      "item": "crude_pickaxe",
+      "qty": 1
+    }
+  },
+  {
+    "id": "crude_axe",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "rock",
+        "qty": 1,
+        "slot": 0
+      },
+      {
+        "item": "rope",
+        "qty": 2,
+        "slot": 1
+      },
+      {
+        "item": "stick",
+        "qty": 1,
+        "slot": 2
+      }
+    ],
+    "output": {
+      "item": "crude_axe",
+      "qty": 1
+    }
+  },
+  {
+    "id": "crude_shovel",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "rock",
+        "qty": 1,
+        "slot": 0
+      },
+      {
+        "item": "rope",
+        "qty": 1,
+        "slot": 1
+      },
+      {
+        "item": "stick",
+        "qty": 2,
+        "slot": 2
+      }
+    ],
+    "output": {
+      "item": "crude_shovel",
+      "qty": 1
+    }
+  },
+  {
+    "id": "crude_hammer",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "rock",
+        "qty": 3,
+        "slot": 0
+      },
+      {
+        "item": "rope",
+        "qty": 1,
+        "slot": 1
+      },
+      {
+        "item": "stick",
+        "qty": 2,
+        "slot": 2
+      }
+    ],
+    "output": {
+      "item": "crude_hammer",
+      "qty": 1
+    }
+  },
+  {
+    "id": "crude_hoe",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "rock",
+        "qty": 1,
+        "slot": 0
+      },
+      {
+        "item": "rope",
+        "qty": 2,
+        "slot": 1
+      },
+      {
+        "item": "stick",
+        "qty": 2,
+        "slot": 2
+      }
+    ],
+    "output": {
+      "item": "crude_hoe",
+      "qty": 1
+    }
+  },
+
+  // Tables
+  {
+    "id": "crude_workbench",
+    "mode": "Give",
+    "craftTime": 5.0,
+    "ingredients": [
+      {
+        "item": "oak_log",
+        "qty": 8,
+        "slot": 0
+      },
+      {
+        "item": "rope",
+        "qty": 16,
+        "slot": 1
+      },
+      {
+        "item": "stone",
+        "qty": 2,
+        "slot": 2
+      }
+    ],
+    "output": {
+      "item": "crude_workbench",
+      "qty": 1
+    }
+  },
+
+  // Lighting & Heat — the torch recipe returns once a torch item exists.
+  {
+    "id": "campfire",
+    "mode": "Give",
+    "craftTime": 4.0,
+    "ingredients": [
+      {
+        "item": "stone",
+        "qty": 4,
+        "slot": 0
+      },
+      {
+        "item": "oak_log",
+        "qty": 3,
+        "slot": 1
+      }
+    ],
+    "output": {
+      "item": "campfire",
+      "qty": 1
+    }
+  },
+
+  // Items
+  {
+    "id": "rope",
+    "mode": "Give",
+    "craftTime": 2.0,
+    "ingredients": [
+      {
+        "item": "plant_fiber",
+        "qty": 1,
+        "slot": 0
+      },
+      {
+        "item": "plant_fiber",
+        "qty": 1,
+        "slot": 1
+      },
+      {
+        "item": "plant_fiber",
+        "qty": 1,
+        "slot": 2
+      }
+    ],
+    "output": {
+      "item": "rope",
+      "qty": 2
+    }
+  },
+  {
+    "id": "stick",
+    "mode": "Give",
+    "craftTime": 1.0,
+    "ingredients": [
+      {
+        "item": "branch",
+        "qty": 1,
+        "slot": 0
+      },
+      {
+        "item": "branch",
+        "qty": 1,
+        "slot": 1
+      }
+    ],
+    "output": {
+      "item": "stick",
+      "qty": 2
+    }
+  }
+]

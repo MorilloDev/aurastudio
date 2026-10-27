@@ -1,0 +1,30 @@
+{
+  "emission": {
+    "type": "burst",
+    "count": [ 1, 2 ]
+  },
+  "spawn": {
+    "shape": "sphere",
+    "radius": 0.15,
+    "velocity": {
+      "min": [ -0.4, -0.5, -0.4 ],
+      "max": [ 0.4, 0, 0.4 ]
+    }
+  },
+  "lifetime": [ 0.8, 1.2 ],
+  "angularVelocity": [ -4, 4 ],
+  "scale": [ 0.08, 0.15 ],
+  "render": {
+    "tint": [ 120, 110, 100, 255 ]
+  },
+  "behaviors": {
+    "gravity": [ 0, -15, 0 ],
+    "drag": 0.98,
+    "alphaCurve": [ 1, 1, 1, 0 ],
+    "collision": {
+      "mode": "bounce",
+      "bounciness": 0.3,
+      "friction": 0.6
+    }
+  }
+}

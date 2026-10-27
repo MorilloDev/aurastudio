@@ -1,0 +1,59 @@
+[
+  {
+    "id": "craft_paper",
+    "mode": "Give",
+    "craftTime": 1.0,
+    "ingredients": [
+      {
+        "item": "plant_fiber",
+        "qty": 3
+      }
+    ],
+    "output": {
+      "item": "paper",
+      "qty": 1
+    }
+  },
+  {
+    "id": "craft_magic_paper",
+    "mode": "Give",
+    "craftTime": 2.0,
+    "ingredients": [
+      {
+        "item": "paper",
+        "qty": 1
+      },
+      {
+        "item": "aura_crystal",
+        "qty": 1
+      }
+    ],
+    "output": {
+      "item": "magic_paper",
+      "qty": 1
+    }
+  },
+  {
+    "id": "craft_rune_incandescence",
+    "mode": "Give",
+    "craftTime": 2.0,
+    "ingredients": [
+      {
+        "item": "rock",
+        "qty": 1
+      },
+      {
+        "item": "aura_crystal",
+        "qty": 1
+      },
+      {
+        "item": "crimson_luminite",
+        "qty": 1
+      }
+    ],
+    "output": {
+      "item": "incandescence",
+      "qty": 1
+    }
+  }
+]

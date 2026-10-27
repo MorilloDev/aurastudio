@@ -1,0 +1,24 @@
+{
+  "emission": {
+    "type": "burst",
+    "count": [ 5, 8 ]
+  },
+  "spawn": {
+    "shape": "sphere",
+    "radius": 0.15,
+    "velocity": {
+      "min": [ -1.5, 1, -1.5 ],
+      "max": [ 1.5, 2.5, 1.5 ]
+    }
+  },
+  "lifetime": [ 0.3, 0.5 ],
+  "scale": [ 0.1, 0.2 ],
+  "render": {
+    "tint": [ 200, 225, 245, 220 ]
+  },
+  "behaviors": {
+    "gravity": [ 0, -10, 0 ],
+    "drag": 0.75,
+    "alphaCurve": [ 0.8, 0.9, 0.4, 0 ]
+  }
+}

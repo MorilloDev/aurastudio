@@ -1,0 +1,29 @@
+{
+  "texture": "Assets/Effects/Smoke/Smoke_3",
+  "emission": {
+    "type": "continuous",
+    "rate": 28,
+    "duration": -1
+  },
+  "lifetime": [ 0.75, 1 ],
+  "scale": [ 0.1, 0.2 ],
+  "render": {
+    "tint": [ 255, 150, 60, 255 ],
+    "lighting": "emissive"
+  },
+  "behaviors": {
+    "drag": 0.3,
+    "collision": {
+      "mode": "bounce",
+      "bounciness": 0.0,
+      "friction": 0.9
+    },
+    "alphaCurve": [ 1, 0.75, 0.25, 0.05 ],
+    "scaleCurve": [ 0.5, 0.75, 1, 1.5 ],
+    "colorCurve": {
+      "start": [ 191, 246, 255, 200 ],
+      "mid": [ 255, 90, 0, 220 ],
+      "end": [ 255, 232, 8, 150 ]
+    }
+  }
+}

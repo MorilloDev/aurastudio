@@ -1,0 +1,27 @@
+{
+  "emission": {
+    "type": "burst",
+    "count": [ 1, 5 ]
+  },
+  "spawn": {
+    "shape": "hemisphere",
+    "radius": 2,
+    "innerRadius": 1.6,
+    "velocity": {
+      "min": [ -4, 0.3, -4 ],
+      "max": [ 4, 0.6, 4 ]
+    }
+  },
+  "lifetime": [ 0.35, 0.35 ],
+  "scale": [ 0.1, 0.15 ],
+  "render": {
+    "tint": [ 255, 210, 140, 220 ],
+    "lighting": "emissive"
+  },
+  "behaviors": {
+    "drag": 0.2,
+    "alphaCurve": [ 0.8, 0.6, 0.2, 0 ],
+    "scaleCurve": [ 0.5, 1, 1.5, 2 ]
+  },
+  "texture": "Assets/Effects/Smoke/Smoke_1"
+}

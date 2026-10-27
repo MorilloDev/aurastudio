@@ -1,0 +1,228 @@
+[
+  {
+    "id": "chinola_sprint_tart",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "chinola",
+        "qty": 2
+      },
+      {
+        "item": "sea_grape",
+        "qty": 1
+      }
+    ],
+    "output": {
+      "item": "chinola_sprint_tart",
+      "qty": 1
+    }
+  },
+  {
+    "id": "mamey_regeneration_custard",
+    "mode": "Give",
+    "craftTime": 5.0,
+    "ingredients": [
+      {
+        "item": "mamey_fruit",
+        "qty": 3
+      }
+    ],
+    "output": {
+      "item": "mamey_regeneration_custard",
+      "qty": 1
+    }
+  },
+  {
+    "id": "travelers_casabe",
+    "mode": "Give",
+    "craftTime": 2.0,
+    "ingredients": [
+      {
+        "item": "casabe_bread",
+        "qty": 2
+      },
+      {
+        "item": "wild_yautia",
+        "qty": 1
+      }
+    ],
+    "output": {
+      "item": "travelers_casabe",
+      "qty": 1
+    }
+  },
+  {
+    "id": "cohoba_draught",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "cohoba_petals",
+        "qty": 3
+      }
+    ],
+    "output": {
+      "item": "cohoba_draught",
+      "qty": 1
+    }
+  },
+  {
+    "id": "twin_spirit_elixir",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "cohoba_petals",
+        "qty": 1
+      },
+      {
+        "item": "wild_guava",
+        "qty": 1
+      }
+    ],
+    "output": {
+      "item": "twin_spirit_elixir",
+      "qty": 1
+    }
+  },
+  {
+    "id": "aloe_wrapped_casabe",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "healing_aloe",
+        "qty": 3
+      },
+      {
+        "item": "travelers_casabe",
+        "qty": 2
+      }
+    ],
+    "output": {
+      "item": "aloe_wrapped_casabe",
+      "qty": 1
+    }
+  },
+  {
+    "id": "reef_fishermans_catch",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "reef_fish",
+        "qty": 3
+      }
+    ],
+    "output": {
+      "item": "reef_fishermans_catch",
+      "qty": 1
+    }
+  },
+  {
+    "id": "firebush_endurance_cake",
+    "mode": "Give",
+    "craftTime": 4.0,
+    "ingredients": [
+      {
+        "item": "firebush_pepper",
+        "qty": 3
+      }
+    ],
+    "output": {
+      "item": "firebush_endurance_cake",
+      "qty": 1
+    }
+  },
+  {
+    "id": "chinola_bolt_fruit",
+    "mode": "Give",
+    "craftTime": 2.0,
+    "ingredients": [
+      {
+        "item": "chinola",
+        "qty": 3
+      }
+    ],
+    "output": {
+      "item": "chinola_bolt_fruit",
+      "qty": 1
+    }
+  },
+  {
+    "id": "pure_aloe_draught",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "healing_aloe",
+        "qty": 4
+      }
+    ],
+    "output": {
+      "item": "pure_aloe_draught",
+      "qty": 1
+    }
+  },
+  {
+    "id": "pure_guava_draught",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "wild_guava",
+        "qty": 4
+      }
+    ],
+    "output": {
+      "item": "pure_guava_draught",
+      "qty": 1
+    }
+  },
+  {
+    "id": "pure_chinola_draught",
+    "mode": "Give",
+    "craftTime": 3.0,
+    "ingredients": [
+      {
+        "item": "chinola",
+        "qty": 4
+      }
+    ],
+    "output": {
+      "item": "pure_chinola_draught",
+      "qty": 1
+    }
+  },
+  {
+    "id": "cook_meat",
+    "mode": "Give",
+    "craftTime": 5.0,
+    "ingredients": [
+      {
+        "item": "raw_meat",
+        "qty": 1
+      }
+    ],
+    "output": {
+      "item": "cooked_meat",
+      "qty": 1
+    }
+  },
+  {
+    "id": "cook_fish",
+    "mode": "Give",
+    "craftTime": 4.0,
+    "ingredients": [
+      {
+        "item": "raw_fish",
+        "qty": 1
+      }
+    ],
+    "output": {
+      "item": "cooked_fish",
+      "qty": 1
+    }
+  }
+]

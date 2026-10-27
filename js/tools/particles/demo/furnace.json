@@ -1,0 +1,74 @@
+[
+  {
+    "id": "smelt_copper",
+    "input": "copper_ore",
+    "output": "copper_ingot",
+    "craftTime": 8.0,
+    "minTemp": 400
+  },
+  {
+    "id": "smelt_tin",
+    "input": "tin_ore",
+    "output": "tin_ingot",
+    "craftTime": 8.0,
+    "minTemp": 400
+  },
+  {
+    "id": "smelt_iron",
+    "input": "iron_ore",
+    "output": "iron_ingot",
+    "craftTime": 12.0,
+    "minTemp": 800
+  },
+  {
+    "id": "smelt_gold",
+    "input": "gold_ore",
+    "output": "gold_ingot",
+    "craftTime": 10.0,
+    "minTemp": 600
+  },
+  {
+    "id": "smelt_silver",
+    "input": "silver_ore",
+    "output": "silver_ingot",
+    "craftTime": 10.0,
+    "minTemp": 500
+  },
+
+  {
+    "id": "burn_wood",
+    "input": "oak_log",
+    "output": "charcoal",
+    "craftTime": 15.0,
+    "minTemp": 300
+  },
+  {
+    "id": "burn_wood_2",
+    "input": "birch_log",
+    "output": "charcoal",
+    "craftTime": 15.0,
+    "minTemp": 300
+  },
+  {
+    "id": "burn_wood_3",
+    "input": "pine_log",
+    "output": "charcoal",
+    "craftTime": 15.0,
+    "minTemp": 300
+  },
+
+  {
+    "id": "fire_clay",
+    "input": "clay",
+    "output": "fired_clay",
+    "craftTime": 10.0,
+    "minTemp": 400
+  },
+  {
+    "id": "glass",
+    "input": "sand",
+    "output": "glass",
+    "craftTime": 10.0,
+    "minTemp": 400
+  }
+]
