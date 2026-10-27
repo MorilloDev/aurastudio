@@ -49,19 +49,9 @@
               onclick: () => this.applyGenerator(),
             }, "Aplicar al Composer"))));
 
+      // Bloque/Planta solo en la columna izquierda del Composer (evitar duplicados arriba).
       this.hubBar = h("div", { class: "cr-hub-bar" },
-        h("button", {
-          type: "button", class: "cr-gen-btn",
-          title: "Abrir generador de bloques",
-          onclick: () => this.openGenerator("blocks"),
-        }, "▣ Bloque…"),
-        h("button", {
-          type: "button", class: "cr-gen-btn",
-          title: "Abrir generador de plantas / follaje",
-          onclick: () => this.openGenerator("plants"),
-        }, "🌿 Planta…"),
-        h("span", { class: "grow" }),
-        h("span", { class: "hint" }, "Composer · genera en overlay → Aplicar → capas / multipart"));
+        h("span", { class: "hint" }, "Composer · Bloque/Planta a la izquierda → Aplicar → capas"));
 
       host.appendChild(h("div", { class: "cr cr-hub" },
         this.hubBar,

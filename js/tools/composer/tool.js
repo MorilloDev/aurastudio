@@ -373,6 +373,9 @@
 
       const toolbar = h("div", { class: "cp-toolbar" },
         h("div", { class: "cp-tool-group" },
+          h("button", { title: "Grupo organización", onclick: () => this.addGroup(false) }, "+ Grupo"),
+          h("button", { class: "primary", title: "Celda multipart", onclick: () => this.addGroup(true) }, "+ Parte")),
+        h("div", { class: "cp-tool-group" },
           h("button", { title: "Ctrl+C", onclick: () => this.copyLayer() }, "Copiar"),
           h("button", { title: "Ctrl+X", onclick: () => this.cutLayer() }, "Cortar"),
           h("button", { title: "Ctrl+V", onclick: () => this.pasteLayer() }, "Pegar"),
@@ -403,7 +406,15 @@
         h("aside", { class: "cp-left" },
           h("div", { class: "cp-side-head" },
             h("b", null, "Grupos / Partes"),
-            h("span", { class: "hint" }, "MP = celda")),
+            h("span", { class: "grow" }),
+            h("button", {
+              type: "button", class: "cp-mini-btn", title: "Grupo de organización",
+              onclick: () => this.addGroup(false),
+            }, "+ Grupo"),
+            h("button", {
+              type: "button", class: "cp-mini-btn primary", title: "Nueva celda multipart",
+              onclick: () => this.addGroup(true),
+            }, "+ Parte")),
           this.groupList,
           h("div", { class: "cp-gen-block" },
             h("div", { class: "cp-side-head" }, h("b", null, "Generar")),
@@ -721,28 +732,24 @@
 
 
     pushResult(result, meta = {}) {
-      // Planta multipart: result.parts = [abajo…arriba], una celda por parte.
+      // Planta multipart: result.parts = [abajo…arriba]
       const parts = (result?.parts && result.parts.length) ? result.parts : null;
       if (parts && parts.length > 1) {
         const baseName = meta.name || meta.source || "planta";
         const size = result.size || parts[0].size || 64;
         this.doc.size = Math.max(this.doc.size || 64, size);
-        // Cada parte → grupo multipart con offsetY = índice (sistema de plantas del juego).
         for (let k = 0; k < parts.length; k++) {
           const part = parts[k];
           if (!part?.color) continue;
           const g = defaultGroup(this.doc.groups.length, true);
           g.name = baseName + " p" + (k + 1);
-          g.offsetX = 0;
-          g.offsetY = k;
-          g.offsetZ = 0;
+          g.offsetX = 0; g.offsetY = k; g.offsetZ = 0;
           g.multipart = true;
           const layer = spriteLayerFromResult(part, {
             name: baseName + " p" + (k + 1),
             source: meta.source || "planta",
           });
           if (part.depth) layer.depth = new Uint8ClampedArray(part.depth);
-          // Plantas: sin AO de generador; el Composer puede ocluir entre celdas si el usuario quiere.
           g.layers = [layer];
           this.doc.groups.push(g);
         }
@@ -767,14 +774,33 @@
         this.addGroup(false);
         g = this.group();
       }
+      if (!g) return;
+
       const layer = spriteLayerFromResult(single, meta);
       if (single.depth) layer.depth = new Uint8ClampedArray(single.depth);
-      g.layers.push(layer);
-      this.doc.selectedLayer = g.layers.length - 1;
-      if (single.size) this.doc.size = Math.max(this.doc.size, single.size);
+      if (single.size) this.doc.size = Math.max(this.doc.size || 64, single.size);
+
+      // Si hay capa seleccionada → reemplazar su contenido (mismo slot).
+      // Si no hay capa → crear una nueva en el grupo.
+      const L = this.layer();
+      if (L) {
+        L.kind = "sprite";
+        L.name = layer.name || L.name;
+        L.color = layer.color;
+        L.normal = layer.normal;
+        L.depth = layer.depth || null;
+        L.size = layer.size;
+        L.source = layer.source;
+        L.shape = null;
+        // mantener shift/blend/opacity/tint del usuario
+      } else {
+        g.layers.push(layer);
+        this.doc.selectedLayer = g.layers.length - 1;
+      }
       this.dirty = true;
       this.touch();
     }
+
 
     drainQueue() {
       try {

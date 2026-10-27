@@ -181,7 +181,6 @@
         onchange: () => { this.cellSize = Math.max(0, Number(this.cellInput.value) || 0); this.#save(); this.#drawPicker(); this.#schedule(); } });
       // One row per face, so each face's texture is turned on its own; «Cara a asignar» only decides where a click goes.
       this.faceRot = {};
-      // Orientación de caras se monta en el panel derecho (más espacio en el picker).
       this.pickerCanvas = h("canvas", { class: "bk-picker", onclick: (e) => this.#pickCell(e) });
       this.slotInfo = h("div", { class: "bk-slotinfo" });
       const left = h("div", { class: "bk-list" },
@@ -209,8 +208,35 @@
       this.previewLabel = h("div", { class: "bk-preview-label" });
       this.strip = h("div", { class: "bk-strip" });
       this.varStrip = h("div", { class: "bk-strip bk-varstrip" });
+      // Orientación de caras: junto a Color/Normales/… (barra horizontal, sin scroll extra)
+      this.faceRot = {};
+      const faceOrientBar = h("div", { class: "bk-facebar" },
+        ...SLOTS.map(([k, t, c]) => {
+          const rot = select({
+            label: t, value: String(this.slots[k].rot),
+            options: [["0", "0°"], ["90", "90°"], ["180", "180°"], ["270", "270°"]],
+            title: "Orientación textura " + t,
+            onChange: (v) => { this.slots[k].rot = Number(v); this.#schedule(); },
+          });
+          const flip = checkbox({
+            label: "↔", value: this.slots[k].flip,
+            title: "Espejo " + t,
+            onChange: (v) => { this.slots[k].flip = v; this.#schedule(); },
+          });
+          this.faceRot[k] = { rot, flip };
+          return h("div", { class: "bk-facechip", style: { borderColor: c } }, rot.el, flip.el);
+        }));
+
       const stage = h("div", { class: "bk-stage" },
-        h("div", { class: "bk-toolbar" }, this.viewSeg.el, this.facingSeg.el, h("span", { class: "grow" }), this.contextChk.el, this.guideChk.el),
+        h("div", { class: "bk-toolbar" },
+          this.viewSeg.el,
+          h("span", { class: "bk-tb-sep" }),
+          faceOrientBar,
+          h("span", { class: "bk-tb-sep" }),
+          this.facingSeg.el,
+          h("span", { class: "grow" }),
+          this.contextChk.el,
+          this.guideChk.el),
         this.viewEl = h("div", { class: "bk-view" }, this.previewCanvas, this.previewLabel),
         this.strip,
         this.varStrip);
@@ -270,21 +296,6 @@
     }
 
 
-    #buildFaceOrient() {
-      this.faceRot = {};
-      const faceRows = SLOTS.map(([k, t, c]) => {
-        const rot = select({ label: t, value: String(this.slots[k].rot),
-          options: [["0", "0°"], ["90", "90°"], ["180", "180°"], ["270", "270°"]],
-          title: "Gira la textura dentro de esta cara (no el tile)",
-          onChange: (v) => { this.slots[k].rot = Number(v); this.#schedule(); } });
-        const flip = checkbox({ label: "Espejo", value: this.slots[k].flip, onChange: (v) => { this.slots[k].flip = v; this.#schedule(); } });
-        this.faceRot[k] = { rot, flip };
-        return h("div", { class: "pair2 bk-facerow", style: { borderLeft: "3px solid " + c, paddingLeft: "6px" } }, rot.el, flip.el);
-      });
-      return section({ id: "bk-face-orient", title: "Orientación de caras" },
-        h("p", { class: "note" }, "Gira o espeja la textura de cada cara (arriba / izq. / der.)."),
-        ...faceRows);
-    }
 
     #holesSection() {
       const holes = this.piece.holes || (this.piece.holes = []);
@@ -591,7 +602,7 @@
 
       this.tintUi = TP.tintSection({ id: "bk-tint", state: this.tint, biomes: this.biomes,
         onChange: () => { this.#save(); this.#schedule(); } });
-      this.panelScroll = h("div", { class: "scroll" }, shape.el, this.#holesSection().el, stone.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.#buildFaceOrient().el, this.tintUi.el, output.el);
+      this.panelScroll = h("div", { class: "scroll" }, shape.el, this.#holesSection().el, stone.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
       for (const sec of [maskSection, cover, hair, light, pixel]) sec.el.classList.add("adv");
       const detail = h("span");
       this.panel = h("div", { class: "bk-panel" },
@@ -648,7 +659,7 @@
         this.pickerKey = key;
         // A source with no face assigned yet takes all three, so one click shows a block straight away.
         if (!SLOTS.some(([k]) => this.slots[k].key)) for (const [k] of SLOTS) Object.assign(this.slots[k], { key, cx: 0, cy: 0 });
-        if (sheet && !this.targetSel.get()) this.targetSel.set(key);
+        if (sheet && this.targetSel && !(this.targetSel && this.targetSel.get())) this.targetSel && this.targetSel.set(key);
         this.#renderList();
         this.#drawPicker();
         this.#updateSlotControls();
@@ -708,6 +719,7 @@
 
     #updateSlotControls() {
       for (const [k] of SLOTS) {
+        if (!this.faceRot?.[k]) continue;
         this.faceRot[k].rot.set(String(this.slots[k].rot));
         this.faceRot[k].flip.set(this.slots[k].flip);
       }
@@ -1004,10 +1016,10 @@
 
     #fillTargets() {
       if (!this.targetSel) return;
-      const current = this.targetSel.get();
+      const current = (this.targetSel && this.targetSel.get());
       const options = this.sheets.length ? this.sheets.map((s) => [s.key, s.id]) : [["", "— abre la carpeta —"]];
       this.targetSel.input.replaceChildren(...options.map(([v, t]) => h("option", { value: v }, t)));
-      if (options.some(([v]) => v === current)) this.targetSel.set(current);
+      if (options.some(([v]) => v === current)) this.targetSel && this.targetSel.set(current);
     }
 
     #baseName() {
@@ -1045,7 +1057,7 @@
     }
 
     #targetSheet() {
-      const sheet = this.sheets.find((s) => s.key === this.targetSel.get());
+      const sheet = this.sheets.find((s) => s.key === (this.targetSel && this.targetSel.get()));
       if (!this.project || !sheet) {
         this.studio.toast("Abre la carpeta del proyecto y elige la hoja destino.", { kind: "warn" });
         return null;

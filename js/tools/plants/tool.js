@@ -596,7 +596,7 @@
       const crop = t.category === "crops";
       const drop = (item, min, max) => ({ item, chance: 1.0, minQty: min, maxQty: max });
       this.studio.pendingPlacement = {
-        label: `${t.label} · ${n} etapas`, name: g.name, id: g.id, kind: "plant", size: results[0].size, sheetKey: this.targetSel.get() || null,
+        label: `${t.label} · ${n} etapas`, name: g.name, id: g.id, kind: "plant", size: results[0].size, sheetKey: (this.targetSel && this.targetSel.get()) || null,
         items: flat,
         buildTiles: (coords, { id, name }) => results.map((r, s) => {
           const cs = coords.filter((_, i) => flat[i].stage === s);
@@ -632,7 +632,7 @@
       const flat = r.parts.slice(0, 3).map((part, k) => ({ color: part.color, normal: part.normal, label: roles[k] }));
       const drop = { item: g.product, chance: 1.0, minQty: 1, maxQty: 1 };
       this.studio.pendingPlacement = {
-        label: `${t.label} · base, medio y punta`, name: g.name, id: g.id, kind: "plant", size: r.size, sheetKey: this.targetSel.get() || null,
+        label: `${t.label} · base, medio y punta`, name: g.name, id: g.id, kind: "plant", size: r.size, sheetKey: (this.targetSel && this.targetSel.get()) || null,
         items: flat,
         buildTiles: (coords, { id, name }) => [
           {
@@ -826,7 +826,7 @@
     /** Saves every variant (or only the preview) into cells from X / Y, and lists the cells for the JSON. */
     async #saveVariants(onlyPreview = false) {
       if (!this.result) return;
-      const sheet = this.sheets.find((s) => s.key === this.targetSel.get());
+      const sheet = this.sheets.find((s) => s.key === (this.targetSel && this.targetSel.get()));
       if (!this.project || !sheet) {
         this.studio.toast("Abre la carpeta del proyecto y elige la hoja destino.", { kind: "warn" });
         return;

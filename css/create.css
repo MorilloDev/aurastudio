@@ -275,3 +275,12 @@
   }
   .cp-left, .cp-right { max-height: 28vh; border: none; border-bottom: 1px solid var(--line); }
 }
+
+.cp-mini-btn {
+  font-size: 11px; padding: 3px 8px; border-radius: 5px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--text); cursor: pointer;
+}
+.cp-mini-btn.primary {
+  border-color: rgba(95,211,176,0.4); color: var(--accent); background: rgba(95,211,176,0.12); font-weight: 600;
+}
+.cp-side-head .grow { flex: 1; }
