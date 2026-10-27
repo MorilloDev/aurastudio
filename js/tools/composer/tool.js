@@ -1246,20 +1246,21 @@
       if (target.type === "layer") {
         const g = findGroup(this.doc.groups, target.groupId)?.group;
         const li = target.index;
+        // Subir/bajar: solo reordena dentro del mismo grupo (no sale del grupo).
         items.push(
-          { label: "Subir capa", disabled: !g || li <= 0, action: () => this.moveLayerInGroup(target.groupId, li, -1) },
-          { label: "Bajar capa", disabled: !g || li >= (g?.layers?.length || 0) - 1, action: () => this.moveLayerInGroup(target.groupId, li, 1) },
+          { label: "Subir en el grupo", disabled: !g || li <= 0, action: () => this.moveLayerInGroup(target.groupId, li, -1) },
+          { label: "Bajar en el grupo", disabled: !g || !g.layers || li >= g.layers.length - 1, action: () => this.moveLayerInGroup(target.groupId, li, 1) },
           { sep: true },
         );
-        // Mover a grupo…
         const destinations = [];
         walkGroups(this.doc.groups, (gg) => {
           if (!gg.folder && gg.id !== target.groupId) destinations.push(gg);
         });
         if (destinations.length) {
+          items.push({ label: "Mover a otro grupo…", disabled: true });
           destinations.forEach((gg) => {
             items.push({
-              label: "→ " + (gg.name || "Grupo"),
+              label: "  → " + (gg.name || "Grupo"),
               action: () => this.moveLayerToGroup(target.id, gg.id),
             });
           });
