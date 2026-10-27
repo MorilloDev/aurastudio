@@ -8,7 +8,7 @@
   studio.addTool(Aura.biomesTool.biomesTool());
   studio.addTool(Aura.recipesTool.recipesTool());
   studio.addTool(Aura.structuresTool.structuresTool());
-  studio.addTool(Aura.legacy.legacyTool({ id: "particles", title: "Partículas", source: "particles" }));
+  studio.addTool(Aura.particlesTool.particlesTool());
   studio.registerToolSwitching();
   studio.start();
 

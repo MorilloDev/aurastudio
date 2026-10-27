@@ -21,3 +21,15 @@
 .st-sel, .st-nudge { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; align-items: center; }
 .st-del { padding: 0 6px; opacity: 0; }
 .bm-item:hover .st-del, .bm-item.active .st-del, .st-del:focus-visible { opacity: 1; }
+
+
+/* organic structures */
+.st-item, .st-row {
+  border-radius: 10px !important;
+}
+.st-toolbar button, .st-side button {
+  border-radius: 999px;
+}
+.st-view, .st-stage {
+  background: var(--bg-deep, #0c0e12);
+}
