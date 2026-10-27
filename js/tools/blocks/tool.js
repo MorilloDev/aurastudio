@@ -283,7 +283,7 @@
       this.#schedule();
     }
     #pieceSlider(label, key, min, max, title = "", step = 1) {
-      const unit = key === "scale" ? "×" : "/16";
+      const unit = (key === "scale" || key.startsWith("scale")) ? "×" : "/16";
       return slider({ label, min, max, step, value: this.piece.params[key] ?? Sh.PARAM_DEFAULTS[key], defaultValue: Sh.PARAM_DEFAULTS[key], unit, title,
         onInput: (v) => this.#setPiece((p) => { p.params[key] = v; }) }).el;
     }
@@ -301,6 +301,21 @@
         axis("x", "X", "Gira alrededor del eje hacia el que mira la cara derecha"),
         axis("y", "Y", "Gira alrededor del eje vertical"),
         axis("z", "Z", "Gira alrededor del eje hacia el que mira la cara izquierda"));
+    }
+
+    #scale3dControls() {
+      const p = this.piece.params || (this.piece.params = {});
+      const axis = (key, label, title) => slider({
+        label, min: 0.1, max: 1.25, step: 0.05,
+        value: p[key] ?? 1, defaultValue: 1, unit: "×", title,
+        onInput: (v) => this.#setPiece((pc) => { pc.params = { ...pc.params, [key]: v }; }),
+      }).el;
+      return h("div", { class: "bk-iso" },
+        h("div", { class: "at-sub" }, "Escala 3D ", h("span", { class: "faint" }, "(por eje y general; puede llegar al borde del bloque)")),
+        axis("scale", "General", "Escala uniforme multiplicada por X/Y/Z"),
+        axis("scaleX", "X", "Ancho en el eje X del bloque"),
+        axis("scaleY", "Y", "Alto vertical"),
+        axis("scaleZ", "Z", "Profundidad en Z"));
     }
 
 
@@ -446,7 +461,7 @@
       if (this.piece.shape === "small") {
         params.push(this.#pieceSlider("Ancho", "small", 2, 16), this.#pieceSlider("Alto", "smallHeight", 1, 16));
       }
-      if (this.piece.shape === "pillar") params.push(this.#pieceSlider("Grosor", "pillar", 2, 16));
+      if (this.piece.shape === "pillar") params.push(this.#pieceSlider("Grosor", "pillar", 1, 16, "Grosor del pilar; con escala 3D puede ocupar todo el bloque"));
       if (["panel", "slopePanel", "diagonalWall", "semicircle", "frame", "frameRound"].includes(this.piece.shape)) {
         params.push(this.#pieceSlider("Grosor", "panel", 1, 8));
       }
@@ -489,7 +504,7 @@
         }) },
         shapeSel.el, ...params,
         this.#slider("Resolución", "res", 16, 64, 16, "Cubitos por lado del bloque: 32 = uno cada 2 px de un sprite de 64; 64 = uno por pixel (bordes y formas más finos)"),
-        this.#rot3dControls(),
+        this.#rot3dControls(), this.#scale3dControls(),
         this.#choice("Texturas", "texMode", [["auto", "Auto"], ["follow", "Giran"], ["world", "Fijas"]]),
         this.#choice("Ajuste", "uvMode", [["world", "Mundo"], ["fit", "Estirar"]]),
         h("p", { class: "note" }, h("b", null, "Auto:"), " la textura gira con la pieza en «horizontal» (troncos tumbados). La rotación 3D siempre lleva las texturas con ella. ",

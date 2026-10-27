@@ -102,7 +102,7 @@
     for (let i = 0; i < list.length; i++) {
       const g = list[i];
       if (g.id === id) return { group: g, parent, index: i, list };
-      const nested = findGroup(g.children, id, g);
+      const nested = findGroup(g.children || [], id, g);
       if (nested) return nested;
     }
     return null;
@@ -1332,6 +1332,19 @@
       [g.layers[li], g.layers[j]] = [g.layers[j], g.layers[li]];
       this.doc.selectedGroupId = groupId;
       this.doc.selectedLayer = j;
+      this.touch();
+    }
+
+    moveGroupInList(groupId, dir) {
+      const ref = findGroup(this.doc.groups, groupId);
+      if (!ref) return;
+      const j = ref.index + dir;
+      if (j < 0 || j >= ref.list.length) return;
+      this.pushHistory();
+      const a = ref.list;
+      [a[ref.index], a[j]] = [a[j], a[ref.index]];
+      this.doc.selectedGroupId = groupId;
+      this.doc.selectedLayer = -1;
       this.touch();
     }
 

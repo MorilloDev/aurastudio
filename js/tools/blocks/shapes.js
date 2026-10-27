@@ -418,24 +418,36 @@
   const PARAM_DEFAULTS = {
     layer: 4, small: 8, smallHeight: 8, pillar: 8, panel: 2,
     radius: 7, frameThick: 2, archHeight: 8, archDepth: 16,
-    // Escala de la forma dentro de la celda (1 = tamaño completo, 0.5 = mitad, centrada).
+    // Escala de la forma dentro de la celda (1 = tamaño completo).
     scale: 1,
+    scaleX: 1,
+    scaleY: 1,
+    scaleZ: 1,
     custom: '[ { "min": [0, 0, 0], "max": [1, 0.5, 1] } ]',
   };
 
   /** Escala cajas (y radios de sólidos implícitos) alrededor del centro de la celda. */
-  function scaleBoxes(boxes, s) {
-    if (!s || s === 1) return boxes;
-    s = Math.max(0.1, Math.min(1, s));
+  /** Escala cajas alrededor del centro. sx/sy/sz pueden ser un número o {x,y,z}. Permite >1 hasta el borde. */
+  function scaleBoxes(boxes, sx, sy, sz) {
+    if (sx != null && typeof sx === "object") {
+      sy = sx.y; sz = sx.z; sx = sx.x;
+    }
+    if (sy == null) sy = sx;
+    if (sz == null) sz = sx;
+    sx = Math.max(0.05, Math.min(1.25, Number(sx) || 1));
+    sy = Math.max(0.05, Math.min(1.25, Number(sy) || 1));
+    sz = Math.max(0.05, Math.min(1.25, Number(sz) || 1));
+    if (sx === 1 && sy === 1 && sz === 1) return boxes;
+    const sc = [sx, sy, sz];
     return boxes.map((b) => {
       const out = {
         ...b,
-        min: b.min.map((v) => 0.5 + (v - 0.5) * s),
-        max: b.max.map((v) => 0.5 + (v - 0.5) * s),
+        min: b.min.map((v, i) => 0.5 + (v - 0.5) * sc[i]),
+        max: b.max.map((v, i) => 0.5 + (v - 0.5) * sc[i]),
       };
-      if (typeof b.radius === "number") out.radius = b.radius * s;
-      if (typeof b.inner === "number") out.inner = b.inner * s;
-      if (Array.isArray(b.center)) out.center = b.center.map((v) => 0.5 + (v - 0.5) * s);
+      if (typeof b.radius === "number") out.radius = b.radius * Math.min(sx, sy, sz);
+      if (typeof b.inner === "number") out.inner = b.inner * Math.min(sx, sy, sz);
+      if (Array.isArray(b.center)) out.center = b.center.map((v, i) => 0.5 + (v - 0.5) * sc[i]);
       return out;
     });
   }
@@ -532,7 +544,10 @@
       return out;
     }
     let boxes = def.boxes(p);
-    if (p.scale != null && p.scale !== 1) boxes = scaleBoxes(boxes, p.scale);
+    const sx = (p.scaleX ?? 1) * (p.scale ?? 1);
+    const sy = (p.scaleY ?? 1) * (p.scale ?? 1);
+    const sz = (p.scaleZ ?? 1) * (p.scale ?? 1);
+    if (sx !== 1 || sy !== 1 || sz !== 1) boxes = scaleBoxes(boxes, sx, sy, sz);
     // Agujeros del usuario (movibles): se restan del sólido; el interior se ilumina como superficie 3D.
     if (opts.holes?.length) boxes = boxes.concat(holeBoxes(opts.holes));
     const iso = hasIso(opts.iso) ? { x: opts.iso.x | 0, y: opts.iso.y | 0, z: opts.iso.z | 0 } : null;

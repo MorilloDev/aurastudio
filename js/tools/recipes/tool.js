@@ -321,7 +321,7 @@
     #renderUses() {
       clear(this.usesEl);
       const rec = this.pickedItem;
-      if (!rec) { this.usesEl.append(h("p", { class: "note" }, "Clic en un item: aquí ves con qué se fabrica y para qué sirve.")); return; }
+      if (!rec) { this.usesEl.append(h("p", { class: "note" }, "1) Clic en una casilla de la receta  2) Clic en un item para asignarlo. Sin casilla: ves usos del item.")); return; }
       const { made, used, burns } = M.usesOf(this.docs, this.index, rec);
       const link = (u) => h("button", { class: "rc-link", onclick: () => this.#openStation(u.station.id, u.doc.entries.indexOf(u.entry)) },
         h("span", { class: "faint" }, u.station.label + " · "), u.entry.value.id ?? u.entry.value.item);
@@ -348,7 +348,15 @@
           h("div", null, h("button", { class: "primary", onclick: () => this.#addRecipe() }, "+ Primera receta"))));
         return;
       }
-      this.editorEl.append(station.kind === "furnace" ? this.#furnaceEditor(e.value, station) : this.#craftingEditor(e.value, station));
+      const guide = this.selectedSlot != null
+        ? h("div", { class: "rc-guide on" },
+            "Casilla activa · clic en un item de la izquierda para asignarlo · clic derecho en la casilla para vaciar")
+        : h("div", { class: "rc-guide" },
+            "Clic en una casilla (ingrediente o resultado), luego clic en un item de la lista");
+      const body = station.kind === "furnace"
+        ? this.#furnaceEditor(e.value, station)
+        : this.#craftingEditor(e.value, station);
+      this.editorEl.append(guide, body);
     }
 
     /** One slot: click selects it; then click an item in the browser to fill. Wheel = qty; right-click = clear. */
@@ -381,7 +389,7 @@
           if (itemKey) onClear?.();
           else { this.selectedSlot = selKey; this.#renderEditor(); }
         },
-      }, h("span", { class: "rc-num" }, label), c, unknown ? h("span", { class: "rc-unknown" }, itemKey) : null, badge, ...marks);
+      }, h("span", { class: "rc-num" }, label), c, !itemKey && !disabled ? h("span", { class: "rc-plus" }, "+") : null, unknown ? h("span", { class: "rc-unknown" }, itemKey) : null, badge, ...marks);
       // Keep drop as secondary (desktop) if handlers exist
       if (onDrop) {
         el.addEventListener("dragover", (ev) => {
@@ -547,7 +555,7 @@
 
       const grid = h("div", { class: ["rc-slots", station.slots > 3 && "wrap"] }, slots);
       const visual = h("div", { class: "rc-machine" },
-        h("div", { class: "rc-machine-title" }, station.label, h("span", { class: "faint" }, ` · ${N} casilla${N > 1 ? "s" : ""}`)),
+        h("div", { class: "rc-machine-title" }, station.label, h("span", { class: "faint" }, ` · ${N} casilla${N > 1 ? "s" : ""}`), h("span", { class: "rc-flow-hint" }, "casilla → item")),
         h("div", { class: "rc-row" }, grid,
           h("div", { class: "rc-arrow", title: "Tiempo de crafteo" }, h("span", null, "➜"), h("small", null, `${r.craftTime ?? 1} s`),
             r.failChance > 0 ? h("small", { class: "bad-text" }, `falla ${Math.round(r.failChance * 100)} %`) : null),
