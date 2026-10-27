@@ -208,10 +208,9 @@
       this.previewLabel = h("div", { class: "bk-preview-label" });
       this.strip = h("div", { class: "bk-strip" });
       this.varStrip = h("div", { class: "bk-strip bk-varstrip" });
-      // Orientación de caras: al lado de la tira Color/Normales (abajo)
+      // Dos paneles abajo: vistas de mapas | orientación de caras (vertical)
       this.faceRot = {};
-      this.faceOrientBar = h("div", { class: "bk-facebar" },
-        h("span", { class: "bk-facebar-label" }, "Caras"),
+      this.faceOrientBar = h("div", { class: "bk-facepanel-body" },
         ...SLOTS.map(([k, t, c]) => {
           const rot = select({
             label: t, value: String(this.slots[k].rot),
@@ -220,13 +219,23 @@
             onChange: (v) => { this.slots[k].rot = Number(v); this.#schedule(); },
           });
           const flip = checkbox({
-            label: "↔", value: this.slots[k].flip,
+            label: "Espejo", value: this.slots[k].flip,
             title: "Espejo " + t,
             onChange: (v) => { this.slots[k].flip = v; this.#schedule(); },
           });
           this.faceRot[k] = { rot, flip };
-          return h("div", { class: "bk-facechip", style: { borderColor: c } }, rot.el, flip.el);
+          return h("div", { class: "bk-face-row", style: { borderLeftColor: c } },
+            rot.el, flip.el);
         }));
+
+      const mapsPanel = h("div", { class: "bk-bottom-panel bk-maps-panel" },
+        h("div", { class: "bk-bottom-panel-title" }, "Vistas"),
+        this.strip,
+        this.varStrip);
+
+      const facesPanel = h("div", { class: "bk-bottom-panel bk-faces-panel" },
+        h("div", { class: "bk-bottom-panel-title" }, "Orientación de caras"),
+        this.faceOrientBar);
 
       const stage = h("div", { class: "bk-stage" },
         h("div", { class: "bk-toolbar" },
@@ -236,10 +245,9 @@
           this.contextChk.el,
           this.guideChk.el),
         this.viewEl = h("div", { class: "bk-view" }, this.previewCanvas, this.previewLabel),
-        h("div", { class: "bk-bottom-bar" },
-          this.strip,
-          this.faceOrientBar),
-        this.varStrip);
+        h("div", { class: "bk-bottom-split" },
+          mapsPanel,
+          facesPanel));
 
       this.root = h("div", { class: "bk" }, left, stage, this.#buildPanel());
       return this.root;
