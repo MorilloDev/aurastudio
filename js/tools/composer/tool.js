@@ -464,6 +464,32 @@
       );
 
       this.partView = h("div", { class: "cp-view" }, this.partCanvas);
+      this.viewModes = ["front", "back", "inverted", "horizontal"];
+      this.viewCanvases = {};
+      const viewCards = this.viewModes.map((mode) => {
+        const c = h("canvas", { class: "cp-view-thumb", width: 80, height: 80 });
+        this.viewCanvases[mode] = c;
+        return h("button", {
+          type: "button",
+          class: ["cp-view-card", mode === "front" && "is-default"],
+          title: "Aplicar vista «" + mode + "» al grupo activo",
+          onclick: () => {
+            const g = this.group();
+            if (!g || g.folder) {
+              this.studio?.toast("Selecciona un grupo (no carpeta)", { kind: "warn" });
+              return;
+            }
+            g.view = mode;
+            this.rebuildProps();
+            this.schedule();
+          },
+        }, c, h("span", { class: "cp-view-card-label" }, mode));
+      });
+      this.viewStrip = h("div", { class: "cp-view-strip" },
+        h("div", { class: "cp-view-strip-label" }, "Vistas del grupo activo"),
+        h("div", { class: "cp-view-strip-row" }, ...viewCards),
+      );
+
       this.ensView = h("div", { class: "cp-view" }, this.ensembleCanvas);
 
       // Layout 3 columnas: árbol | lienzo | inspector
@@ -505,17 +531,19 @@
             }, "◇ Forma"))),
         h("div", { class: "cp-center" },
           toolbar,
-          h("div", { class: "cp-views" },
-            h("div", { class: "cp-view-block" },
-              h("div", { class: "cp-view-label" },
-                h("span", null, "Parte activa"),
-                h("span", { class: "hint" }, "arrastrar = mover capa")),
-              this.partView),
-            h("div", { class: "cp-view-block" },
-              h("div", { class: "cp-view-label" },
-                h("span", null, "Conjunto"),
-                h("span", { class: "hint" }, "clic = elegir celda")),
-              this.ensView))),
+          h("div", { class: "cp-center-stage" },
+            h("div", { class: "cp-views" },
+              h("div", { class: "cp-view-block" },
+                h("div", { class: "cp-view-label" },
+                  h("span", null, "Parte activa"),
+                  h("span", { class: "hint" }, "arrastrar = mover capa")),
+                this.partView),
+              h("div", { class: "cp-view-block" },
+                h("div", { class: "cp-view-label" },
+                  h("span", null, "Conjunto"),
+                  h("span", { class: "hint" }, "clic = elegir celda")),
+                this.ensView)),
+            this.viewStrip)),
         h("aside", { class: "cp-right" },
           h("div", { class: "cp-side-head" }, h("b", null, "Inspector")),
           this.propsHost)));
@@ -1736,6 +1764,26 @@
       }
     }
 
+    
+    applyViewTransform(color, depth, S, view) {
+      if (!view || view === "front") return { color, depth };
+      const outC = new Uint8ClampedArray(S * S * 4);
+      const outD = depth ? new Float32Array(S * S).fill(-Infinity) : null;
+      for (let y = 0; y < S; y++) {
+        for (let x = 0; x < S; x++) {
+          let nx = x, ny = y;
+          if (view === "back") nx = S - 1 - x;
+          else if (view === "inverted") ny = S - 1 - y;
+          else if (view === "horizontal") { nx = y; ny = S - 1 - x; }
+          const si = (y * S + x) * 4;
+          const di = (ny * S + nx) * 4;
+          outC[di] = color[si]; outC[di+1] = color[si+1]; outC[di+2] = color[si+2]; outC[di+3] = color[si+3];
+          if (outD && depth) outD[ny * S + nx] = depth[y * S + x];
+        }
+      }
+      return { color: outC, depth: outD || depth };
+    }
+
     /** Compone las capas visibles de un grupo en un buffer size×size, con depth y AO entre capas. */
     renderGroup(g) {
       const S = this.doc.size || 64;
@@ -1785,7 +1833,8 @@
           samples: ao.samples ?? 12,
         });
       }
-      return { size: S, color: finalColor, normal, depth };
+      const vt = this.applyViewTransform(finalColor, depth, S, g.view || "front");
+      return { size: S, color: vt.color, normal, depth: vt.depth };
     }
 
     /**
@@ -1987,6 +2036,53 @@
 
       this.paintPart();
       this.paintEnsemble();
+      this.paintViewStrip();
+    }
+
+
+    paintViewStrip() {
+      const g = this.group();
+      const S = this.doc.size || 64;
+      for (const mode of this.viewModes || []) {
+        const canvas = this.viewCanvases?.[mode];
+        if (!canvas) continue;
+        const ctx = canvas.getContext("2d");
+        ctx.imageSmoothingEnabled = false;
+        // checker
+        const tw = 8;
+        for (let y = 0; y < canvas.height; y += tw) {
+          for (let x = 0; x < canvas.width; x += tw) {
+            ctx.fillStyle = ((x / tw + y / tw) & 1) ? "#2a2f35" : "#22262b";
+            ctx.fillRect(x, y, tw, tw);
+          }
+        }
+        if (!g || g.folder) continue;
+        const saved = g.view;
+        g.view = mode;
+        const cell = this.renderGroup(g);
+        g.view = saved;
+        if (!cell?.color) continue;
+        const off = document.createElement("canvas");
+        off.width = S; off.height = S;
+        off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(cell.color), S, S), 0, 0);
+        const scale = Math.min(canvas.width / S, canvas.height / S);
+        const dw = S * scale, dh = S * scale;
+        const ox = (canvas.width - dw) / 2, oy = (canvas.height - dh) / 2;
+        ctx.drawImage(off, ox, oy, dw, dh);
+        // active ring
+        if ((g.view || "front") === mode) {
+          ctx.strokeStyle = "rgba(110, 207, 154, 0.95)";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+        }
+      }
+      // highlight selected card
+      if (this.viewStrip) {
+        this.viewStrip.querySelectorAll(".cp-view-card").forEach((card, i) => {
+          const mode = this.viewModes[i];
+          card.classList.toggle("on", (g && !g.folder && (g.view || "front") === mode));
+        });
+      }
     }
 
     paintPart() {

@@ -9,9 +9,9 @@
   const M = Aura.particlesModel;
 
   // Same idea as ParticleOverlay.ReferenceUnitSize — scale is in "tile units"
-  const REF_UNIT = 16;
+  const REF_UNIT = 32;
   // World units visible roughly across the preview height (so vel 12 is readable)
-  const WORLD_VIEW = 14;
+  const WORLD_VIEW = 8;
 
   function particlesTool() {
     return new ParticlesTool();
