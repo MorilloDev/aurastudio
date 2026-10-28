@@ -262,6 +262,28 @@
       if (label) this.studio.setStatus(label + " · " + M.bareId(doc.data.id || doc.fileId), "ok");
     }
 
+
+    #rgbaRow(label, arr, onChange) {
+      const a = Array.isArray(arr) ? arr.slice(0, 4) : [255, 255, 255, 255];
+      while (a.length < 4) a.push(255);
+      const mk = (i, name, max = 255) => slider({
+        label: name, min: 0, max, step: 1, value: a[i] | 0,
+        onInput: (v) => {
+          const next = a.slice();
+          next[i] = v | 0;
+          onChange(next);
+        },
+      }).el;
+      return h("div", { class: "fx-rgba" },
+        h("div", { class: "fx-pair-label" }, label),
+        h("div", {
+          class: "fx-swatch",
+          style: { background: `rgba(${a[0]},${a[1]},${a[2]},${(a[3]/255).toFixed(3)})` },
+        }),
+        mk(0, "R"), mk(1, "G"), mk(2, "B"), mk(3, "A"),
+      );
+    }
+
     #renderInsp() {
       clear(this.inspEl);
       const doc = this.#current();
@@ -391,6 +413,88 @@
           label: "Alinear a velocidad",
           value: !!d.render.alignToVelocity,
           onChange: (v) => { d.render.alignToVelocity = v; this.#touch("Alinear"); },
+        }).el,
+
+        h("div", { class: "at-sub" }, "Color / render"),
+        this.#rgbaRow("Tint base", d.render.tint || [255, 255, 255, 255], (c) => {
+          d.render.tint = c;
+          this.#touch("Tint");
+          this.#restart();
+        }),
+        select({
+          label: "Lighting",
+          value: d.render.lighting === "emissive" ? "emissive" : "lit",
+          options: [["lit", "Lit (luz mundo)"], ["emissive", "Emissive"]],
+          onChange: (v) => { d.render.lighting = v; this.#touch("Lighting"); },
+        }).el,
+        this.#rgbaRow("ColorCurve start", (bh.colorCurve && bh.colorCurve.start) || (d.render.tint || [255, 255, 255, 255]), (c) => {
+          bh.colorCurve = bh.colorCurve || {};
+          bh.colorCurve.start = c;
+          if (!bh.colorCurve.mid) bh.colorCurve.mid = c.slice();
+          if (!bh.colorCurve.end) bh.colorCurve.end = [c[0], c[1], c[2], 0];
+          this.#touch("Color start");
+        }),
+        this.#rgbaRow("ColorCurve mid", (bh.colorCurve && bh.colorCurve.mid) || [255, 180, 80, 220], (c) => {
+          bh.colorCurve = bh.colorCurve || {};
+          bh.colorCurve.mid = c;
+          this.#touch("Color mid");
+        }),
+        this.#rgbaRow("ColorCurve end", (bh.colorCurve && bh.colorCurve.end) || [40, 20, 10, 0], (c) => {
+          bh.colorCurve = bh.colorCurve || {};
+          bh.colorCurve.end = c;
+          this.#touch("Color end");
+        }),
+        h("button", {
+          class: "ghost",
+          onclick: () => { delete bh.colorCurve; this.#touch("Sin colorCurve"); this.#restart(); },
+        }, "Quitar colorCurve"),
+
+        h("div", { class: "at-sub" }, "Física extra"),
+        slider({
+          label: "Wind", min: 0, max: 3, step: 0.05, value: bh.wind ?? 0,
+          onInput: (v) => { bh.wind = v; this.#touch("Wind"); },
+        }).el,
+        slider({
+          label: "Angular vel min", min: -12, max: 12, step: 0.1,
+          value: Array.isArray(d.angularVelocity) ? d.angularVelocity[0] : 0,
+          onInput: (v) => {
+            const mx = Array.isArray(d.angularVelocity) ? d.angularVelocity[1] : v;
+            d.angularVelocity = [v, Math.max(v, mx)];
+            this.#touch("Ang");
+          },
+        }).el,
+        slider({
+          label: "Angular vel max", min: -12, max: 12, step: 0.1,
+          value: Array.isArray(d.angularVelocity) ? d.angularVelocity[1] : 0,
+          onInput: (v) => {
+            const mn = Array.isArray(d.angularVelocity) ? d.angularVelocity[0] : 0;
+            d.angularVelocity = [Math.min(mn, v), v];
+            this.#touch("Ang");
+          },
+        }).el,
+        select({
+          label: "Collision",
+          value: (bh.collision && bh.collision.mode) || "none",
+          options: [["none", "Ninguna"], ["bounce", "Bounce"], ["kill", "Kill"]],
+          onChange: (v) => {
+            if (v === "none") bh.collision = { mode: "none" };
+            else bh.collision = { mode: v, bounciness: bh.collision?.bounciness ?? 0.5, friction: bh.collision?.friction ?? 0.3 };
+            this.#touch("Collision");
+          },
+        }).el,
+        slider({
+          label: "Bounciness", min: 0, max: 1, step: 0.05,
+          value: bh.collision?.bounciness ?? 0.5,
+          onInput: (v) => {
+            bh.collision = bh.collision || { mode: "bounce" };
+            bh.collision.bounciness = v;
+            this.#touch("Bounce");
+          },
+        }).el,
+        checkbox({
+          label: "Essential (no se reduce con calidad)",
+          value: !!d.essential,
+          onChange: (v) => { d.essential = v; this.#touch("Essential"); },
         }).el,
 
         h("div", { class: "at-sub" }, "Curvas"),

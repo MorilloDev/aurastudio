@@ -147,7 +147,13 @@
       const b = l.kind === "sprite"
         ? spriteLayerFromResult({ size: l.size || 64, color: null }, l)
         : defaultShapeLayer(li);
-      return { ...b, ...l, color: null, normal: null };
+      const color = Array.isArray(l.color) ? new Uint8ClampedArray(l.color)
+        : (l.color instanceof Uint8ClampedArray ? l.color : null);
+      const normal = Array.isArray(l.normal) ? new Uint8ClampedArray(l.normal)
+        : (l.normal instanceof Uint8ClampedArray ? l.normal : null);
+      const depth = Array.isArray(l.depth) ? new Float32Array(l.depth)
+        : (l.depth instanceof Float32Array ? l.depth : null);
+      return { ...b, ...l, color, normal, depth };
     });
     const children = (g.children || []).map((c, ci) => normalizeGroup(c, ci));
     return {
@@ -1055,13 +1061,20 @@
         id: g.id, name: g.name, visible: g.visible, collapsed: g.collapsed,
         locked: !!g.locked, folder: !!g.folder,
         multipart: g.multipart, view: g.view || "front", offsetX: g.offsetX, offsetY: g.offsetY, offsetZ: g.offsetZ,
-        layers: (g.layers || []).map((l) => ({
-          id: l.id, kind: l.kind, name: l.name, visible: l.visible, locked: !!l.locked,
-          shiftX: l.shiftX, shiftY: l.shiftY,
-          blend: l.blend, opacity: l.opacity, tint: l.tint,
-          shape: l.shape, params: l.params, rot3d: l.rot3d,
-          size: l.size, source: l.source,
-        })),
+        layers: (g.layers || []).map((l) => {
+          const row = {
+            id: l.id, kind: l.kind, name: l.name, visible: l.visible, locked: !!l.locked,
+            shiftX: l.shiftX, shiftY: l.shiftY,
+            blend: l.blend, opacity: l.opacity, tint: l.tint,
+            shape: l.shape, params: l.params, rot3d: l.rot3d,
+            size: l.size, source: l.source,
+          };
+          // Persist pixel buffers so refresh keeps work (localStorage)
+          if (l.color && l.color.length) row.color = Array.from(l.color);
+          if (l.normal && l.normal.length) row.normal = Array.from(l.normal);
+          if (l.depth && l.depth.length) row.depth = Array.from(l.depth);
+          return row;
+        }),
         children: (g.children || []).map(serG),
       });
       prefs.set(PREFS_KEY, {
