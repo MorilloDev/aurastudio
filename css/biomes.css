@@ -77,3 +77,56 @@
 .bm-view {
   background: var(--bg-deep, #0c0e12);
 }
+
+/* ── organic biomes v2 ── */
+.bm-layout, .biomes, .bm-root {
+  gap: 0;
+}
+.bm-side, .bm-list-panel {
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+.bm-item, .bm-row {
+  border-radius: 10px !important;
+  margin: 2px 6px !important;
+  padding: 8px 12px !important;
+  border: 1px solid transparent;
+  transition: background 0.12s, border-color 0.12s;
+}
+.bm-item:hover, .bm-row:hover {
+  background: rgba(255,255,255,0.03);
+}
+.bm-item.active, .bm-item.on, .bm-row.active {
+  background: var(--accent-soft) !important;
+  border-color: rgba(110, 207, 154, 0.22) !important;
+  position: relative;
+}
+.bm-item.active::before, .bm-item.on::before {
+  content: "";
+  position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px;
+  border-radius: 999px; background: var(--accent);
+}
+.bm-toolbar button, .bm-head button {
+  border-radius: 999px !important;
+  min-height: 32px;
+}
+.bm-toolbar button.primary, .bm-head .primary {
+  background: var(--accent) !important;
+  color: #0b1a12 !important;
+  border: none !important;
+  font-weight: 700;
+}
+.bm-panel, .bm-inspector {
+  background: #1e232c !important;
+  border-left: 1px solid var(--line);
+}
+.bm-view, .bm-canvas-wrap, .bm-stage {
+  background:
+    radial-gradient(ellipse at 50% 40%, rgba(110, 207, 154, 0.04), transparent 55%),
+    var(--bg-deep, #0c0e12) !important;
+}
+.bm-search, .bm-side input[type="search"] {
+  border-radius: 999px !important;
+  min-height: 34px;
+  padding: 0 12px !important;
+}

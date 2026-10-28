@@ -111,3 +111,53 @@
   overflow: hidden;
   box-shadow: 0 8px 28px rgba(0,0,0,0.35);
 }
+
+/* ── organic atlas v2 ── */
+.at-side, .atlas-side {
+  background: var(--panel);
+}
+.at-item, .atlas-list-item, .at-sheet-row {
+  border-radius: 10px !important;
+  margin: 2px 6px;
+  padding: 8px 10px !important;
+  border: 1px solid transparent;
+}
+.at-item.on, .at-item.active, .atlas-list-item.active {
+  background: var(--accent-soft) !important;
+  border-color: rgba(110, 207, 154, 0.22) !important;
+}
+.at-toolbar button, .atlas-toolbar button {
+  border-radius: 999px !important;
+  min-height: 32px;
+}
+.at-toolbar .primary {
+  background: var(--accent) !important;
+  color: #0b1a12 !important;
+  font-weight: 700;
+  border: none !important;
+}
+/* tiles edge-to-edge — no gap in atlas grid */
+.at-grid, .atlas-cells, .at-cells, .atlas-grid {
+  gap: 0 !important;
+  grid-gap: 0 !important;
+}
+.at-cell, .atlas-cell {
+  margin: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none;
+}
+.at-cell:hover, .atlas-cell:hover {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  z-index: 2;
+  position: relative;
+}
+.at-sheet, .atlas-sheet, .at-canvas-wrap {
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+  background: var(--bg-deep);
+}
+.at-panel, .atlas-insp {
+  background: #1e232c !important;
+}

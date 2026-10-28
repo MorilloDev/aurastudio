@@ -521,3 +521,17 @@
   text-transform: capitalize;
 }
 .cp-view-card.on .cp-view-card-label { color: var(--accent); }
+
+/* Carpetas anidadas */
+.cp-group-head.folder { font-weight: 600; }
+.cp-group-head.folder .cp-row-name { color: var(--text); }
+.cp-depth-1 { margin-left: 12px; }
+.cp-depth-2 { margin-left: 24px; }
+.cp-depth-3 { margin-left: 36px; }
+.cp-depth-4 { margin-left: 48px; }
+.cp-group-head.cp-drop, .cp-row.cp-drop {
+  outline: 2px solid var(--accent);
+  background: var(--accent-soft) !important;
+  border-radius: 10px;
+}
+.cp-tree-empty { padding: 12px; }

@@ -33,3 +33,38 @@
 .st-view, .st-stage {
   background: var(--bg-deep, #0c0e12);
 }
+
+/* ── organic structures v2 ── */
+.st-item, .st-row, .st-card {
+  border-radius: 10px !important;
+  margin: 2px 6px;
+  border: 1px solid transparent;
+  transition: background 0.12s;
+}
+.st-item:hover, .st-row:hover { background: rgba(255,255,255,0.03); }
+.st-item.active, .st-item.on, .st-row.active {
+  background: var(--accent-soft) !important;
+  border-color: rgba(110, 207, 154, 0.22) !important;
+}
+.st-toolbar button, .st-side button, .st-head button {
+  border-radius: 999px !important;
+  min-height: 32px;
+}
+.st-toolbar .primary, .st-side .primary {
+  background: var(--accent) !important;
+  color: #0b1a12 !important;
+  border: none !important;
+  font-weight: 700;
+}
+.st-view, .st-stage, .st-canvas-wrap {
+  background:
+    radial-gradient(ellipse at 50% 45%, rgba(110, 207, 154, 0.05), transparent 50%),
+    var(--bg-deep, #0c0e12) !important;
+}
+.st-panel, .st-insp {
+  background: #1e232c !important;
+}
+.st-search {
+  border-radius: 999px !important;
+  min-height: 34px;
+}

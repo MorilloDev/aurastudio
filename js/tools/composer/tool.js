@@ -855,7 +855,7 @@
     }
 
     addFolder() {
-      this.addGroup(false, true);
+      this.addNested("folder");
     }
 
     duplicateGroup() {
@@ -1337,10 +1337,18 @@
           });
           items.push({ sep: true });
         }
+        if (g?.folder) {
+          items.push(
+            { sep: true },
+            { label: "＋ Subcarpeta aquí", action: () => { this.selectGroup(target.id, -1); this.addNested("folder"); } },
+            { label: "＋ Grupo aquí", action: () => { this.selectGroup(target.id, -1); this.addNested("group"); } },
+            { label: "＋ Parte multipart aquí", action: () => { this.selectGroup(target.id, -1); this.addNested("part"); } },
+          );
+        }
         items.push(
-          { label: "Sacar de carpeta (raíz)", action: () => this.moveGroupToRoot(target.id) },
+          { label: "Sacar de carpeta (raíz)", action: () => this.moveGroupToRoot(target.id), disabled: !ref?.parent },
           { sep: true },
-          { label: "Eliminar grupo", danger: true, action: () => { this.selectGroup(target.id, -1); this.doc.selectedLayer = -1; this.removeSelected(); } },
+          { label: "Eliminar", danger: true, action: () => { this.selectGroup(target.id, -1); this.doc.selectedLayer = -1; this.removeSelected(); } },
         );
       }
 
@@ -1459,11 +1467,18 @@
       this.pushHistory();
       const ref = findGroup(this.doc.groups, groupId);
       const toRef = findGroup(this.doc.groups, toParentId);
-      if (!ref || !toRef) return;
-      // Evitar ciclos: toParent no puede ser descendiente de groupId
+      if (!ref || !toRef) {
+        this.studio?.toast("No se pudo mover el grupo", { kind: "warn" });
+        return;
+      }
+      // Evitar ciclos: destino no puede ser el nodo ni un descendiente
+      if (toParentId === groupId) return;
       let cycle = false;
-      walkGroups(ref.group.children || [], (c) => { if (c.id === toParentId) cycle = true; });
-      if (cycle) return;
+      walkGroups([ref.group], (c) => { if (c.id === toParentId) cycle = true; });
+      if (cycle) {
+        this.studio?.toast("No puedes meter una carpeta dentro de sí misma", { kind: "warn" });
+        return;
+      }
       const [node] = ref.list.splice(ref.index, 1);
       const dest = toRef.group;
       if (dest.folder) {
@@ -1471,10 +1486,51 @@
         dest.children.push(node);
         dest.collapsed = false;
       } else {
-        // insertar después del destino en su lista
+        // Hermano: insertar después del destino en la misma lista
         toRef.list.splice(toRef.index + 1, 0, node);
       }
       this.doc.selectedGroupId = node.id;
+      this.doc.selectedLayer = -1;
+      this.touch();
+      this.studio?.toast(
+        dest.folder ? `«${node.name}» → 📁 ${dest.name}` : `«${node.name}» movido`,
+        { kind: "ok" },
+      );
+    }
+
+    /** Crea carpeta/grupo/parte como hijo de la carpeta activa (o raíz). */
+    addNested(kind) {
+      const cur = this.group();
+      const parentFolder = cur?.folder ? cur : (findGroup(this.doc.groups, this.doc.selectedGroupId)?.parent || null);
+      // If current is folder, nest inside it; else if parent is folder, nest there; else root
+      let hostList = this.doc.groups;
+      let hostFolder = null;
+      if (cur?.folder) {
+        hostFolder = cur;
+        hostList = cur.children = cur.children || [];
+      } else if (parentFolder?.folder) {
+        hostFolder = parentFolder;
+        hostList = parentFolder.children = parentFolder.children || [];
+      }
+      this.pushHistory();
+      const count = { n: 0 };
+      walkGroups(this.doc.groups, () => { count.n++; });
+      const multipart = kind === "part";
+      const folder = kind === "folder";
+      const g = defaultGroup(count.n, multipart, folder);
+      if (multipart && !folder) {
+        const used = new Set();
+        walkGroups(this.doc.groups, (x) => {
+          if (x.multipart) used.add((x.offsetX|0) + "," + (x.offsetY|0) + "," + (x.offsetZ|0));
+        });
+        let x = 0;
+        while (used.has(x + ",0,0")) x++;
+        g.offsetX = x;
+      }
+      hostList.push(g);
+      if (hostFolder) hostFolder.collapsed = false;
+      this.doc.selectedGroupId = g.id;
+      this.doc.selectedLayer = -1;
       this.touch();
     }
 
