@@ -115,11 +115,21 @@
       const key = path.replace(/\\/g, "/").replace(/\.png$/i, "");
       if (this.textures.has(key)) return this.textures.get(key);
       const lower = key.toLowerCase();
-      const entry = this.project.find((e) => {
-        const p = e.lower.replace(/\\/g, "/");
-        return p.includes(lower) && p.endsWith(".png");
-      }) || this.project.get?.(key + ".png");
-      if (!entry) return null;
+      const base = lower.split("/").pop();
+      let entry =
+        (typeof this.project.pngOf === "function" && (this.project.pngOf(key) || this.project.pngOf(key + ".png"))) ||
+        this.project.get?.(key + ".png") ||
+        this.project.get?.(key) ||
+        this.project.find((e) => {
+          const p = e.lower.replace(/\\/g, "/");
+          if (!p.endsWith(".png")) return false;
+          if (p === lower + ".png" || p.endsWith("/" + base + ".png")) return true;
+          return p.includes(lower) || p.endsWith(base + ".png");
+        });
+      if (!entry) {
+        console.warn("[particles] texture not found:", path);
+        return null;
+      }
       try {
         const file = await entry.handle.getFile();
         const buf = await file.arrayBuffer();

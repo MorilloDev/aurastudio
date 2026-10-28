@@ -4,12 +4,27 @@
 (function (Aura) {
   const { readText, baseName, joinPath, dirName } = Aura.fs;
 
-  // Data/Particles/foo.json or Assets/Data/Particles/foo.json (any depth)
-  const isParticleFile = (entry) =>
-    /(^|\/)data\/particles\/[^/]+\.json$/i.test(entry.lower);
+  // Data/Particles/foo.json, Assets/Data/Particles/foo.json,
+  // or foo.json if the user opened the Particles folder itself.
+  const isParticleFile = (entry) => {
+    const low = entry.lower.replace(/\\/g, "/");
+    if (!low.endsWith(".json")) return false;
+    // Full path: .../Data/Particles/foo.json or .../particles/foo.json
+    if (/(^|\/)data\/particles\/[^/]+\.json$/i.test(low)) return true;
+    if (/(^|\/)particles\/[^/]+\.json$/i.test(low)) return true;
+    // User opened the Particles folder itself → files are "foo.json" at root
+    if (!low.includes("/")) return true;
+    return false;
+  };
 
-  const isEffectPng = (entry) =>
-    /\.png$/i.test(entry.lower) && /(^|\/)(assets\/)?effects\//i.test(entry.lower);
+  const isEffectPng = (entry) => {
+    const low = entry.lower.replace(/\\/g, "/");
+    if (!low.endsWith(".png")) return false;
+    if (/(^|\/)(assets\/)?effects\//i.test(low)) return true;
+    // Effects opened as project root — accept pngs
+    if (low.split("/").length <= 2) return true;
+    return false;
+  };
 
   function defaults(id = "default") {
     return {

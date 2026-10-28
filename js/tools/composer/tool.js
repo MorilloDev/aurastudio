@@ -84,6 +84,7 @@
       offsetZ: 0,
       layers: [],
       children: [],              // grupos anidados
+      view: "front",             // front | back | inverted | horizontal
     };
   }
 
@@ -153,6 +154,7 @@
       ...base, ...g,
       folder: !!g.folder,
       locked: !!g.locked,
+      view: ["front","back","inverted","horizontal"].includes(g.view) ? g.view : "front",
       children,
       layers,
     };
@@ -1024,7 +1026,7 @@
       const serG = (g) => ({
         id: g.id, name: g.name, visible: g.visible, collapsed: g.collapsed,
         locked: !!g.locked, folder: !!g.folder,
-        multipart: g.multipart, offsetX: g.offsetX, offsetY: g.offsetY, offsetZ: g.offsetZ,
+        multipart: g.multipart, view: g.view || "front", offsetX: g.offsetX, offsetY: g.offsetY, offsetZ: g.offsetZ,
         layers: (g.layers || []).map((l) => ({
           id: l.id, kind: l.kind, name: l.name, visible: l.visible, locked: !!l.locked,
           shiftX: l.shiftX, shiftY: l.shiftY,
@@ -1311,9 +1313,22 @@
             onclick: () => { this.#closeCtx(); if (!it.disabled) it.action(); },
           }, it.label);
         }));
-      menu.style.left = Math.min(e.clientX, window.innerWidth - 200) + "px";
-      menu.style.top = Math.min(e.clientY, window.innerHeight - 40) + "px";
+      menu.style.position = "fixed";
+      menu.style.left = "0px";
+      menu.style.top = "0px";
+      menu.style.visibility = "hidden";
       document.body.appendChild(menu);
+      const mw = menu.offsetWidth || 220;
+      const mh = menu.offsetHeight || 200;
+      let left = e.clientX;
+      let top = e.clientY;
+      if (left + mw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - mw - 8);
+      if (top + mh > window.innerHeight - 8) top = Math.max(8, window.innerHeight - mh - 8);
+      if (left < 8) left = 8;
+      if (top < 8) top = 8;
+      menu.style.left = left + "px";
+      menu.style.top = top + "px";
+      menu.style.visibility = "visible";
       this._ctx = menu;
       const closer = (ev) => {
         if (menu.contains(ev.target)) return;
@@ -1496,6 +1511,21 @@
           onchange: (e) => set(() => { g.multipart = e.target.checked; this.rebuildProps(); }),
         }),
         h("span", null, "Multipart (esta carpeta = una celda del tile)")));
+
+      kids.push(h("div", { class: "field" },
+        h("label", null, "Vista"),
+        h("select", {
+          value: g.view || "front",
+          onchange: (e) => set(() => { g.view = e.target.value; }),
+        },
+          h("option", { value: "front" }, "Front (default)"),
+          h("option", { value: "back" }, "Back"),
+          h("option", { value: "inverted" }, "Inverted"),
+          h("option", { value: "horizontal" }, "Horizontal"),
+        ),
+      ));
+      kids.push(h("p", { class: "note" },
+        "Vista del sprite como en bloques: front, back (espejo), inverted (arriba/abajo), horizontal (rotado)."));
 
       if (g.multipart) {
         kids.push(section({ id: "cp-cell", title: "Celda de esta parte" },
@@ -1792,7 +1822,14 @@
       const map = new Map();
       const active = this.group();
       // Carpetas no aportan celdas; solo grupos visibles con capas (multipart o ancla).
-      walkGroups(this.doc.groups, (g) => {
+      walkGroups(this.doc.groups, (g, ctx) => {
+        // Cascada: si un ancestro está oculto, no dibujar
+        let anc = ctx.parent;
+        while (anc) {
+          if (anc.visible === false) return;
+          const pref = findGroup(this.doc.groups, anc.id);
+          anc = pref?.parent || null;
+        }
         if (g.folder || !g.visible) return;
         if (!(g.layers && g.layers.length)) return;
         const ox = g.multipart ? (g.offsetX | 0) : 0;

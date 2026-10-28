@@ -473,3 +473,11 @@
   padding: 8px 12px !important;
   font-size: 13px;
 }
+
+/* ctx clamp */
+.cp-ctx {
+  position: fixed !important;
+  z-index: 10000 !important;
+  max-height: min(80vh, 520px);
+  overflow-y: auto;
+}
