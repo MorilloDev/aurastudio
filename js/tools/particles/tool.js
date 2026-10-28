@@ -889,11 +889,27 @@
         ctx.rotate(p.rot || 0);
         ctx.globalAlpha = alpha;
         if (img) {
-          const iw = sizePx * (img.width / Math.max(img.height, 1));
-          const ih = sizePx;
+          const iw = Math.max(1, sizePx * (img.width / Math.max(img.height, 1)));
+          const ih = Math.max(1, sizePx);
           const px = parent?.pivot?.[0] ?? 0.5;
           const py = parent?.pivot?.[1] ?? 0.5;
-          ctx.drawImage(img, -iw * px, -ih * py, iw, ih);
+          // Tint × texture (igual que el juego: color final = texel * tint)
+          const tw = Math.ceil(iw), th = Math.ceil(ih);
+          if (!this._tintCanvas) this._tintCanvas = document.createElement("canvas");
+          const tc = this._tintCanvas;
+          if (tc.width < tw || tc.height < th) { tc.width = tw; tc.height = th; }
+          const tctx = tc.getContext("2d");
+          tctx.clearRect(0, 0, tw, th);
+          tctx.globalCompositeOperation = "source-over";
+          tctx.globalAlpha = 1;
+          tctx.drawImage(img, 0, 0, tw, th);
+          tctx.globalCompositeOperation = "multiply";
+          tctx.fillStyle = `rgb(${col[0] | 0},${col[1] | 0},${col[2] | 0})`;
+          tctx.fillRect(0, 0, tw, th);
+          tctx.globalCompositeOperation = "destination-in";
+          tctx.drawImage(img, 0, 0, tw, th);
+          tctx.globalCompositeOperation = "source-over";
+          ctx.drawImage(tc, 0, 0, tw, th, -iw * px, -ih * py, iw, ih);
         } else {
           ctx.fillStyle = `rgb(${col[0]|0},${col[1]|0},${col[2]|0})`;
           ctx.beginPath();
