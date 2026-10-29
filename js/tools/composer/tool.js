@@ -840,9 +840,9 @@
         while (used.has(x + ",0,0")) x++;
         g.offsetX = x;
       }
-      // Si el grupo activo es carpeta, anidar dentro; si no, top-level
+      // Anidar bajo el grupo o carpeta seleccionado; si no hay selección, raíz
       const cur = this.group();
-      if (cur?.folder) {
+      if (cur) {
         cur.children = cur.children || [];
         cur.children.push(g);
         cur.collapsed = false;
@@ -1324,27 +1324,27 @@
           { label: "Duplicar grupo", action: () => { this.selectGroup(target.id, -1); this.duplicateGroup(); } },
           { sep: true },
         );
-        const folders = [];
+        const banned = new Set([target.id]);
+        walkGroups(g?.children || [], (c) => banned.add(c.id));
+        const hosts = [];
         walkGroups(this.doc.groups, (gg) => {
-          if (gg.folder && gg.id !== target.id) folders.push(gg);
+          if (!banned.has(gg.id)) hosts.push(gg);
         });
-        if (folders.length) {
-          folders.forEach((ff) => {
+        if (hosts.length) {
+          hosts.slice(0, 24).forEach((ff) => {
             items.push({
-              label: "Mover a 📁 " + ff.name,
+              label: (ff.folder ? "Mover a 📁 " : "Mover dentro de ") + ff.name,
               action: () => this.moveGroupTo(target.id, ff.id),
             });
           });
           items.push({ sep: true });
         }
-        if (g?.folder) {
-          items.push(
-            { sep: true },
-            { label: "＋ Subcarpeta aquí", action: () => { this.selectGroup(target.id, -1); this.addNested("folder"); } },
-            { label: "＋ Grupo aquí", action: () => { this.selectGroup(target.id, -1); this.addNested("group"); } },
-            { label: "＋ Parte multipart aquí", action: () => { this.selectGroup(target.id, -1); this.addNested("part"); } },
-          );
-        }
+        items.push(
+          { sep: true },
+          { label: "＋ Carpeta dentro", action: () => { this.selectGroup(target.id, -1); this.addNested("folder"); } },
+          { label: "＋ Grupo dentro", action: () => { this.selectGroup(target.id, -1); this.addNested("group"); } },
+          { label: "＋ Parte dentro", action: () => { this.selectGroup(target.id, -1); this.addNested("part"); } },
+        );
         items.push(
           { label: "Sacar de carpeta (raíz)", action: () => this.moveGroupToRoot(target.id), disabled: !ref?.parent },
           { sep: true },
@@ -1481,19 +1481,14 @@
       }
       const [node] = ref.list.splice(ref.index, 1);
       const dest = toRef.group;
-      if (dest.folder) {
-        dest.children = dest.children || [];
-        dest.children.push(node);
-        dest.collapsed = false;
-      } else {
-        // Hermano: insertar después del destino en la misma lista
-        toRef.list.splice(toRef.index + 1, 0, node);
-      }
+      dest.children = dest.children || [];
+      dest.children.push(node);
+      dest.collapsed = false;
       this.doc.selectedGroupId = node.id;
       this.doc.selectedLayer = -1;
       this.touch();
       this.studio?.toast(
-        dest.folder ? `«${node.name}» → 📁 ${dest.name}` : `«${node.name}» movido`,
+        `«${node.name}» → dentro de «${dest.name}»`,
         { kind: "ok" },
       );
     }
@@ -1501,17 +1496,6 @@
     /** Crea carpeta/grupo/parte como hijo de la carpeta activa (o raíz). */
     addNested(kind) {
       const cur = this.group();
-      const parentFolder = cur?.folder ? cur : (findGroup(this.doc.groups, this.doc.selectedGroupId)?.parent || null);
-      // If current is folder, nest inside it; else if parent is folder, nest there; else root
-      let hostList = this.doc.groups;
-      let hostFolder = null;
-      if (cur?.folder) {
-        hostFolder = cur;
-        hostList = cur.children = cur.children || [];
-      } else if (parentFolder?.folder) {
-        hostFolder = parentFolder;
-        hostList = parentFolder.children = parentFolder.children || [];
-      }
       this.pushHistory();
       const count = { n: 0 };
       walkGroups(this.doc.groups, () => { count.n++; });
@@ -1521,17 +1505,26 @@
       if (multipart && !folder) {
         const used = new Set();
         walkGroups(this.doc.groups, (x) => {
-          if (x.multipart) used.add((x.offsetX|0) + "," + (x.offsetY|0) + "," + (x.offsetZ|0));
+          if (x.multipart) used.add((x.offsetX | 0) + "," + (x.offsetY | 0) + "," + (x.offsetZ | 0));
         });
         let x = 0;
         while (used.has(x + ",0,0")) x++;
         g.offsetX = x;
       }
-      hostList.push(g);
-      if (hostFolder) hostFolder.collapsed = false;
+      if (cur) {
+        cur.children = cur.children || [];
+        cur.children.push(g);
+        cur.collapsed = false;
+      } else {
+        this.doc.groups.push(g);
+      }
       this.doc.selectedGroupId = g.id;
       this.doc.selectedLayer = -1;
       this.touch();
+      this.studio?.toast(
+        cur ? `«${g.name}» dentro de «${cur.name}»` : `«${g.name}» en raíz`,
+        { kind: "ok" },
+      );
     }
 
     moveLayer(gi, li, dir) {
@@ -2154,8 +2147,17 @@
       }
     }
 
+
+    renderGroupLayer(g, layerIndex) {
+      if (!g || !g.layers || !g.layers[layerIndex]) return null;
+      const saved = g.layers.map((L) => L.visible);
+      g.layers.forEach((L, i) => { L.visible = i === layerIndex; });
+      const cell = this.renderGroup(g);
+      g.layers.forEach((L, i) => { L.visible = saved[i]; });
+      return cell;
+    }
+
     paintPart() {
-      // Siempre S×S (64×64): la celda completa, centrada en el panel.
       const S = this.activeCell?.size || this.doc.size || 64;
       const c = this.partCanvas;
       const scale = this.#partScale();
@@ -2170,14 +2172,42 @@
       off.width = S; off.height = S;
       off.getContext("2d").putImageData(
         new ImageData(new Uint8ClampedArray(this.activeCell.color), S, S), 0, 0);
-      ctx.drawImage(off, 0, 0, c.width, c.height);
-      // Marco de la celda 64×64 (el arte iso deja las esquinas vacías a propósito)
-      ctx.strokeStyle = "rgba(95, 211, 176, 0.35)";
-      ctx.lineWidth = Math.max(1, Math.round(scale / 2));
-      ctx.strokeRect(0.5, 0.5, c.width - 1, c.height - 1);
-      // Diamante del suelo del tile (donde ancla el juego: centro en 32,16)
+      const g = this.group();
+      const li = this.doc.selectedLayer;
+      const layerFocus = g && !g.folder && li >= 0 && g.layers && g.layers[li];
+      if (layerFocus) {
+        ctx.globalAlpha = 0.28;
+        ctx.drawImage(off, 0, 0, c.width, c.height);
+        ctx.globalAlpha = 1;
+        const solo = this.renderGroupLayer(g, li);
+        if (solo?.color) {
+          const so = document.createElement("canvas");
+          so.width = S; so.height = S;
+          so.getContext("2d").putImageData(
+            new ImageData(new Uint8ClampedArray(solo.color), S, S), 0, 0);
+          ctx.drawImage(so, 0, 0, c.width, c.height);
+        }
+        ctx.strokeStyle = "rgba(255, 210, 90, 0.95)";
+        ctx.lineWidth = Math.max(2, Math.round(scale / 2));
+        ctx.strokeRect(1.5, 1.5, c.width - 3, c.height - 3);
+        const name = g.layers[li].name || ("Capa " + (li + 1));
+        ctx.font = `bold ${Math.max(11, 10 * scale)}px system-ui`;
+        ctx.fillStyle = "rgba(255, 210, 90, 0.95)";
+        ctx.fillText("★ " + name, 6 * scale, 14 * scale);
+      } else {
+        ctx.drawImage(off, 0, 0, c.width, c.height);
+        ctx.strokeStyle = "rgba(95, 211, 176, 0.95)";
+        ctx.lineWidth = Math.max(2, Math.round(scale / 2));
+        ctx.strokeRect(0.5, 0.5, c.width - 1, c.height - 1);
+        if (g && !g.folder) {
+          ctx.font = `bold ${Math.max(11, 10 * scale)}px system-ui`;
+          ctx.fillStyle = "rgba(95, 211, 176, 0.9)";
+          ctx.fillText("◆ " + (g.name || "Grupo"), 6 * scale, 14 * scale);
+        }
+      }
       const hw = c.width / 2, hh = c.height / 4;
-      ctx.strokeStyle = "rgba(95, 211, 176, 0.9)";
+      ctx.strokeStyle = layerFocus ? "rgba(255, 210, 90, 0.7)" : "rgba(95, 211, 176, 0.9)";
+      ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(hw, 0.5);
       ctx.lineTo(c.width - 0.5, hh);
@@ -2212,10 +2242,20 @@
         for (const o of this.preview.outlines) {
           const x = o.x * scale, y = o.y * scale, s = S * scale;
           const hw = s / 2, hh = s / 4; // HalfTileW / HalfTileH en pantalla
+          if (o.active) {
+            ctx.fillStyle = "rgba(95, 211, 176, 0.12)";
+            ctx.beginPath();
+            ctx.moveTo(x + hw, y);
+            ctx.lineTo(x + s, y + hh);
+            ctx.lineTo(x + hw, y + hh * 2);
+            ctx.lineTo(x, y + hh);
+            ctx.closePath();
+            ctx.fill();
+          }
           ctx.strokeStyle = o.active
             ? "rgba(95, 211, 176, 0.95)"
             : (o.multipart ? "rgba(127, 178, 255, 0.65)" : "rgba(255,255,255,0.3)");
-          ctx.lineWidth = o.active ? 2 : 1;
+          ctx.lineWidth = o.active ? 2.5 : 1;
           // Diamante superior (centro del tile en y = hh desde el top-left del sprite)
           ctx.beginPath();
           ctx.moveTo(x + hw, y);           // top
