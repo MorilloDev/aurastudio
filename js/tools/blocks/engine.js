@@ -523,7 +523,8 @@
    * box, which the voxels already draw exactly. Each constraint keeps its local normal, which picks the texture.
    */
   function slopePart(b, tf, H) {
-    if (!b.cuts?.length) return null;
+    // A carved-out part (a subtracted ramp) is removed voxel by voxel; only solid parts draw true slopes.
+    if (!b.cuts?.length || b.hole) return null;
     const c = [0.5, 0.5, 0.5];
     const o0 = tf.toWorld(c);
     const axes = [0, 1, 2].map((a) => { const e = c.slice(); e[a] += 1; const w = tf.toWorld(e); return [w[0] - o0[0], w[1] - o0[1], w[2] - o0[2]]; });
@@ -535,7 +536,7 @@
       const nw = [nu[0], nu[1], nu[2] / H], dw = du - 0.5 * (nu[0] + nu[1]);
       const len = Math.hypot(nw[0], nw[1], nw[2]);
       const ll = Math.hypot(n[0], n[1], n[2]);
-      cons.push({ n: [nw[0] / len, nw[1] / len, nw[2] / len], d: dw / len, local: [n[0] / ll, n[1] / ll, n[2] / ll], isCut });
+      cons.push({ n: [nw[0] / len, nw[1] / len, nw[2] / len], d: dw / len, local: [n[0] / ll, n[1] / ll, n[2] / ll], localD: d / ll, isCut });
     };
     for (let a = 0; a < 3; a++) {
       const e = [0, 0, 0]; e[a] = 1;
@@ -580,15 +581,47 @@
       ev = nrm(crs(n, eu));
       if (ev[1] < 0) ev = [-ev[0], -ev[1], -ev[2]];
     }
-    const b = part.box;
+    // The texture spans this face's own polygon. The box corners are not enough: an octagon's cuts remove all eight,
+    // which left the range empty and the face black (NaN coordinates).
+    const verts = partVertices(part.box);
+    let face = verts.filter((q) => Math.abs(dt(q, n) - con.localD) < 1e-4);
+    if (face.length < 2) face = verts;
     let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
-    for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) for (const z of [b.min[2], b.max[2]]) {
-      const q = [x, y, z];
-      if (!inPart(b, q, 1e-4)) continue;
+    for (const q of face) {
       u0 = Math.min(u0, dt(q, eu)); u1 = Math.max(u1, dt(q, eu));
       v0 = Math.min(v0, dt(q, ev)); v1 = Math.max(v1, dt(q, ev));
     }
+    if (!(u1 > u0)) { u0 = 0; u1 = 1; }
+    if (!(v1 > v0)) { v0 = 0; v1 = 1; }
     return [name, (dt(lp, eu) - u0) / Math.max(1e-6, u1 - u0), (dt(lp, ev) - v0) / Math.max(1e-6, v1 - v0)];
+  }
+
+  /** Corners of a convex part (its box planes and cuts), local units; cached per part. */
+  const vertexCache = new WeakMap();
+  function partVertices(b) {
+    let out = vertexCache.get(b);
+    if (out) return out;
+    const planes = [];
+    for (let a = 0; a < 3; a++) {
+      const e = [0, 0, 0]; e[a] = 1;
+      planes.push({ n: e, d: b.max[a] }, { n: [-e[0], -e[1], -e[2]], d: -b.min[a] });
+    }
+    for (const c of b.cuts ?? []) planes.push(c);
+    out = [];
+    const det3 = (a, b2, c) => a[0] * (b2[1] * c[2] - b2[2] * c[1]) - a[1] * (b2[0] * c[2] - b2[2] * c[0]) + a[2] * (b2[0] * c[1] - b2[1] * c[0]);
+    for (let i = 0; i < planes.length; i++) for (let j = i + 1; j < planes.length; j++) for (let k = j + 1; k < planes.length; k++) {
+      const [A, B, C] = [planes[i], planes[j], planes[k]];
+      const D = det3(A.n, B.n, C.n);
+      if (Math.abs(D) < 1e-9) continue;
+      // Cramer: replace one column at a time with the right-hand sides.
+      const q = [0, 1, 2].map((a) => {
+        const m = [0, 1, 2].map((r) => [0, 1, 2].map((cc) => (cc === a ? [A, B, C][r].d : [A, B, C][r].n[cc])));
+        return det3(m[0], m[1], m[2]) / D;
+      });
+      if (inPart({ min: b.min, max: b.max, cuts: b.cuts }, q, 1e-6)) out.push(q);
+    }
+    vertexCache.set(b, out);
+    return out;
   }
 
   /** World point -> sprite pixel coordinates (x right, y down), a full block centred in an S × S sprite. */

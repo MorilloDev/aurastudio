@@ -5,13 +5,16 @@
   const { h, clear } = Aura.dom;
   const { writeHandle, joinPath } = Aura.fs;
   const { slider, checkbox, select } = Aura.controls;
+  const { prefs } = Aura.storage;
   const { decodePng } = Aura.png;
   const M = Aura.particlesModel;
 
-  // Same idea as ParticleOverlay.ReferenceUnitSize — scale is in "tile units"
-  const REF_UNIT = 32;
-  // World units visible roughly across the preview height (so vel 12 is readable)
-  const WORLD_VIEW = 8;
+  // The game's numbers, so a particle is the size and speed it will be in the game: IsoProjection (a cell is 64 × 32 px on
+  // screen, a level 32 px up) and ParticleOverlay.ReferenceUnitSize (a particle is frame size × scale × 16 px).
+  const ISO = { halfW: 32, halfH: 16, stepY: 32, particleUnit: 16 };
+  // CreatureEntity.BodyHeightTiles: the player is 2,75 levels tall.
+  const PLAYER_LEVELS = 2.75;
+  const ZOOMS = [1, 2, 3, 4];
 
   function particlesTool() {
     return new ParticlesTool();
@@ -28,6 +31,10 @@
     query = "";
     playing = true;
     loop = true;
+    // Preview: game pixels per screen pixel (the interface scale the player would have), camera, size references.
+    zoom = prefs.get("fx:zoom", 2);
+    view = prefs.get("fx:view", "iso");
+    showRefs = prefs.get("fx:refs", true);
     usingDemo = false;
     #raf = 0;
     #particles = [];
@@ -200,6 +207,13 @@
             this.playBtn, this.loopBtn,
             h("button", { onclick: () => this.#restart() }, "Reiniciar"),
             h("span", { style: "flex:1" }),
+            select({ label: "Vista", value: this.view, options: [["iso", "Iso (juego)"], ["side", "Lateral"]],
+              onChange: (v) => { this.view = v; prefs.set("fx:view", v); } }).el,
+            select({ label: "Zoom", value: String(this.zoom), options: ZOOMS.map((z) => [String(z), `${z}×`]),
+              title: "Píxeles de pantalla por píxel del juego: el tamaño con esa escala de interfaz",
+              onChange: (v) => { this.zoom = Number(v); prefs.set("fx:zoom", this.zoom); } }).el,
+            checkbox({ label: "Referencias", value: this.showRefs, title: "Un bloque y el jugador, a la escala del juego",
+              onChange: (v) => { this.showRefs = v; prefs.set("fx:refs", v); } }).el,
             this.saveBtn,
           ),
           h("div", { class: "fx-view" }, this.canvas),
@@ -400,6 +414,7 @@
             d.scale = [Math.min(cur[0] ?? 0.02, v), v]; this.#touch("Escala");
           },
         }).el,
+        this.#sizeNote(),
         slider({
           label: "Gravedad Y", min: -25, max: 5, step: 0.1,
           value: Array.isArray(bh.gravity) ? bh.gravity[1] : -9.8,
@@ -860,34 +875,40 @@
       this.#particles = next;
     }
 
-    #worldToScreen(x, y, z, cx, cy, unit) {
-      // Iso-ish: same spirit as game projection for preview
-      const sx = cx + (x - z) * unit * 0.7;
-      const sy = cy - y * unit * 0.85 - (x + z) * unit * 0.22;
-      return [sx, sy];
+    // How big the particle comes out in the game, in game pixels — the number to compare with a block (64 px wide).
+    #sizeNote() {
+      const fx = this.#fx();
+      if (!fx) return null;
+      const key = (fx.texture || "").replace(/\.png$/i, "");
+      const img = key && this.textures.get(key);
+      const frames = Math.max(1, fx.frameCount | 0 || 1);
+      const fw = img ? Math.floor(img.width / frames) : 1;
+      const px = (v) => Math.round(fw * v * ISO.particleUnit);
+      const what = img ? `textura de ${fw} px` : "sin textura: un píxel blanco";
+      return h("p", { class: "note" }, `En el juego: ${px(fx.scaleX[0])}–${px(fx.scaleX[1])} px de ancho (${what} × escala × 16). Un bloque mide 64 px.`);
+    }
+
+    // IsoProjection.WorldToScreen, camera facing north: one cell is 64 × 32 px on screen, one level up is 32 px.
+    // The result is in game pixels; the caller multiplies by the zoom.
+    #project(x, y, z) {
+      if (this.view === "side") return [x * ISO.stepY, -y * ISO.stepY];
+      return [(x - z) * ISO.halfW, (x + z) * ISO.halfH - y * ISO.stepY];
     }
 
     #draw() {
       const c = this.canvas;
       if (!c) return;
       const ctx = c.getContext("2d");
+      ctx.imageSmoothingEnabled = false;
       const w = c.width, ht = c.height;
       const dpr = this._dpr || 1;
+      const k = this.zoom * dpr; // device pixels per game pixel
+      const cx = Math.round(w * 0.5), cy = Math.round(ht * 0.66);
+      const at = (x, y, z) => { const [gx, gy] = this.#project(x, y, z); return [cx + gx * k, cy + gy * k]; };
       ctx.clearRect(0, 0, w, ht);
 
-      // floor grid
-      const cx = w * 0.5, cy = ht * 0.62;
-      const unit = Math.min(w, ht) / WORLD_VIEW;
-      ctx.strokeStyle = "rgba(255,255,255,0.04)";
-      ctx.lineWidth = 1;
-      for (let i = -6; i <= 6; i++) {
-        const [x0, y0] = this.#worldToScreen(i, 0, -6, cx, cy, unit);
-        const [x1, y1] = this.#worldToScreen(i, 0, 6, cx, cy, unit);
-        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-        const [a0, b0] = this.#worldToScreen(-6, 0, i, cx, cy, unit);
-        const [a1, b1] = this.#worldToScreen(6, 0, i, cx, cy, unit);
-        ctx.beginPath(); ctx.moveTo(a0, b0); ctx.lineTo(a1, b1); ctx.stroke();
-      }
+      this.#drawFloor(ctx, at, k);
+      if (this.showRefs) this.#drawReferences(ctx, at, k, dpr);
 
       const fx = this.#fx();
       const sorted = this.#particles.slice().sort((a, b) => (a.x + a.z) - (b.x + b.z) || a.y - b.y);
@@ -900,44 +921,47 @@
         let col = parent?.colorCurve ? M.evalColorCurve(parent.colorCurve, t) : p.baseTint.slice();
         if (!col) col = p.baseTint.slice();
         const alpha = Math.max(0, Math.min(1, (col[3] / 255) * alMul));
-
-        const sizePx = Math.max(2, p.baseScale[0] * scMul * REF_UNIT * (unit / 16) * dpr);
-        const [sx, sy] = this.#worldToScreen(p.x, p.y, p.z, cx, cy, unit);
+        const [sx, sy] = at(p.x, p.y, p.z);
 
         const texKey = (p.tex || parent?.texture || "").replace(/\.png$/i, "");
         const img = texKey && this.textures.get(texKey);
 
+        // ParticleOverlay: size = frame size × scale × ReferenceUnitSize (16), in game pixels. Without a texture the
+        // game draws its 1 × 1 white pixel, so the particle is scale × 16 px square.
+        const frames = Math.max(1, parent?.frameCount | 0 || 1);
+        const frameW = img ? Math.max(1, Math.floor(img.width / frames)) : 1;
+        const frameH = img ? img.height : 1;
+        const sxScale = p.baseScale[0] * scMul, syScale = p.baseScale[1] * scMul;
+        const iw = Math.max(1, frameW * sxScale * ISO.particleUnit * k);
+        const ih = Math.max(1, frameH * syScale * ISO.particleUnit * k);
+        const px = parent?.pivot?.[0] ?? 0.5;
+        const py = parent?.pivot?.[1] ?? 0.5;
+
         ctx.save();
-        ctx.translate(sx, sy);
+        ctx.translate(Math.round(sx), Math.round(sy));
         ctx.rotate(p.rot || 0);
         ctx.globalAlpha = alpha;
         if (img) {
-          const iw = Math.max(1, sizePx * (img.width / Math.max(img.height, 1)));
-          const ih = Math.max(1, sizePx);
-          const px = parent?.pivot?.[0] ?? 0.5;
-          const py = parent?.pivot?.[1] ?? 0.5;
-          // Tint × texture (igual que el juego: color final = texel * tint)
-          const tw = Math.ceil(iw), th = Math.ceil(ih);
+          const frame = frames > 1 ? Math.floor(p.age * (parent?.fps ?? 24)) % frames : 0;
+          // Tint × texture, as the game: final colour = texel × tint.
           if (!this._tintCanvas) this._tintCanvas = document.createElement("canvas");
           const tc = this._tintCanvas;
-          if (tc.width < tw || tc.height < th) { tc.width = tw; tc.height = th; }
+          if (tc.width < frameW || tc.height < frameH) { tc.width = Math.max(tc.width, frameW); tc.height = Math.max(tc.height, frameH); }
           const tctx = tc.getContext("2d");
-          tctx.clearRect(0, 0, tw, th);
+          tctx.imageSmoothingEnabled = false;
+          tctx.clearRect(0, 0, tc.width, tc.height);
           tctx.globalCompositeOperation = "source-over";
-          tctx.globalAlpha = 1;
-          tctx.drawImage(img, 0, 0, tw, th);
+          tctx.drawImage(img, frame * frameW, 0, frameW, frameH, 0, 0, frameW, frameH);
           tctx.globalCompositeOperation = "multiply";
           tctx.fillStyle = `rgb(${col[0] | 0},${col[1] | 0},${col[2] | 0})`;
-          tctx.fillRect(0, 0, tw, th);
+          tctx.fillRect(0, 0, frameW, frameH);
           tctx.globalCompositeOperation = "destination-in";
-          tctx.drawImage(img, 0, 0, tw, th);
+          tctx.drawImage(img, frame * frameW, 0, frameW, frameH, 0, 0, frameW, frameH);
           tctx.globalCompositeOperation = "source-over";
-          ctx.drawImage(tc, 0, 0, tw, th, -iw * px, -ih * py, iw, ih);
+          ctx.drawImage(tc, 0, 0, frameW, frameH, -iw * px, -ih * py, iw, ih);
         } else {
-          ctx.fillStyle = `rgb(${col[0]|0},${col[1]|0},${col[2]|0})`;
-          ctx.beginPath();
-          ctx.arc(0, 0, sizePx * 0.45, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.fillStyle = `rgb(${col[0] | 0},${col[1] | 0},${col[2] | 0})`;
+          ctx.fillRect(-iw * px, -ih * py, iw, ih);
         }
         ctx.restore();
       }
@@ -948,12 +972,69 @@
       ctx.font = `${12 * dpr}px system-ui`;
       ctx.textAlign = "left";
       const name = fx ? fx.id : "—";
-      ctx.fillText(`${name} · ${this.#particles.length} partículas`, 12 * dpr, 20 * dpr);
+      ctx.fillText(`${name} · ${this.#particles.length} partículas · zoom ${this.zoom}× (como el juego a escala de interfaz ${this.zoom})`, 12 * dpr, 20 * dpr);
 
       if (!fx) {
         ctx.textAlign = "center";
         ctx.fillText("Selecciona un efecto", w / 2, ht / 2);
       }
+    }
+
+    // The ground the effect sits on: the cells of level 0 around the emitter (the emitter is at the centre cell's
+    // corner, like an effect spawned at a world point).
+    #drawFloor(ctx, at, k) {
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.lineWidth = 1;
+      const n = 5;
+      if (this.view === "side") {
+        const [x0, y0] = at(-n * 2, 0, 0), [x1] = at(n * 2, 0, 0);
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); ctx.stroke();
+        return;
+      }
+      for (let i = -n; i <= n; i++) {
+        const a = at(i, 0, -n), b = at(i, 0, n), c = at(-n, 0, i), d = at(n, 0, i);
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.moveTo(c[0], c[1]); ctx.lineTo(d[0], d[1]); ctx.stroke();
+      }
+    }
+
+    // Size references at the game's scale: a full block (one cell, one level) and the player (BodyHeightTiles 2,75
+    // levels tall), beside the emitter.
+    #drawReferences(ctx, at, k, dpr) {
+      ctx.save();
+      ctx.lineWidth = Math.max(1, dpr);
+      ctx.font = `${11 * dpr}px system-ui`;
+      ctx.textAlign = "center";
+
+      // Block in the cell (1..2, 0..1, -2..-1): top diamond and the two visible sides.
+      const bx = 1, bz = -2;
+      const P = (x, y, z) => at(bx + x, y, bz + z);
+      const poly = (pts, fill, stroke) => {
+        ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath();
+        ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = stroke; ctx.stroke();
+      };
+      if (this.view === "side") {
+        poly([P(0, 0, 0), P(1, 0, 0), P(1, 1, 0), P(0, 1, 0)], "rgba(120,140,130,0.18)", "rgba(180,200,190,0.45)");
+      } else {
+        poly([P(0, 1, 0), P(1, 1, 0), P(1, 1, 1), P(0, 1, 1)], "rgba(140,160,150,0.22)", "rgba(180,200,190,0.5)");
+        poly([P(0, 1, 1), P(1, 1, 1), P(1, 0, 1), P(0, 0, 1)], "rgba(90,105,100,0.22)", "rgba(180,200,190,0.35)");
+        poly([P(1, 1, 0), P(1, 1, 1), P(1, 0, 1), P(1, 0, 0)], "rgba(70,85,80,0.22)", "rgba(180,200,190,0.35)");
+      }
+      const [lx, ly] = P(0.5, 1.15, 0.5);
+      ctx.fillStyle = "rgba(180,200,190,0.7)";
+      ctx.fillText("1 bloque (64 px)", lx, ly - 4 * dpr);
+
+      // Player: a box 0,6 wide and 2,75 levels tall, standing on the cell left of the emitter.
+      const [fx0, fy0] = at(-1.5, 0, 1.5);
+      const height = PLAYER_LEVELS * ISO.stepY * k;
+      const width = 0.6 * ISO.halfW * 2 * k * 0.5;
+      ctx.fillStyle = "rgba(217,150,58,0.16)";
+      ctx.strokeStyle = "rgba(217,150,58,0.55)";
+      ctx.beginPath();
+      ctx.roundRect(fx0 - width / 2, fy0 - height, width, height, width / 2);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "rgba(217,150,58,0.8)";
+      ctx.fillText("jugador", fx0, fy0 - height - 4 * dpr);
+      ctx.restore();
     }
   }
 

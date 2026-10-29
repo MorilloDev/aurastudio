@@ -20,10 +20,26 @@ respaldo si falta la clave. El Studio lee esos archivos al abrir la carpeta (`js
 
 - **Atlas**: el inspector de un tile o item tiene «Textos del juego» con su nombre (y la descripción de un item) en
   ES y EN; la Revisión cuenta los que no tienen texto. Cambiar el id mueve sus textos.
+- **Atlas · Crear su tile** (lo que llega de Crear o una celda nueva): Nombre (ES) y Nombre (EN) se escriben en Data/Lang
+  al crear (cada etapa de un crecimiento con su «(n/N)»); «Crear también su item» añade a `placeables.json` el
+  `TileItem` que coloca el bloque. Ctrl+Z quita el tile y el item.
 - **Biomas**: nombre ES / EN del bioma; la lista muestra el nombre en español.
 - **Recetas**: los items salen con su nombre en español y se buscan por él o por el del JSON.
 
 Los textos se guardan con el Ctrl+S de la pestaña donde se cambiaron. No entran en el deshacer.
+
+**Crear · Bloque.** Además de las formas, cada bloque se puede montar con varias:
+- **Posición** (dieciseisavos) y **espejo** de la forma principal; lo que sale de la celda se recorta.
+- **Piezas extra**: más formas que se **suman** o se **restan** a la principal, cada una con sus medidas, posición,
+  escala, giro y espejo. Rampas, cilindros y esferas conservan sus superficies lisas al sumarse.
+- **Pasar a cajas editables**: convierte todo en la forma «Personalizada» para retocar las cajas a mano.
+
+**Crear · Planta.** Cultivos con etapas: trigo, zanahoria, patata, maíz, calabaza, **tomatera** (mata tumbada, sin
+tutor: flores, frutos verdes y maduros en el suelo) y **arroz** (plántula, macolla, espiga y grano dorado; variedad
+«En arrozal» con agua). Las hojas, bayas y cactus se hacen como bloques.
+
+**Partículas.** El tamaño sigue la fórmula del juego (frame × escala × 16 px); vista isométrica o lateral, zoom y
+referencias (un bloque de 64 px y el jugador, 2,75 bloques).
 
 ## Estructura
 

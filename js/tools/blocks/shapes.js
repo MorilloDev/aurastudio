@@ -409,6 +409,105 @@
         ];
       },
     },
+
+    // ---- Más piezas de construcción. "params" lista los deslizadores que usa cada una (clave, etiqueta, mín, máx,
+    // ayuda); la pestaña los muestra sin tener que nombrar la forma en su código.
+    quarter: {
+      label: "Cuarto de bloque", states: ["default", "inverted", "vertical"],
+      // Half a slab: the front half of the bottom half — the step of a narrow stair or a ledge.
+      boxes: () => [box(0, 0, 0, 16, 8, 8)],
+    },
+    corner: {
+      label: "Esquina (columna de cuarto)", states: ["default", "inverted"],
+      // A full-height quarter in the back-right corner: the inside of a thick corner.
+      boxes: () => [box(8, 0, 8, 16, 16, 16)],
+    },
+    pyramid: {
+      label: "Pirámide", states: ["default", "inverted"],
+      params: [["shapeHeight", "Altura", 2, 16, "Altura de la punta en dieciseisavos"]],
+      // Four slopes meeting at the centre top: y ≤ height · (1 − 2·|x − ½|) and the same in z.
+      boxes: (p) => {
+        const hgt = (p.shapeHeight ?? 16) / 16, k = 2 * hgt;
+        return [cut(box(0, 0, 0, 16, p.shapeHeight ?? 16, 16),
+          [[-k, 1, 0], 0], [[k, 1, 0], k], [[0, 1, -k], 0], [[0, 1, k], k])];
+      },
+    },
+    gable: {
+      label: "Tejado a dos aguas", states: ["default", "inverted"],
+      params: [["shapeHeight", "Altura", 2, 16, "Altura de la cumbrera en dieciseisavos"]],
+      // Two slopes meeting along a ridge that runs left–right through the middle of the cell.
+      boxes: (p) => {
+        const k = 2 * (p.shapeHeight ?? 16) / 16;
+        return [cut(box(0, 0, 0, 16, p.shapeHeight ?? 16, 16), [[0, 1, -k], 0], [[0, 1, k], k])];
+      },
+    },
+    roofEdge: {
+      label: "Alero (rampa fina)", states: ["default", "inverted"],
+      params: [["panel", "Grosor", 1, 8, "Grosor de la teja en dieciseisavos"]],
+      // A roof tile: the slanted panel standing on its lower edge, open underneath.
+      boxes: (p) => {
+        const w = Math.SQRT2 * (p.panel ?? 2) / 16;
+        return [cut(FULL, [[0, 1, -1], 0], [[0, -1, 1], w])];
+      },
+    },
+    octagon: {
+      label: "Columna octogonal", states: ["default", "horizontal"],
+      params: [["octWidth", "Grosor", 4, 16, "Ancho entre caras opuestas"]],
+      // A regular octagon of apothem h: the square |x|, |z| ≤ h with the four corners cut at |x| + |z| ≤ h·√2.
+      boxes: (p) => {
+        const w = p.octWidth ?? 12, o = (16 - w) / 2, h = w / 32, d = h * Math.SQRT2;
+        return [cut(box(o, 0, o, o + w, 16, o + w),
+          [[1, 0, 1], 1 + d], [[-1, 0, 1], d], [[1, 0, -1], d], [[-1, 0, -1], d - 1])];
+      },
+    },
+    beam: {
+      label: "Viga", states: ["default", "vertical", "horizontal"],
+      params: [["beamSize", "Grosor", 2, 16, "Lado de la viga en dieciseisavos"]],
+      // A square beam across the cell at mid height, left to right.
+      boxes: (p) => {
+        const t = p.beamSize ?? 6, o = (16 - t) / 2;
+        return [box(0, o, o, 16, o + t, o + t)];
+      },
+    },
+    door: {
+      label: "Puerta (panel en el borde)", states: ["default"],
+      params: [["doorThick", "Grosor", 1, 8, "Grosor de la hoja en dieciseisavos"]],
+      // A full-height panel against the front edge of the cell, where a door or a closed trapdoor sits.
+      boxes: (p) => [box(0, 0, 0, 16, 16, p.doorThick ?? 3)],
+    },
+    trapdoor: {
+      label: "Trampilla", states: ["default", "inverted"],
+      params: [["doorThick", "Grosor", 1, 8, "Grosor en dieciseisavos"]],
+      boxes: (p) => [box(0, 0, 0, 16, p.doorThick ?? 3, 16)],
+    },
+    ladder: {
+      label: "Escalera de mano", states: ["default"],
+      // Two rails against the back face and a rung every quarter.
+      boxes: () => [
+        box(2, 0, 14, 4, 16, 16), box(12, 0, 14, 14, 16, 16),
+        box(4, 2, 14.5, 12, 3.5, 15.5), box(4, 6, 14.5, 12, 7.5, 15.5), box(4, 10, 14.5, 12, 11.5, 15.5), box(4, 14, 14.5, 12, 15.5, 15.5),
+      ],
+    },
+    table: {
+      label: "Mesa", states: ["default"],
+      params: [["panel", "Grosor tablero", 1, 6, "Grosor del tablero"], ["legs", "Grosor patas", 1, 6, "Lado de cada pata"]],
+      boxes: (p) => {
+        const t = p.panel ?? 2, l = Math.min(6, p.legs ?? 2), top = 16 - t;
+        return [box(0, top, 0, 16, 16, 16),
+          box(1, 0, 1, 1 + l, top, 1 + l), box(15 - l, 0, 1, 15, top, 1 + l),
+          box(1, 0, 15 - l, 1 + l, top, 15), box(15 - l, 0, 15 - l, 15, top, 15)];
+      },
+    },
+    pedestal: {
+      label: "Pedestal", states: ["default", "inverted"],
+      // Wide base, narrower shaft, cap: a plinth, a lamp post foot or a statue stand.
+      boxes: () => [box(1, 0, 1, 15, 3, 15), box(4, 3, 4, 12, 13, 12), box(2, 13, 2, 14, 16, 14)],
+    },
+    steps: {
+      label: "Escalones (3)", states: ["default", "inverted"],
+      // Three thin steps instead of the game's two-step stair: a gentler staircase.
+      boxes: () => [box(0, 0, 0, 16, 5.33, 16), box(0, 5.33, 5.33, 16, 10.67, 16), box(0, 10.67, 10.67, 16, 16, 16)],
+    },
     custom: {
       label: "Personalizada", states: ["default", "inverted", "vertical", "horizontal"],
       boxes: (p) => parseCustom(p.custom),
@@ -417,12 +516,14 @@
 
   const PARAM_DEFAULTS = {
     layer: 4, small: 8, smallHeight: 8, pillar: 8, panel: 2,
-    radius: 7, frameThick: 2, archHeight: 8, archDepth: 16,
+    radius: 7, frameThick: 2, archHeight: 8, archDepth: 16, shapeHeight: 16, octWidth: 12, beamSize: 6, legs: 2, doorThick: 3,
     // Escala de la forma dentro de la celda (1 = tamaño completo).
     scale: 1,
     scaleX: 1,
     scaleY: 1,
     scaleZ: 1,
+    // Posición de la forma principal en dieciseisavos (se sale de la celda = se recorta) y espejo izquierda ↔ derecha.
+    offX: 0, offY: 0, offZ: 0, mirrorX: false,
     custom: '[ { "min": [0, 0, 0], "max": [1, 0.5, 1] } ]',
   };
 
@@ -450,6 +551,103 @@
       if (Array.isArray(b.center)) out.center = b.center.map((v, i) => 0.5 + (v - 0.5) * sc[i]);
       return out;
     });
+  }
+
+  // ── Placing pieces ───────────────────────────────────────────────────────────────────────────────────────────────
+  // Moves, mirrors and turns work on whole parts — their cuts, curved solids and centres move with them — so a ramp or
+  // a cylinder can be put anywhere in the cell and combined with others.
+
+  /** Mirror left ↔ right (x → 1 − x). A cut n·p ≤ d becomes (−n₀, n₁, n₂)·p ≤ d − n₀. */
+  function mirrorBoxes(boxes) {
+    return boxes.map((b) => {
+      const out = { ...b, min: [1 - b.max[0], b.min[1], b.min[2]], max: [1 - b.min[0], b.max[1], b.max[2]] };
+      if (b.cuts) out.cuts = b.cuts.map((c) => ({ n: [-c.n[0], c.n[1], c.n[2]], d: c.d - c.n[0] }));
+      if (Array.isArray(b.center)) out.center = [1 - b.center[0], b.center[1], b.center[2]];
+      return out;
+    });
+  }
+
+  /** Quarter turns about the vertical centre line, like turnLocal, but keeping cuts, centres and cylinder axes. */
+  function turnBoxes(boxes, n) {
+    let out = boxes;
+    for (let s = 0; s < (n & 3); s++) {
+      out = out.map((b) => {
+        // (x, y, z) → (1 − z, y, x); a cut n·p ≤ d on the old point is (−n₂, n₁, n₀)·q ≤ d − n₂ on the new one.
+        const a = [1 - b.min[2], b.min[1], b.min[0]], c = [1 - b.max[2], b.max[1], b.max[0]];
+        const t = { ...b, min: [Math.min(a[0], c[0]), a[1], Math.min(a[2], c[2])], max: [Math.max(a[0], c[0]), c[1], Math.max(a[2], c[2])] };
+        if (b.cuts) t.cuts = b.cuts.map((k) => ({ n: [-k.n[2], k.n[1], k.n[0]], d: k.d - k.n[2] }));
+        if (Array.isArray(b.center)) t.center = [1 - b.center[2], b.center[1], b.center[0]];
+        if (b.axis === "x") t.axis = "z"; else if (b.axis === "z") t.axis = "x";
+        return t;
+      });
+    }
+    return out;
+  }
+
+  /** Moves parts by (dx, dy, dz) sixteenths. What ends up outside the cell is cut off by the cell itself; a cut moves
+   *  with its part (n·(p − t) ≤ d → n·p ≤ d + n·t). */
+  function moveBoxes(boxes, dx = 0, dy = 0, dz = 0) {
+    if (!dx && !dy && !dz) return boxes;
+    const t = [dx / 16, dy / 16, dz / 16];
+    const clamp = (v) => Math.max(0, Math.min(1, v));
+    return boxes
+      .map((b) => {
+        const out = { ...b, min: b.min.map((v, i) => clamp(v + t[i])), max: b.max.map((v, i) => clamp(v + t[i])) };
+        if (b.cuts) out.cuts = b.cuts.map((c) => ({ n: c.n, d: c.d + c.n[0] * t[0] + c.n[1] * t[1] + c.n[2] * t[2] }));
+        if (Array.isArray(b.center)) out.center = b.center.map((v, i) => v + t[i]);
+        return out;
+      })
+      .filter((b) => b.max.every((v, i) => v - b.min[i] > 1e-6));
+  }
+
+  /** Scale, mirror, turn and move, in that order: how the main shape and every extra piece are placed. */
+  function placeBoxes(boxes, t) {
+    let out = boxes;
+    const sx = t.sx ?? 1, sy = t.sy ?? 1, sz = t.sz ?? 1;
+    if (sx !== 1 || sy !== 1 || sz !== 1) out = scaleBoxes(out, sx, sy, sz);
+    if (t.mirror) out = mirrorBoxes(out);
+    if (t.turn) out = turnBoxes(out, t.turn);
+    return moveBoxes(out, t.x, t.y, t.z);
+  }
+
+  /** Shapes an extra piece can be (fences and walls join with neighbours and cannot be stacked into one block). */
+  const extraShapes = () => Object.entries(SHAPES).filter(([, s]) => !s.connects).map(([k, s]) => [k, s.label]);
+
+  /**
+   * Extra pieces combined with the main shape: [{ shape, params, sx, sy, sz, x, y, z, turn, mirror, mode }].
+   * mode "add" joins the piece to the block; "subtract" carves it out (a ramp-shaped notch, a round hollow…).
+   */
+  function extraBoxes(extras) {
+    const out = [];
+    for (const e of extras ?? []) {
+      const def = SHAPES[e.shape];
+      if (!def || def.connects) continue;
+      let boxes;
+      try { boxes = def.boxes({ ...PARAM_DEFAULTS, ...(e.params || {}) }); } catch { continue; }
+      boxes = placeBoxes(boxes, e);
+      if (e.mode === "subtract") boxes = boxes.map((b) => ({ ...b, hole: true }));
+      out.push(...boxes);
+    }
+    return out;
+  }
+
+  /** The block's boxes as the "custom" JSON, to keep editing them by hand. Units of the cell (0..1), 4 decimals. */
+  function boxesToCustom(boxes) {
+    const r = (v) => Math.round(v * 10000) / 10000;
+    const list = boxes.filter((b) => !(b.hole && b.half)).map((b) => {
+      const o = { min: b.min.map(r), max: b.max.map(r) };
+      if (b.cuts?.length) o.cuts = b.cuts.map((c) => ({ n: c.n.map(r), d: r(c.d) }));
+      if (b.hole) o.hole = true;
+      if (b.solid) {
+        o.solid = b.solid;
+        if (b.center) o.center = b.center.map(r);
+        if (typeof b.radius === "number") o.radius = r(b.radius);
+        if (typeof b.inner === "number") o.inner = r(b.inner);
+        if (b.axis) o.axis = b.axis;
+      }
+      return o;
+    });
+    return "[\n" + list.map((o) => "  " + JSON.stringify(o)).join(",\n") + "\n]";
   }
 
   /**
@@ -515,6 +713,17 @@
     return true;
   }
 
+  /** The block's own boxes before the user's holes: the main shape placed (scale, mirror, move) plus its extra pieces. */
+  function composeBoxes(opts) {
+    const def = SHAPES[opts.shape] ?? SHAPES.cube;
+    const p = { ...PARAM_DEFAULTS, ...(opts.params || {}) };
+    const boxes = placeBoxes(def.boxes(p), {
+      sx: (p.scaleX ?? 1) * (p.scale ?? 1), sy: (p.scaleY ?? 1) * (p.scale ?? 1), sz: (p.scaleZ ?? 1) * (p.scale ?? 1),
+      mirror: !!p.mirrorX, x: p.offX, y: p.offY, z: p.offZ,
+    });
+    return boxes.concat(extraBoxes(opts.extras));
+  }
+
   /**
    * Every sprite the chosen shape needs, in save order. Each variant: { id, label, boxes (local), state, facing,
    * art: { key, side } } where art says where it goes in the tile's "art" map (or a part name for fences / walls).
@@ -543,11 +752,7 @@
       }
       return out;
     }
-    let boxes = def.boxes(p);
-    const sx = (p.scaleX ?? 1) * (p.scale ?? 1);
-    const sy = (p.scaleY ?? 1) * (p.scale ?? 1);
-    const sz = (p.scaleZ ?? 1) * (p.scale ?? 1);
-    if (sx !== 1 || sy !== 1 || sz !== 1) boxes = scaleBoxes(boxes, sx, sy, sz);
+    let boxes = composeBoxes(opts);
     // Agujeros del usuario (movibles): se restan del sólido; el interior se ilumina como superficie 3D.
     if (opts.holes?.length) boxes = boxes.concat(holeBoxes(opts.holes));
     const iso = hasIso(opts.iso) ? { x: opts.iso.x | 0, y: opts.iso.y | 0, z: opts.iso.z | 0 } : null;
@@ -585,5 +790,6 @@
   Aura.blockShapes = {
     SHAPES, PARAM_DEFAULTS, STATE_LABEL, FACING_LABEL, DIRS,
     transform, boxesToWorld, variants, holeBoxes, inHoleVolume, artSnippet, parseCustom, turnLocal, isoMatrix, hasIso, inSolid, scaleBoxes,
+    mirrorBoxes, turnBoxes, moveBoxes, placeBoxes, extraBoxes, extraShapes, composeBoxes, boxesToCustom,
   };
 })(typeof window !== "undefined" ? (window.Aura ??= {}) : (globalThis.Aura ??= {}));

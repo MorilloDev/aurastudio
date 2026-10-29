@@ -1571,7 +1571,14 @@
       const opts = this.#docOptions();
       if (!opts.length) return h("p", { class: "note" }, "No hay archivos de tiles ni de items (Data/Tiles, Data/Items) donde crear uno.");
       const base = placement?.p.name ?? "";
-      const nameIn = h("input", { type: "text", value: base, placeholder: "Nombre (p. ej. Oak Leaves)", spellcheck: false });
+      // The JSON "name" is the English fallback and gives the id; what the player reads comes from Data/Lang (es_es is
+      // the base language, en_us its translation), written when the tile is created.
+      const nameIn = h("input", { type: "text", value: base, placeholder: "Name in English (p. ej. Oak Leaves)", spellcheck: false });
+      const esIn = h("input", { type: "text", value: "", placeholder: "Nombre en español (p. ej. Hojas de roble)", spellcheck: true });
+      const L = Aura.lang;
+      const { contentKey } = Aura.langKeys;
+      const placeables = this.docs.find((d) => d.root && T.isItemDoc(d) && /(^|\/)placeables\.json$/i.test(d.path));
+      const itemChk = h("input", { type: "checkbox", checked: !!placeables && (placement?.p.kind ?? "block") === "block" });
       const idIn = h("input", { type: "text", value: placement?.p.id ?? "", placeholder: "id: del nombre", spellcheck: false });
       const fileSel = select({ options: opts, value: opts[0][0] });
       const kindSel = select({ options: TILE_KINDS.map(([k, t]) => [k, t]), value: placement?.p.kind ?? "block" });
@@ -1605,7 +1612,10 @@
         const tile = { id, name, ...structuredClone(TILE_KINDS.find(([k]) => k === kindSel.get())[2]) };
         if (onOtherSheet) tile.sheetId = this.sheet.id;
         Object.assign(tile, placement?.p.buildTile ? placement.p.buildTile(coords) : { art: { default: { front: coords[0] } } });
-        return { doc, tiles: [tile] };
+        // The item that places it, in placeables.json: the same shape as the game's own block items (no icon of its own,
+        // the game draws the tile).
+        const item = itemChk.checked && placeables ? { id, name, desc: "", type: "TileItem", maxStack: 256, tileType: id, tile: id } : null;
+        return { doc, tiles: [tile], item };
       };
       const refresh = () => {
         try {
@@ -1614,33 +1624,60 @@
           const doc = this.docs.find((d) => d.path === fileSel.get());
           const sameKind = (d) => T.isItemDoc(d) === T.isItemDoc(doc);
           const taken = tiles.find((tile) => this.docs.some((d) => sameKind(d) && d.root?.tiles.some((t) => t && T.tileId(t) === T.tileId(tile))));
-          error.textContent = taken ? `Ya existe ${T.isItemDoc(doc) ? "un item" : "un tile"} «${T.tileId(taken)}».` : "";
+          const built = build();
+          const itemTaken = built.item && placeables.root.tiles.some((t) => t && T.tileId(t) === T.tileId(built.item));
+          error.textContent = taken ? `Ya existe ${T.isItemDoc(doc) ? "un item" : "un tile"} «${T.tileId(taken)}».`
+            : itemTaken ? `Ya hay un item «${T.tileId(built.item)}» en ${placeables.name}: desmarca «Crear su item».` : "";
           kindSel.el.hidden = T.isItemDoc(doc);
+          itemRow.hidden = !placeables || T.isItemDoc(doc) || !!placement?.p.buildTiles;
         } catch (err) {
           preview.textContent = "";
           error.textContent = err.message;
         }
       };
+      const itemRow = h("label", { class: "field check", title: placeables ? `Añade a ${placeables.name} el item que coloca este bloque` : "" },
+        itemChk, h("span", null, "Crear también su item (placeables)"));
+      itemChk.addEventListener("change", refresh);
       for (const el of [nameIn, idIn]) el.addEventListener("input", refresh);
       fileSel.input.addEventListener("change", refresh);
       kindSel.input.addEventListener("change", refresh);
       const create = () => {
         refresh();
         if (error.textContent) return;
-        const { doc, tiles } = build();
+        const { doc, tiles, item } = build();
         const list = doc.root.tiles;
+        const itemList = item ? placeables.root.tiles : null;
         this.tile = tiles[0];
         if (placement) this.placed = null;
         const what = T.isItemDoc(doc) ? "item" : "tile";
         this.#run(tiles.length === 1 ? `Nuevo ${what} ${tiles[0].name}` : `${tiles.length} ${what}s nuevos`,
-          () => list.push(...tiles), () => list.splice(list.indexOf(tiles[0]), tiles.length));
-        this.studio.setStatus(`${tiles.map((t) => "«" + t.id + "»").join(", ")} añadido(s) a ${doc.name}. Guarda para escribirlo (Ctrl+S).`, "ok");
+          () => { list.push(...tiles); if (item) itemList.push(item); },
+          () => { if (item) itemList.splice(itemList.indexOf(item), 1); list.splice(list.indexOf(tiles[0]), tiles.length); });
+        // Texts: Spanish (base) and English. A growth set names every stage; the last one is the plant's own name.
+        const es = esIn.value.trim(), en = nameIn.value.trim();
+        if (L.available) {
+          const kind = T.isItemDoc(doc) ? "item" : "tile";
+          tiles.forEach((t, i) => {
+            const stage = tiles.length > 1 && i < tiles.length - 1 ? ` (${i + 1}/${tiles.length})` : "";
+            if (es) L.set(contentKey(kind, T.tileId(t), "name"), "es_es", es + stage);
+            if (en) L.set(contentKey(kind, T.tileId(t), "name"), "en_us", en + stage);
+          });
+          if (item) {
+            if (es) L.set(contentKey("item", T.tileId(item), "name"), "es_es", es);
+            if (en) L.set(contentKey("item", T.tileId(item), "name"), "en_us", en);
+          }
+          this.studio.refreshDirty();
+        }
+        const extra = item ? ` + item en ${placeables.name}` : "";
+        this.studio.setStatus(`${tiles.map((t) => "«" + t.id + "»").join(", ")} añadido(s) a ${doc.name}${extra}${es ? " · textos ES/EN" : ""}. Guarda para escribirlo (Ctrl+S).`, "ok");
       };
       refresh();
       details.append(
         h("summary", null, placement ? "Crear su tile" : "Nuevo tile o item en esta celda"),
-        h("div", { class: "field" }, h("label", null, "Nombre"), nameIn),
+        h("div", { class: "field", title: "Lo que lee el jugador en español (Data/Lang/es_es.json)" }, h("label", null, "Nombre (ES)"), esIn),
+        h("div", { class: "field", title: "Name in English: the JSON \"name\", the id and Data/Lang/en_us.json" }, h("label", null, "Nombre (EN)"), nameIn),
         h("div", { class: "field" }, h("label", null, "Id"), idIn),
+        itemRow,
         h("div", { class: "field" }, h("label", null, "Archivo"), fileSel.el),
         placement?.p.buildTiles ? null : h("div", { class: "field" }, h("label", null, "Clase"), kindSel.el),
         preview, error,

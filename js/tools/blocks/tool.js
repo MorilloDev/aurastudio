@@ -54,6 +54,7 @@
     frontSide: "left",
     rot3d: { x: 0, y: 0, z: 0 },
     holes: [],  // [{ x,y,z,w,h,d, solid }] en dieciseisavos; solid: box|sphere|cylinder
+    extras: [], // piezas extra sumadas o restadas a la forma: ver Sh.extraBoxes
   };
   const mergePiece = ({ iso, ...p } = {}) => ({
     ...PIECE_DEFAULTS, ...p,
@@ -70,7 +71,39 @@
       rx: h.rx || 0, ry: h.ry || 0, rz: h.rz || 0,
       solid: h.solid || "box",
     })) : [],
+    extras: Array.isArray(p.extras) ? p.extras.map(newExtra) : [],
   });
+
+  /** An extra piece with every key filled in (old saves and new pieces alike). */
+  function newExtra(e = {}) {
+    return {
+      shape: Sh.SHAPES[e.shape] && !Sh.SHAPES[e.shape].connects ? e.shape : "small",
+      mode: e.mode === "subtract" ? "subtract" : "add",
+      params: { ...(e.params || {}) },
+      sx: e.sx ?? 1, sy: e.sy ?? 1, sz: e.sz ?? 1,
+      x: e.x ?? 0, y: e.y ?? 0, z: e.z ?? 0,
+      turn: (e.turn | 0) & 3, mirror: !!e.mirror,
+    };
+  }
+
+  // Size sliders of each shape: [key, label, min, max, title]. The older shapes list theirs here; newer ones declare
+  // "params" in shapes.js. Used by the main shape and by every extra piece.
+  function shapeParamDefs(shape) {
+    const def = Sh.SHAPES[shape] ?? Sh.SHAPES.cube;
+    const out = [];
+    if (shape === "layer") out.push(["layer", "Altura", 1, 15, "Altura de la capa en dieciseisavos (4 = un cuarto)"]);
+    if (shape === "small") out.push(["small", "Ancho", 2, 16, ""], ["smallHeight", "Alto", 1, 16, ""]);
+    if (shape === "pillar") out.push(["pillar", "Grosor", 1, 16, "Grosor del pilar; con escala 3D puede ocupar todo el bloque"]);
+    if (["panel", "slopePanel", "diagonalWall", "semicircle", "frame", "frameRound"].includes(shape)) out.push(["panel", "Grosor", 1, 8, ""]);
+    if (["sphere", "hemisphere", "cylinder", "semicircle", "arch", "frameRound", "tube"].includes(shape)) out.push(["radius", "Radio", 2, 8, "Radio en dieciseisavos del bloque"]);
+    if (["frame", "frameRound", "arch", "tube"].includes(shape)) out.push(["frameThick", "Grosor marco", 1, 6, "Grosor del marco, pilares o pared del tubo"]);
+    if (shape === "arch") {
+      out.push(["archHeight", "Altura pilares", 1, 14, "Altura de las columnas del arco en dieciseisavos"],
+        ["archDepth", "Profundidad", 2, 16, "Cuánto avanza el arco en profundidad (Z)"]);
+    }
+    for (const entry of def.params ?? []) out.push(entry);
+    return out;
+  }
 
   // Option keys each panel section owns, for its own reset button.
   const SECTION_KEYS = {
@@ -320,6 +353,73 @@
 
 
 
+    /** Where the main shape sits in its cell: moved in sixteenths, mirrored, and the button that bakes everything
+     *  (shape, scale, position, extra pieces) into editable boxes. */
+    #placeControls() {
+      const move = (key, label, title) => this.#pieceSlider(label, key, -16, 16, title, 0.5);
+      const bake = h("button", { type: "button", title: "Convierte la forma, su escala, posición y piezas extra en cajas que puedes editar a mano",
+        onclick: () => {
+          const text = Sh.boxesToCustom(Sh.composeBoxes(this.piece));
+          this.#resetPreview();
+          this.#setPiece((p) => {
+            p.shape = "custom";
+            p.params = { ...p.params, custom: text, scale: 1, scaleX: 1, scaleY: 1, scaleZ: 1, offX: 0, offY: 0, offZ: 0, mirrorX: false };
+            p.extras = [];
+          }, true);
+          this.studio.toast("Forma pasada a cajas: edítalas en «Personalizada».", { kind: "ok" });
+        } }, "Pasar a cajas editables");
+      return h("div", { class: "bk-iso" },
+        h("div", { class: "at-sub" }, "Posición ", h("span", { class: "faint" }, "(dieciseisavos; lo que sale de la celda se recorta)")),
+        move("offX", "X", "Mueve la forma a la derecha (+) o a la izquierda (−)"),
+        move("offY", "Y", "Sube (+) o baja (−) la forma"),
+        move("offZ", "Z", "Mueve la forma hacia atrás (+) o hacia delante (−)"),
+        this.#pieceCheck("Espejo izquierda ↔ derecha", () => !!this.piece.params.mirrorX, (v) => { this.piece.params.mirrorX = v; },
+          "Para formas que no son simétricas: esquina, alero, escalera…"),
+        bake);
+    }
+
+    /** Extra pieces: more shapes joined to the main one (a cube with a slab on top, a pillar with a sphere) or carved
+     *  out of it (a ramp-shaped notch, a round hollow). Each has its own size, position, turn and mirror. */
+    #extrasSection() {
+      const extras = this.piece.extras || (this.piece.extras = []);
+      const rebuild = (fn) => { fn(); this.#save(); this.#schedule(); this.#rebuildPanel(); };
+      const live = (fn) => { fn(); this.#save(); this.#schedule(); };
+      const kids = [
+        h("p", { class: "note" }, "Combina formas en un solo bloque: ", h("b", null, "Sumar"), " la une a la principal, ",
+          h("b", null, "Restar"), " la talla dentro. Rampas, cilindros y esferas conservan sus superficies lisas."),
+        h("div", { class: "row" },
+          h("button", { type: "button", class: "primary", onclick: () => rebuild(() => extras.push(newExtra())) }, "+ Pieza"),
+          h("button", { type: "button", title: "Añade una copia de la forma principal para combinarla consigo misma",
+            onclick: () => rebuild(() => extras.push(newExtra({ shape: this.piece.shape === "custom" ? "small" : this.piece.shape, params: { ...this.piece.params } }))) }, "+ Copia de la principal")),
+      ];
+      extras.forEach((e, i) => {
+        const slide = (label, get, put, min, max, step, title = "", unit = "/16") => slider({
+          label, min, max, step, value: get(), unit, title, onInput: (v) => live(() => put(Number(v))) }).el;
+        const params = shapeParamDefs(e.shape).map(([key, label, min, max, title]) =>
+          slide(label, () => e.params[key] ?? Sh.PARAM_DEFAULTS[key], (v) => { e.params[key] = v; }, min, max, 1, title));
+        kids.push(h("div", { class: "bk-hole" },
+          h("div", { class: "bk-hole-head" },
+            h("b", null, "Pieza " + (i + 1)),
+            select({ label: "", value: e.shape, options: Sh.extraShapes(), onChange: (v) => rebuild(() => { e.shape = v; }) }).el,
+            select({ label: "", value: e.mode, options: [["add", "Sumar"], ["subtract", "Restar"]], onChange: (v) => live(() => { e.mode = v; }) }).el,
+            h("button", { type: "button", title: "Duplicar pieza", onclick: () => rebuild(() => extras.splice(i + 1, 0, newExtra(structuredClone(e)))) }, "⧉"),
+            h("button", { type: "button", title: "Quitar pieza", onclick: () => rebuild(() => extras.splice(i, 1)) }, "×")),
+          ...params,
+          h("div", { class: "bk-hole-sub" }, "Posición"),
+          slide("X", () => e.x, (v) => { e.x = v; }, -16, 16, 0.5),
+          slide("Y", () => e.y, (v) => { e.y = v; }, -16, 16, 0.5),
+          slide("Z", () => e.z, (v) => { e.z = v; }, -16, 16, 0.5),
+          h("div", { class: "bk-hole-sub" }, "Escala"),
+          slide("X", () => e.sx, (v) => { e.sx = v; }, 0.1, 1.25, 0.05, "", "×"),
+          slide("Y", () => e.sy, (v) => { e.sy = v; }, 0.1, 1.25, 0.05, "", "×"),
+          slide("Z", () => e.sz, (v) => { e.sz = v; }, 0.1, 1.25, 0.05, "", "×"),
+          select({ label: "Girar", value: String(e.turn), options: [["0", "0°"], ["1", "90°"], ["2", "180°"], ["3", "270°"]],
+            onChange: (v) => live(() => { e.turn = Number(v); }) }).el,
+          checkbox({ label: "Espejo izquierda ↔ derecha", value: e.mirror, onChange: (v) => live(() => { e.mirror = v; }) }).el));
+      });
+      return section({ id: "bk-extras", title: "Piezas extra", extra: extras.length ? h("span", { class: "faint" }, String(extras.length)) : null }, ...kids);
+    }
+
     #holesSection() {
       const holes = this.piece.holes || (this.piece.holes = []);
       const set = (fn) => { fn(); this.#save(); this.#schedule(); this.#rebuildPanel(); };
@@ -456,25 +556,7 @@
       const shapeSel = select({ label: "Forma", value: this.piece.shape,
         options: Object.entries(Sh.SHAPES).map(([k, s]) => [k, s.label]),
         onChange: (v) => { this.#resetPreview(); this.#setPiece((p) => { p.shape = v; }, true); } });
-      const params = [];
-      if (this.piece.shape === "layer") params.push(this.#pieceSlider("Altura", "layer", 1, 15, "Altura de la capa en dieciseisavos (4 = un cuarto)"));
-      if (this.piece.shape === "small") {
-        params.push(this.#pieceSlider("Ancho", "small", 2, 16), this.#pieceSlider("Alto", "smallHeight", 1, 16));
-      }
-      if (this.piece.shape === "pillar") params.push(this.#pieceSlider("Grosor", "pillar", 1, 16, "Grosor del pilar; con escala 3D puede ocupar todo el bloque"));
-      if (["panel", "slopePanel", "diagonalWall", "semicircle", "frame", "frameRound"].includes(this.piece.shape)) {
-        params.push(this.#pieceSlider("Grosor", "panel", 1, 8));
-      }
-      if (["sphere", "hemisphere", "cylinder", "semicircle", "arch", "frameRound", "tube"].includes(this.piece.shape)) {
-        params.push(this.#pieceSlider("Radio", "radius", 2, 8, "Radio en dieciseisavos del bloque"));
-      }
-      if (["frame", "frameRound", "arch", "tube"].includes(this.piece.shape)) {
-        params.push(this.#pieceSlider("Grosor marco", "frameThick", 1, 6, "Grosor del marco, pilares o pared del tubo"));
-      }
-      if (this.piece.shape === "arch") {
-        params.push(this.#pieceSlider("Altura pilares", "archHeight", 1, 14, "Altura de las columnas del arco en dieciseisavos"));
-        params.push(this.#pieceSlider("Profundidad", "archDepth", 2, 16, "Cuánto avanza el arco en profundidad (Z)"));
-      }
+      const params = shapeParamDefs(this.piece.shape).map(([key, label, min, max, title]) => this.#pieceSlider(label, key, min, max, title));
       // Escala de casi todas las formas (no custom a mano).
       if (this.piece.shape !== "custom" && !def.connects) {
         params.push(this.#pieceSlider("Escala", "scale", 0.2, 1, "Tamaño de la forma dentro de la celda (1 = llena el bloque)", 0.05));
@@ -504,7 +586,7 @@
         }) },
         shapeSel.el, ...params,
         this.#slider("Resolución", "res", 16, 64, 16, "Cubitos por lado del bloque: 32 = uno cada 2 px de un sprite de 64; 64 = uno por pixel (bordes y formas más finos)"),
-        this.#rot3dControls(), this.#scale3dControls(),
+        this.#rot3dControls(), this.#scale3dControls(), this.#placeControls(),
         this.#choice("Texturas", "texMode", [["auto", "Auto"], ["follow", "Giran"], ["world", "Fijas"]]),
         this.#choice("Ajuste", "uvMode", [["world", "Mundo"], ["fit", "Estirar"]]),
         h("p", { class: "note" }, h("b", null, "Auto:"), " la textura gira con la pieza en «horizontal» (troncos tumbados). La rotación 3D siempre lleva las texturas con ella. ",
@@ -625,7 +707,7 @@
 
       this.tintUi = TP.tintSection({ id: "bk-tint", state: this.tint, biomes: this.biomes,
         onChange: () => { this.#save(); this.#schedule(); } });
-      this.panelScroll = h("div", { class: "scroll" }, shape.el, this.#holesSection().el, stone.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
+      this.panelScroll = h("div", { class: "scroll" }, shape.el, this.#extrasSection().el, this.#holesSection().el, stone.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
       for (const sec of [maskSection, cover, hair, light, pixel]) sec.el.classList.add("adv");
       const detail = h("span");
       this.panel = h("div", { class: "bk-panel" },
