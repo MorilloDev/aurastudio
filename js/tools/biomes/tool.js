@@ -422,7 +422,7 @@
     }
 
     // One tile + chance (+ where, for decoration) row with a delete button.
-    #chanceRow(entry, i, edit, withOn) {
+    #chanceRow(entry, i, edit, withOn, habitat = null) {
       const chance = h("input", { type: "number", min: 0, max: 1, step: 0.0001, value: entry.chance ?? 0, title: "Probabilidad por columna (0..1)",
         onchange: () => edit((list) => { list[i].chance = Number(chance.value); }) });
       const tile = this.#tileInput(entry.tile, (v) => edit((list) => { list[i].tile = v; }));
@@ -434,36 +434,66 @@
       const info = this.#tileInfo(entry.tile);
       const thumb = h("canvas", { class: "bm-thumb", width: 32, height: 32 });
       if (info) this.#paintThumb(thumb, info);
-      return h("div", { class: ["bm-row", withOn && "with-on"] }, thumb, tile, chanceCell, on,
+      // The habitat the game resolves for this entry, under its picture: what decides its block.
+      const thumbCell = habitat && habitat !== "land"
+        ? h("div", { class: "bm-thumb-cell", title: "Hábitat: " + B.HABITAT_LABEL[habitat] }, thumb, h("span", { class: "bm-hab" }, { submerged: "fondo", emergent: "orilla", floating: "flota" }[habitat]))
+        : thumb;
+      return h("div", { class: ["bm-row", withOn && "with-on"] }, thumbCell, tile, chanceCell, on,
         h("button", { class: "icon ghost", title: "Quitar", onclick: () => edit((list) => { list.splice(i, 1); }) }, "×"));
     }
 
     #decorationSection(r) {
       const list = r.decoration ?? [];
-      const rows = list.map((d, i) => this.#chanceRow(d, i, (fn) => this.#edit("Decoración", (x) => fn(x.decoration)), true));
-      const total = list.reduce((s, d) => s + (Number(d.chance) || 0), 0);
-      this.decoTarget ??= 0.6;
-      const target = h("input", { type: "number", min: 0.05, max: 0.95, step: 0.05, value: this.decoTarget,
-        title: "Cuánto suelo cubre la decoración en total (0..0,95): «Auto-ajustar» reparte esto entre las entradas",
-        onchange: () => { this.decoTarget = Math.min(0.95, Math.max(0.05, Number(target.value) || 0.6)); } });
+      const tiles = this.#tiles;
+      const edit = (fn) => this.#edit("Decoración", (x) => fn(x.decoration));
+      const sums = B.blockSums(r, tiles);
+      this.decoTargets ??= { land: 0.6, water: 0.25 };
+      const targetInput = (block, title) => {
+        const input = h("input", { type: "number", min: 0.05, max: 0.95, step: 0.05, value: this.decoTargets[block], title,
+          onchange: () => { this.decoTargets[block] = Math.min(0.95, Math.max(0.05, Number(input.value) || this.decoTargets[block])); } });
+        return input;
+      };
       const dupes = list.length - new Set(list.map((d) => String(d.tile ?? "").replace(/^aura:/, "").toLowerCase() + "|" + (d.on ?? ""))).size;
       const weights = h("div", { class: "bm-weights" },
-        h("button", { title: "Recalcula todos los pesos según qué es cada tile (hierba común, flores y rocas raras, menas más raras, plantas de agua) y su clima, para que sumen la cobertura de al lado. Junta las entradas repetidas.",
-          onclick: () => this.#edit("Auto-ajustar pesos", (x) => { x.decoration = B.autoWeights(x, this.#tiles, this.decoTarget).decoration; }) }, "Auto-ajustar"),
-        h("label", { class: "faint", title: "Cobertura total" }, "a ", target),
+        h("button", { title: "Recalcula los pesos según qué es cada tile (hierba común, flores y rocas raras, menas más raras, plantas de agua) y su clima, para que cada bloque sume su cobertura. Junta las entradas repetidas y ordena por bloques.",
+          onclick: () => this.#edit("Auto-ajustar pesos", (x) => { x.decoration = B.autoWeights(x, tiles, this.decoTargets).decoration; }) }, "Auto-ajustar"),
+        h("label", { class: "faint", title: "Cobertura de la tierra" }, "tierra ", targetInput("land", "Cuánto suelo seco cubre la decoración (0..0,95)")),
+        h("label", { class: "faint", title: "Cobertura del agua" }, "agua ", targetInput("water", "Cuánto fondo de río, lago o mar cubre la decoración de agua (0..0,95)")),
         h("span", { class: "grow" }),
-        h("button", { title: "Todas las probabilidades ×0,8", onclick: () => this.#edit("Menos decoración", (x) => { x.decoration = B.scaleWeights(x, 0.8); }) }, "− Menos"),
-        h("button", { title: "Todas las probabilidades ×1,25 (sin pasar de 0,99 en total)", onclick: () => this.#edit("Más decoración", (x) => { x.decoration = B.scaleWeights(x, 1.25); }) }, "+ Más"));
-      return section({ id: "bm-deco", title: "Decoración", extra: `${list.length} · Σ ${total.toFixed(3)}` },
+        h("button", { class: "icon", title: "Todas las probabilidades ×0,8", onclick: () => this.#edit("Menos decoración", (x) => { x.decoration = B.scaleWeights(x, 0.8); }) }, "−"),
+        h("button", { class: "icon", title: "Todas las probabilidades ×1,25 (sin pasar de 0,99 en total)", onclick: () => this.#edit("Más decoración", (x) => { x.decoration = B.scaleWeights(x, 1.25); }) }, "+"));
+
+      // Rows grouped by block; each keeps its index in the file's list, which is what the edits use.
+      const fmt = (v) => v.toFixed(3);
+      const over = (v) => v > 1 + 1e-9;
+      const blockHead = (title, totals, note) => h("div", { class: "bm-block-head" },
+        h("b", null, title), h("span", { class: "grow" }),
+        ...totals.map(([label, v]) => h("span", { class: ["badge", over(v) && "bad"], title: over(v) ? "Pasa de 1: las últimas entradas de este bloque no salen nunca" : "" }, `${label}Σ ${fmt(v)}`)),
+        note ? h("div", { class: "faint small bm-block-note" }, note) : null);
+      const rowsOf = (block) => list.map((d, i) => [d, i]).filter(([d]) => B.blockOf(B.entryHabitat(d, tiles)) === block)
+        .map(([d, i]) => this.#chanceRow(d, i, edit, true, B.entryHabitat(d, tiles)));
+      const kind = B.kindOf(r);
+      const land = kind === "ocean" ? [] : rowsOf("land"), water = rowsOf("water");
+      const unsorted = B.sortByBlock(list, tiles).some((d, i) => d !== list[i]);
+      const blocks = [
+        kind === "ocean" ? null : blockHead("Tierra", [["", sums.land]], "Columnas sin agua: crece sobre el bloque de arriba."),
+        ...(kind === "ocean" ? [] : land.length ? land : [h("p", { class: "note" }, "Nada en tierra.")]),
+        blockHead("Agua", [["orilla ", sums.shallow], ["hondo ", sums.deep]],
+          "Ríos, lagos y mar. Con un bloque de agua (orilla) compiten sumergidas, emergentes y flotantes; más hondo, solo sumergidas y flotantes."),
+        ...(water.length ? water : [h("p", { class: "note" }, "Nada en el agua.")]),
+      ];
+      return section({ id: "bm-deco", title: "Decoración", extra: `${list.length} · tierra ${fmt(sums.land)} · agua ${fmt(sums.shallow)}` },
         list.length ? weights : null,
         dupes ? h("div", { class: "at-issue warn" }, `${dupes} entrada${dupes > 1 ? "s" : ""} repetida${dupes > 1 ? "s" : ""} (mismo tile y mismo «dónde»): «Auto-ajustar» las junta.`) : null,
-        ...rows,
+        unsorted ? h("div", { class: "at-issue" }, "Los bloques están mezclados en el archivo (al juego le da igual). ",
+          h("button", { class: "ghost", onclick: () => this.#edit("Ordenar por bloques", (x) => { x.decoration = B.sortByBlock(x.decoration ?? [], tiles); }) }, "Ordenar")) : null,
+        ...blocks.filter(Boolean),
         h("div", { class: "row" },
           h("button", { onclick: () => this.#edit("Decoración", (x) => { (x.decoration ??= []).push({ tile: "", chance: 0.01 }); }) }, "+ Decoración"),
           h("button", { title: "Propone las plantas y rocas que le tocan a este bioma por su hábitat, su suelo y su clima",
             onclick: () => { this.suggestOpen = !this.suggestOpen; this.suggestPick = null; this.#renderPanel(); } }, this.suggestOpen ? "Cerrar sugerencias" : "Sugerir por hábitat")),
         this.suggestOpen ? this.#suggestions(r) : null,
-        h("p", { class: "note" }, "Por columna se tira una vez y las probabilidades se suman en orden, así que el total debería quedar por debajo de 1. «Automático» decide por el hábitat del tile (las algas en el fondo, los nenúfares sobre el agua)."));
+        h("p", { class: "note" }, "Por columna se tira una vez y se suman, en orden, solo las entradas que pueden crecer en ella: por eso cada bloque tiene su propio total, que debería quedar por debajo de 1. «Automático» decide por el hábitat del tile (las algas en el fondo, los nenúfares sobre el agua)."));
     }
 
     // The biome's "structures": which structures grow here and how densely. The structure files say what they are and what
@@ -532,7 +562,7 @@
       if (!picked.length) return;
       this.suggestOpen = false;
       this.suggestPick = null;
-      this.#edit(`Decoración sugerida (${picked.length})`, (x) => { (x.decoration ??= []).push(...picked); });
+      this.#edit(`Decoración sugerida (${picked.length})`, (x) => { x.decoration = B.sortByBlock([...(x.decoration ?? []), ...picked], this.#tiles); });
       this.studio.setStatus(`Añadidas ${picked.length} decoraciones. Revisa la muestra y guarda con Ctrl+S.`, "ok");
     }
 
@@ -549,13 +579,17 @@
         .filter((p) => p.add.length);
       if (!plan.length) { this.studio.toast("Cada bioma ya tiene lo que le toca.", { kind: "ok" }); return; }
       const total = plan.reduce((n, p) => n + p.add.length, 0);
-      const lines = plan.map((p) => `${p.doc.root.name ?? p.doc.name}: ${p.add.map((d) => d.tile).join(", ")}`).join("\n");
+      const byBlock = (p, block) => p.add.filter((d) => B.blockOf(d.habitat) === block).map((d) => d.tile);
+      const lines = plan.map((p) => {
+        const land = byBlock(p, "land"), water = byBlock(p, "water");
+        return `${p.doc.root.name ?? p.doc.name}:` + (land.length ? `\n  tierra: ${land.join(", ")}` : "") + (water.length ? `\n  agua: ${water.join(", ")}` : "");
+      }).join("\n");
       const ok = await this.studio.confirm({ title: "Repartir decoraciones",
         message: `Añadir ${total} decoraciones en ${plan.length} biomas (se puede deshacer y no se guarda hasta Ctrl+S):\n\n${lines}`,
         confirm: "Añadir" });
       if (!ok) return;
       const steps = plan.map((p) => ({ doc: p.doc, before: JSON.stringify(p.doc.root),
-        after: JSON.stringify({ ...p.doc.root, decoration: [...(p.doc.root.decoration ?? []), ...p.add.map((d) => this.#entryOf(d))] }) }));
+        after: JSON.stringify({ ...p.doc.root, decoration: B.sortByBlock([...(p.doc.root.decoration ?? []), ...p.add.map((d) => this.#entryOf(d))], this.#tiles) }) }));
       this.history.run({ label: `Repartir decoraciones (${total})`,
         redo: () => { for (const st of steps) st.doc.root = JSON.parse(st.after); },
         undo: () => { for (const st of steps) st.doc.root = JSON.parse(st.before); } });
@@ -581,7 +615,12 @@
       const issues = [
         ...missing.map(([id, where]) => h("div", { class: "at-issue bad" }, `«${id}» (${where}) no existe en ningún archivo de tiles. Créalo en Crear → Atlas o corrige el nombre.`)),
         kind !== "ocean" && !r.materials?.surface ? h("div", { class: "at-issue bad" }, "Falta materials.surface: el juego no carga el bioma.") : null,
-        (r.decoration ?? []).reduce((s, d) => s + (Number(d.chance) || 0), 0) > 1 ? h("div", { class: "at-issue warn" }, "La decoración suma más de 1: las últimas entradas no salen nunca.") : null,
+        ...(() => {
+          const sums = B.blockSums(r, this.#tiles);
+          return [["tierra", sums.land], ["agua de orilla", sums.shallow], ["agua honda", sums.deep]]
+            .filter(([, v]) => v > 1 + 1e-9)
+            .map(([where, v]) => h("div", { class: "at-issue warn" }, `La decoración de ${where} suma ${v.toFixed(3)} (más de 1): las últimas entradas de ese bloque no salen nunca.`));
+        })(),
         this.docs.filter((d) => d !== doc && d.root?.id && d.root.id === r.id).length ? h("div", { class: "at-issue bad" }, `Otro bioma usa el id «${r.id}».`) : null,
         ...this.#structureIssues(r),
       ].filter(Boolean);
@@ -870,12 +909,9 @@
       };
       const isWater = (i, j) => i >= 0 && j >= 0 && i < N && j < N && field[i * N + j] <= waterCut;
 
-      // Which kind of column a decoration entry may land on: the game's "on", or the tile's habitat for Auto.
-      const placeOf = (d, info) => {
-        if (d.on) return { surface: "land", seafloor: "bottom", shallows: "shore", watersurface: "top" }[d.on] ?? "land";
-        const hab = info ? B.habitatOf(info.tile, d.tile).habitat : "land";
-        return { land: "land", submerged: "bottom", emergent: "shore", floating: "top" }[hab];
-      };
+      // Where each entry grows, as the game resolves it: its "on", else its tile's habitat. The pond is one block deep, so
+      // every water habitat fits it (deeper water would leave the emergent ones out).
+      const habitats = (r.decoration ?? []).map((d) => B.entryHabitat(d, this.#tiles));
 
       const pieces = [];      // { info, coord, i, j, l, sub, tint }
       const put = (info, i, j, l, sub, shift) => {
@@ -896,21 +932,18 @@
             if (roll < acc) { top = this.#tileInfo(v.tile) ?? top; break; }
           }
           for (let l = -1; l <= h0; l++) put(l === h0 && !water ? top : shallow, i, j, l, 0, shift);
-          const shore = !water && h0 === 0 && [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, b]) => isWater(i + a, j + b));
-          // Decoration: one roll over the summed chances, as the generator does; an entry that cannot grow here is a miss.
+          // Decoration: one roll per column, as Chunk.Decorate does it: only the entries that can grow on this column add
+          // their chance, in order, so land and water entries never take each other's room.
           roll = hash(i, j, seed * 7 + 5); acc = 0;
           for (let k = 0; k < (r.decoration ?? []).length; k++) {
-            const d = r.decoration[k], info = decoInfos[k];
+            const d = r.decoration[k], info = decoInfos[k], hab = habitats[k];
+            if (!info || (hab === "land") === water) continue;
             acc += (Number(d.chance) || 0) * dens;
             if (roll >= acc) continue;
-            const where = placeOf(d, info);
-            const ok = water ? where === "bottom" || where === "top" : where === "land" || (where === "shore" && shore);
-            if (ok && info) {
-              if (where === "bottom") put(info, i, j, 0, 1, shift);            // under the water, on the floor
-              else if (where === "top") put(info, i, j, 1, 3, shift);          // on the water: the cell above it
-              else put(info, i, j, h0 + 1, 1, shift);
-              counts.set(d.tile, (counts.get(d.tile) ?? 0) + 1);
-            }
+            if (hab === "floating") put(info, i, j, 1, 3, shift);              // on the water: the cell above it
+            else if (hab === "land") put(info, i, j, h0 + 1, 1, shift);
+            else put(info, i, j, 0, 1, shift);                                 // on the floor, in the water (reeds stick out)
+            counts.set(d.tile, (counts.get(d.tile) ?? 0) + 1);
             break;
           }
           if (water) pieces.push({ water: true, i, j, l: 0, sub: 2 });

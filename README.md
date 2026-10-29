@@ -38,6 +38,13 @@ Los textos se guardan con el Ctrl+S de la pestaña donde se cambiaron. No entran
 tutor: flores, frutos verdes y maduros en el suelo) y **arroz** (plántula, macolla, espiga y grano dorado; variedad
 «En arrozal» con agua). Las hojas, bayas y cactus se hacen como bloques.
 
+**Biomas · Decoración por bloques.** El juego tira una vez por columna y solo suman las entradas que pueden crecer en
+ella, así que la decoración son bloques separados: **Tierra** (columnas secas) y **Agua** (ríos, lagos y mar; con un
+bloque de agua compiten sumergidas, emergentes y flotantes, más hondo solo sumergidas y flotantes). El inspector los
+muestra por separado con su total (orilla / hondo en el agua), «Auto-ajustar» reparte una cobertura para cada bloque,
+«Sugerir por hábitat» y «Repartir» (todos los biomas) dejan cada planta en su bloque y la lista ordenada, y la Muestra
+tira la decoración como el juego.
+
 **Partículas.** El tamaño sigue la fórmula del juego (frame × escala × 16 px); vista isométrica o lateral, zoom y
 referencias (un bloque de 64 px y el jugador, 2,75 bloques).
 

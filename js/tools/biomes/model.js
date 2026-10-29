@@ -252,10 +252,15 @@
       const on = c.guessed ? HABITAT_ON[c.habitat] : undefined;
       out.push({ tile: c.id, on, chance, habitat: c.habitat, guessed: c.guessed, reason: reasons.join(" · "), info: c.info });
     }
-    const used = (root.decoration ?? []).reduce((s, d) => s + (Number(d.chance) || 0), 0);
-    const room = Math.max(0, 0.95 - used), want = out.reduce((s, d) => s + d.chance, 0);
-    const k = want > room ? room / want : 1;
-    for (const d of out) d.chance = Math.round(d.chance * k * 100000) / 100000;
+    // Each block has its own room: land columns only roll land entries, water columns only water ones (see blockSums).
+    const sums = blockSums(root, tiles);
+    for (const block of ["land", "water"]) {
+      const group = out.filter((d) => blockOf(d.habitat) === block);
+      const room = Math.max(0, 0.95 - (block === "land" ? sums.land : sums.shallow));
+      const want = group.reduce((s, d) => s + d.chance, 0);
+      const k = want > room ? room / want : 1;
+      for (const d of group) d.chance = Math.round(d.chance * k * 100000) / 100000;
+    }
     return out.filter((d) => d.chance > 0);
   }
 
@@ -273,10 +278,13 @@
 
   /**
    * «Auto-ajustar»: every entry's chance from what it is (as the suggestions) and how well its climate fits, scaled so
-   * the whole decoration adds up to target. Repeated tiles (same tile, same "on") are merged first, keeping the first.
-   * An entry whose tile does not exist keeps its share as it was.
+   * each block adds up to its own target: land entries to targets.land, water entries to targets.water (the game rolls
+   * them on different columns, so one never takes room from the other). Repeated tiles (same tile, same "on") are merged
+   * first, keeping the first; the list comes back in block order. An entry whose tile does not exist keeps its chance.
+   * targets may be a single number (both blocks).
    */
-  function autoWeights(root, tiles, target) {
+  function autoWeights(root, tiles, targets) {
+    const t = typeof targets === "number" ? { land: targets, water: targets } : { land: 0.6, water: 0.25, ...(targets || {}) };
     const box = kindOf(root) === "ocean" ? null : boxOf(root);
     const seen = new Map(), out = [];
     for (const d of root?.decoration ?? []) {
@@ -288,17 +296,56 @@
     }
     const raw = out.map((d) => {
       const info = d.tile ? tiles.get(qualify(d.tile)) : null;
-      if (!info) return Number(d.chance) || 0;
-      const on = d.on ? Object.entries(HABITAT_ON).find(([, v]) => v === d.on)?.[0] : null;
-      const hab = on ?? habitatOf(info.tile, d.tile).habitat;
+      if (!info) return null;
       const fit = climateFit(info.tile, box);
       // A tile the person put there on purpose stays, even when its climate does not fit: just rarer.
-      return kindChance(info, hab, lowerTags(info.tile)) * (fit === null ? 1 : Math.max(0.1, fit));
+      return kindChance(info, entryHabitat(d, tiles), lowerTags(info.tile)) * (fit === null ? 1 : Math.max(0.1, fit));
     });
-    const sum = raw.reduce((a, b) => a + b, 0);
-    const k = sum > 0 ? target / sum : 0;
-    out.forEach((d, i) => { if (d.tile) d.chance = Math.round(raw[i] * k * 100000) / 100000; });
-    return { decoration: out, merged: (root?.decoration?.length ?? 0) - out.length };
+    for (const block of ["land", "water"]) {
+      const idx = out.map((d, i) => i).filter((i) => raw[i] !== null && blockOf(entryHabitat(out[i], tiles)) === block);
+      const sum = idx.reduce((a, i) => a + raw[i], 0);
+      const k = sum > 0 ? t[block] / sum : 0;
+      for (const i of idx) out[i].chance = Math.round(raw[i] * k * 100000) / 100000;
+    }
+    return { decoration: sortByBlock(out, tiles), merged: (root?.decoration?.length ?? 0) - out.length };
+  }
+
+  // ── Bloques de decoración ────────────────────────────────────────────────────────────────────────────────────────
+  // The game (Chunk.Decorate) rolls one number per column and adds up, in order, the chances of only the entries that
+  // can grow on that column: land entries on dry columns; on a water column the submerged and floating ones, plus the
+  // emergent ones when the water is one block deep. So the list is really separate blocks, each with its own total.
+
+  const BLOCK_LABEL = { land: "Tierra", water: "Agua" };
+  const HABITAT_ORDER = { land: 0, emergent: 1, floating: 2, submerged: 3 };
+
+  /** Where the game puts this entry: its "on", else its tile's habitat, else land (Auto never guesses from the name). */
+  function entryHabitat(d, tiles) {
+    if (d?.on) {
+      const hab = Object.entries(HABITAT_ON).find(([, v]) => v === d.on)?.[0];
+      if (hab) return hab;
+    }
+    const own = String(tiles?.get(qualify(d?.tile ?? ""))?.tile?.habitat ?? "").toLowerCase();
+    return HABITAT_ON[own] ? own : "land";
+  }
+
+  const blockOf = (habitat) => (habitat === "land" ? "land" : "water");
+
+  /** Totals per kind of column: land (dry), shallow (water one block deep), deep (deeper water). Each must stay ≤ 1. */
+  function blockSums(root, tiles) {
+    const s = { land: 0, shallow: 0, deep: 0 };
+    for (const d of root?.decoration ?? []) {
+      const c = Number(d?.chance) || 0, hab = entryHabitat(d, tiles);
+      if (hab === "land") { s.land += c; continue; }
+      s.shallow += c;
+      if (hab !== "emergent") s.deep += c;
+    }
+    return s;
+  }
+
+  /** The list in block order (land, then emergent, floating, submerged), each block keeping its own order. */
+  function sortByBlock(list, tiles) {
+    return list.map((d, i) => ({ d, i, k: HABITAT_ORDER[entryHabitat(d, tiles)] ?? 0 }))
+      .sort((a, b) => a.k - b.k || a.i - b.i).map((x) => x.d);
   }
 
   /** «Más» / «Menos»: every chance × f, never letting the total pass 0.99. */
@@ -311,5 +358,5 @@
   }
 
   Aura.biomeModel = { PARAMS, SURFACES, HABITAT_LABEL, HABITAT_ON, habitatOf, autoWeights, scaleWeights, loadBiomes, serialize, isDirty, kindOf, boxOf, pick, inside, blank, tileRefs, newBiomePath,
-    decorationCandidates, suggestDecoration };
+    decorationCandidates, suggestDecoration, entryHabitat, blockOf, blockSums, sortByBlock, BLOCK_LABEL };
 })(window.Aura ??= {});

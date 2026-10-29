@@ -130,3 +130,11 @@
   min-height: 34px;
   padding: 0 12px !important;
 }
+
+/* Decoration blocks: land and water columns roll separately, each with its own totals. */
+.bm-block-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 4px; padding-top: 6px; border-top: 1px solid var(--line); }
+.bm-block-head .badge { font-variant-numeric: tabular-nums; }
+.bm-block-note { flex-basis: 100%; font-size: 11px; }
+.bm-thumb-cell { position: relative; width: 32px; height: 32px; }
+.bm-hab { position: absolute; left: 0; right: 0; bottom: -2px; font-size: 8px; line-height: 10px; text-align: center; color: var(--accent, #7fd1b9);
+  background: rgba(0, 0, 0, 0.55); border-radius: 0 0 4px 4px; overflow: hidden; white-space: nowrap; }
