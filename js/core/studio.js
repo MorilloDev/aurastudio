@@ -38,7 +38,7 @@
       this.commands.attach();
       this.#registerCommands();
       window.addEventListener("beforeunload", (e) => {
-        if (this.tools.some((t) => t.mounted && t.isDirty?.())) {
+        if (Aura.lang?.dirty || this.tools.some((t) => t.mounted && t.isDirty?.())) {
           e.preventDefault();
           e.returnValue = "";
         }
@@ -170,6 +170,8 @@
     async #load(project, rescan = false) {
       this.setStatus(rescan ? "Releyendo la carpeta…" : "Leyendo la carpeta…");
       await this.busy(project.scan());
+      // The game's texts, shared by every tool. Unsaved text edits survive a rescan instead of being read over.
+      if (!Aura.lang.dirty || this.project !== project) await this.busy(Aura.lang.load(project));
       this.project = project;
       this.reopenButton.hidden = true;
       this.rescanButton.hidden = false;

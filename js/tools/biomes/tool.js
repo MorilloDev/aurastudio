@@ -65,7 +65,28 @@
 
     activate() { this.#draw(); }
     deactivate() {}
-    isDirty() { return this.docs.some(B.isDirty); }
+    isDirty() { return this.docs.some(B.isDirty) || Aura.lang.dirty; }
+
+    // BiomeData's id: "id", else derived from "name" like ContentId.DeriveIdPath.
+    #biomeId(r) {
+      const raw = r?.id ?? String(r?.name ?? "").trim().replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+      return raw.includes(":") ? raw : `aura:${raw}`;
+    }
+
+    // The name the player reads, from Data/Lang ("biome.aura.forest.name"), per language. The JSON "name" stays the id
+    // source and the fallback. Saved with the biomes.
+    #textFields(r) {
+      const L = Aura.lang;
+      if (!L.available) return [];
+      const key = Aura.langKeys.contentKey("biome", this.#biomeId(r), "name");
+      return L.languages.map(({ code, label }) => {
+        const value = L.get(key, code);
+        const input = h("input", { type: "text", value: value ?? "", spellcheck: true,
+          placeholder: value === undefined ? `falta · sale «${r.name ?? ""}»` : "" });
+        input.addEventListener("change", () => { if (L.set(key, code, input.value.trim())) this.#changed(); });
+        return h("div", { class: "field", title: key }, h("label", { title: label }, `Nombre (${code.slice(0, 2).toUpperCase()})`), input);
+      });
+    }
     dirtyLabel() { return "Biomas"; }
 
     async onProject(project) {
@@ -183,7 +204,7 @@
           const color = d.root?.colors?.foliage;
           this.listEl.append(h("div", { class: ["bm-item", d === this.current && "active"], onclick: () => this.#select(d) },
             h("span", { class: "swatch", style: { background: Tint.hexToRgb(color) ? color : idColor(d.root?.id ?? d.name) } }),
-            h("span", { class: "grow" }, d.root?.name ?? d.name),
+            h("span", { class: "grow" }, d.root ? Aura.lang.display("biome", this.#biomeId(d.root), d.root.name ?? d.name) : d.name),
             B.isDirty(d) ? h("span", { class: "dot", title: "Sin guardar" }) : null,
             d.error ? h("span", { class: "badge bad", title: d.error }, "!") : null,
             this.#missingTiles(d).length ? h("span", { class: "badge warn", title: "Usa tiles que no existen" }, this.#missingTiles(d).length) : null));
@@ -317,7 +338,13 @@
       };
       this.panel.append(section({ id: "bm-id", title: "Bioma", extra: doc.isNew ? "nuevo" : doc.name },
         text("Nombre", r.name, (v) => this.#edit("Nombre", (x) => { x.name = v; })),
-        text("Id", r.id, (v) => this.#edit("Id", (x) => { x.id = v || undefined; }), "Lo que nombran estructuras, partidas guardadas y la decoración del mar"),
+        text("Id", r.id, (v) => {
+          const before = this.#biomeId(r);
+          this.#edit("Id", (x) => { x.id = v || undefined; });
+          // Its texts in Data/Lang are keyed by the id and follow it (not part of the undo history).
+          Aura.lang.renameContent("biome", before, this.#biomeId(doc.root));
+        }, "Lo que nombran estructuras, partidas guardadas y la decoración del mar"),
+        ...this.#textFields(r),
         h("div", { class: "field" }, h("label", null, "Colocación"),
           segmented({ label: "Colocación", value: kind, onChange: (v) => this.#setKind(v),
             options: [["surface", "Clima", "Compite con los demás por temperatura, humedad…"], ["coast", "Costa", "La franja de tierra junto al mar"], ["ocean", "Mar", "Solo decoración del mar abierto"]] }).el),
@@ -1020,7 +1047,8 @@
 
     async save() {
       const dirty = this.docs.filter(B.isDirty);
-      if (!dirty.length) return true;
+      if (!dirty.length && !Aura.lang.dirty) return true;
+      const written = dirty.map((d) => d.name);
       try {
         await this.studio.busy((async () => {
           for (const doc of dirty) {
@@ -1036,10 +1064,11 @@
             }
             doc.baseline = text;
           }
+          written.push(...(await Aura.lang.save()));
         })());
         this.history.markSaved();
         this.#changed();
-        this.studio.toast("Guardado " + dirty.map((d) => d.name).join(", "), { kind: "ok", detail: "El juego los carga al arrancar." });
+        this.studio.toast("Guardado " + written.join(", "), { kind: "ok", detail: "El juego los carga al arrancar." });
         return true;
       } catch (err) {
         this.studio.toast("No pude guardar.", { kind: "bad", detail: err.message });

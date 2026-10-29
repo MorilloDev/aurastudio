@@ -280,7 +280,8 @@
       clear(this.itemsEl);
       if (!this.project) { this.itemsEl.append(h("div", { class: "empty-state" }, "Abre la carpeta del proyecto para ver sus items y recetas.")); return; }
       const q = this.query;
-      const items = this.index.items.filter((r) => !q || r.id.toLowerCase().includes(q) || String(r.name).toLowerCase().includes(q));
+      const items = this.index.items.filter((r) => !q || r.id.toLowerCase().includes(q) || String(r.name).toLowerCase().includes(q)
+        || String(r.jsonName).toLowerCase().includes(q));
       if (!items.length) { this.itemsEl.append(h("div", { class: "empty-state" }, q ? "Ningún item coincide." : "No hay items en Data/Items.")); return; }
       const groups = new Map();
       for (const r of items) {

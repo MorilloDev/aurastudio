@@ -319,7 +319,7 @@
       this.picking = null;
     }
 
-    isDirty() { return this.history.dirty; }
+    isDirty() { return this.history.dirty || Aura.lang.dirty; }
     dirtyLabel() { return "El atlas"; }
 
     async onProject(project) {
@@ -1664,7 +1664,7 @@
     #tileSection(tile) {
       const doc = this.#docOf(tile);
       const isItem = T.isItemDoc(doc);
-      const fields = isItem ? this.#itemGroups(tile) : this.#tileGroups(tile);
+      const fields = [...(isItem ? this.#itemGroups(tile) : this.#tileGroups(tile)), this.#textsGroup(tile, isItem)];
 
       // The art: every state and side of the tile and its parts, with their cells. Built from the file's own sheet and
       // cell size (a spread of the root would drop the item file's hidden list and default sheet).
@@ -1737,6 +1737,41 @@
         return h("details", { class: "at-group", open: g.open || used || undefined },
           h("summary", null, g.title, used && !g.open ? h("span", { class: "faint" }, " ●") : null), body);
       });
+    }
+
+    // What the player reads for this tile or item, from Data/Lang: its name (and an item's description) in Spanish, the
+    // game's base language, and in English. The JSON "name" only gives the id and is the fallback for a missing text.
+    // Saved with the atlas (Ctrl+S); not part of the undo history.
+    #textsGroup(tile, isItem) {
+      const L = Aura.lang;
+      const { contentKey } = Aura.langKeys;
+      const kind = isItem ? "item" : "tile";
+      const id = T.tileId(tile);
+      if (!L.available) {
+        return h("details", { class: "at-group", open: true }, h("summary", null, "Textos del juego"),
+          h("p", { class: "note" }, "No encontré Data/Lang: el juego muestra el \"name\" del JSON."));
+      }
+
+      const fields = isItem ? [["name", "Nombre", tile.name], ["desc", "Descripción", tile.desc]] : [["name", "Nombre", tile.name]];
+      const rows = [];
+      let missing = 0;
+      for (const [field, label, fallback] of fields) {
+        for (const { code, label: language } of L.languages) {
+          const key = contentKey(kind, id, field);
+          const value = L.get(key, code);
+          if (value === undefined && (field === "name" || fallback)) missing++;
+          const input = h("input", { type: "text", value: value ?? "", spellcheck: true,
+            placeholder: value === undefined ? `falta · el juego muestra «${fallback ?? ""}»` : "" });
+          input.addEventListener("change", () => {
+            if (L.set(key, code, input.value.trim())) { this.studio.refreshDirty(); this.#renderPanel(); }
+          });
+          rows.push(h("div", { class: "field", title: key }, h("label", { title: language }, `${label} (${code.slice(0, 2).toUpperCase()})`), input));
+        }
+      }
+
+      return h("details", { class: "at-group", open: true },
+        h("summary", null, "Textos del juego", missing ? h("span", { class: "badge warn", title: "Sin traducir: el juego usa el texto del JSON" }, `faltan ${missing}`) : null),
+        rows);
     }
 
     // Item inspector: the common groups, plus the one for its type. Fields of other types are not shown, but stay in the
@@ -1995,6 +2030,9 @@
           if (f.key === "id" || !tile.id) {
             this.studio.toast("Id cambiado: lo que lo nombre (estructuras, crecimiento, biomas, drops) hay que cambiarlo a mano.", { kind: "warn" });
           }
+          // Its texts in Data/Lang are keyed by the id: they follow it (not part of the undo history).
+          Aura.lang.renameContent(kindOf ? "item" : "tile", T.tileId(tile), T.tileId(next));
+          this.studio.refreshDirty();
         }
         this.#setField(tile, f.key, value);
       };
@@ -2290,6 +2328,20 @@
           : h("p", { class: "note" }, "Cada tile tiene un item que lo coloca" + (skipped ? ` (sin contar ${skipped} etapas o aire).` : ".")));
     }
 
+    // Tiles and items without their name in a language of Data/Lang: the game then shows the JSON's English "name".
+    #textIssues() {
+      if (!Aura.lang.available) return [];
+      const out = [];
+      for (const [kind, isItem] of [["tile", false], ["item", true]]) {
+        const ids = this.docs.filter((d) => !d.error && T.isItemDoc(d) === isItem).flatMap((d) => d.root.tiles.filter(Boolean).map(T.tileId));
+        for (const { code, label } of Aura.lang.languages) {
+          const lacking = Aura.lang.missing(kind, ids).filter((m) => m.code === code);
+          if (lacking.length) out.push(`${lacking.length} ${isItem ? "item(s)" : "tile(s)"} sin nombre en ${label} (sale el del JSON): ${lacking.slice(0, 4).map((m) => m.id).join(", ")}${lacking.length > 4 ? "…" : ""}`);
+        }
+      }
+      return out;
+    }
+
     #reviewSection() {
       const broken = this.#sheetRefs.filter((r) => !this.#refHasArt(r));
       const orphans = [...this.#artCells].filter((k) => !this.#cellRefs.has(k));
@@ -2304,6 +2356,7 @@
         orphans.length ? item(`${orphans.length} celda(s) con arte que ningún tile usa`, orphans.map(pk), "warn") : null,
         ...this.#tintIssues().map(([text, cells]) => item(text, cells, "warn")),
         ...dupes.map((id) => item(`Id repetido: ${id} (el juego no carga)`, null, "bad")),
+        ...this.#textIssues().map((text) => item(text, null, "warn")),
         ...errors.map((d) => item(`${d.name}: ${d.error}`, null, "bad")),
       ].filter(Boolean);
       return section({ id: "at-review", title: "Revisión", extra: list.length ? String(list.length) : "todo bien" },
@@ -2315,7 +2368,7 @@
 
     /** Writes the sheet's changed layers and every changed tile file. Resolves true when everything was written. */
     async save() {
-      if (!this.img || !this.history.dirty) return true;
+      if (!this.img || !this.isDirty()) return true;
       const dupes = T.duplicateIds(this.docs);
       if (dupes.length && !(await this.studio.confirm({ title: "Ids repetidos", confirm: "Guardar igual", danger: true,
         message: `${dupes.join(", ")} está más de una vez: el juego no cargará hasta que lo arregles.` }))) return false;
@@ -2362,6 +2415,8 @@
         doc.stamp = (await doc.entry.handle.getFile()).lastModified;
         written.push(doc.name);
       }
+      // The game texts edited in the inspector (Data/Lang), written with the rest.
+      written.push(...(await Aura.lang.save()));
       this.sheet.has = Object.fromEntries(["n", "d", "faces", "height"].map((k) => [k, this.img.has("_" + k)]));
       this.#renderSheets();
       return written;
@@ -2397,7 +2452,7 @@
       const sel = () => this.selection.size > 0 && !this.pending;
       const arrow = (dx, dy) => () => this.#moveSelection(dx, dy, false);
       this.studio.commands.registerAll([
-        { id: "atlas.save", title: "Guardar hoja y JSON", group: "Atlas", keys: ["Ctrl+S"], whileTyping: true, enabled: () => this.history.dirty, run: () => this.save() },
+        { id: "atlas.save", title: "Guardar hoja y JSON", group: "Atlas", keys: ["Ctrl+S"], whileTyping: true, enabled: () => this.isDirty(), run: () => this.save() },
         { id: "atlas.undo", title: "Deshacer", group: "Atlas", keys: ["Ctrl+Z"], enabled: () => this.history.canUndo, run: () => this.history.undo() },
         { id: "atlas.redo", title: "Rehacer", group: "Atlas", keys: ["Ctrl+Y", "Ctrl+Shift+Z"], enabled: () => this.history.canRedo, run: () => this.history.redo() },
         { id: "atlas.empty", title: "Vaciar celdas seleccionadas", group: "Atlas", keys: ["Delete", "Backspace"], enabled: sel, run: () => this.#emptySelection() },

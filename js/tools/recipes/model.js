@@ -177,7 +177,8 @@
           const t = tiles.get(T.tileId({ id: item.tile ?? item.tileType }));
           if (t?.coord) icon = { ...t, fromTile: true };
         }
-        const rec = { id, name: item.name ?? id, item, doc, file: doc.name.replace(/\.json$/i, ""),
+        // Shown by the name the player reads (Data/Lang, Spanish), the JSON name kept for lookups.
+        const rec = { id, name: Aura.lang?.display("item", id, item.name ?? id) ?? item.name ?? id, jsonName: item.name ?? id, item, doc, file: doc.name.replace(/\.json$/i, ""),
           group: item.itemType ?? item.type ?? "Otros", stack: item.maxStack ?? 1, icon };
         items.push(rec);
         for (const k of [id, "aura:" + id, item.name]) if (k) byKey.set(String(k).toLowerCase(), rec);

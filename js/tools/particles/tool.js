@@ -116,16 +116,19 @@
       if (this.textures.has(key)) return this.textures.get(key);
       const lower = key.toLowerCase();
       const base = lower.split("/").pop();
+      // Project has get / filter / resolveContentPng (a content path like "Assets/Effects/Smoke/Smoke_1"); there is no
+      // find() — calling it threw as soon as a particle named a texture.
       let entry =
-        (typeof this.project.pngOf === "function" && (this.project.pngOf(key) || this.project.pngOf(key + ".png"))) ||
+        this.project.resolveContentPng?.(key) ||
         this.project.get?.(key + ".png") ||
         this.project.get?.(key) ||
-        this.project.find((e) => {
+        this.project.filter((e) => {
           const p = e.lower.replace(/\\/g, "/");
           if (!p.endsWith(".png")) return false;
           if (p === lower + ".png" || p.endsWith("/" + base + ".png")) return true;
           return p.includes(lower) || p.endsWith(base + ".png");
-        });
+        })[0] ||
+        null;
       if (!entry) {
         console.warn("[particles] texture not found:", path);
         return null;
@@ -414,6 +417,26 @@
           value: !!d.render.alignToVelocity,
           onChange: (v) => { d.render.alignToVelocity = v; this.#touch("Alinear"); },
         }).el,
+        // render.beamSegmented (ParticleEffect.BeamSegmented): a channelled spell lays several near-static stretched
+        // segments along the beam instead of one long sprite. Only written when on, as the game defaults it to off.
+        checkbox({
+          label: "Rayo en segmentos",
+          title: "Hechizos canalizados: varios tramos fijos a lo largo del rayo en vez de uno solo estirado",
+          value: !!d.render.beamSegmented,
+          onChange: (v) => { if (v) d.render.beamSegmented = true; else delete d.render.beamSegmented; this.#touch("Rayo en segmentos"); },
+        }).el,
+        // behavior.custom: the name of a behavior a mod registers with BehaviorRegistry.Register. The base game has
+        // none, so it is free text; an unknown name is simply ignored by the game.
+        (() => {
+          const input = h("input", { type: "text", value: bh.custom ?? "", placeholder: "ninguno", spellcheck: false });
+          input.addEventListener("change", () => {
+            const v = input.value.trim();
+            if (v) bh.custom = v; else delete bh.custom;
+            this.#touch("Comportamiento");
+          });
+          return h("div", { class: "field", title: "Nombre registrado por un mod (BehaviorRegistry). Vacío = ninguno" },
+            h("label", null, "Comportamiento (mod)"), input);
+        })(),
 
         h("div", { class: "at-sub" }, "Color / render"),
         this.#rgbaRow("Tint base", d.render.tint || [255, 255, 255, 255], (c) => {
