@@ -176,6 +176,7 @@
       size: 64, groups: [], selectedGroupId: null, selectedLayer: -1,
       filter: "",
       ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true },
+      snapGrid: 1,
     };
   }
 
@@ -478,6 +479,7 @@
       this.propsHost = h("div", { class: "cp-props" });
       this.zoomPartLabel = h("span", { class: "cp-zoom-lbl" }, "auto");
       this.zoomEnsLabel = h("span", { class: "cp-zoom-lbl" }, "auto");
+      this.statusLbl = h("span", { class: "cp-status" }, "Listo");
 
       const toolbar = h("div", { class: "cp-toolbar" },
         h("div", { class: "cp-tool-group" },
@@ -502,6 +504,7 @@
           h("button", { title: "Acercar conjunto", onclick: () => this.bumpZoom("ens", 1) }, "+"),
           h("button", { title: "Ajustar conjunto", onclick: () => { this.zoomEnsemble = 0; this.paintEnsemble(); this.syncZoomLabels(); } }, "Ajustar")),
         h("span", { class: "grow" }),
+        this.statusLbl,
         h("div", { class: "cp-tool-group" },
           h("button", { onclick: () => this.exportPng() }, "PNG"),
           h("button", { onclick: () => this.exportMultipart() }, "JSON"),
@@ -652,7 +655,7 @@
           const c = clampShift(src.color, size, sx, sy);
           sx = c.x; sy = c.y;
         }
-        L.shiftX = sx; L.shiftY = sy;
+        L.shiftX = this.#snapVal(sx); L.shiftY = this.#snapVal(sy);
         this.schedule();
       });
       const endDrag = (e) => {
@@ -1116,6 +1119,10 @@
       this.rebuildGroupList();
       this.rebuildProps();
       this.schedule();
+      if (this.statusLbl) {
+        const t0 = new Date();
+        this.statusLbl.textContent = "Guardado " + t0.toLocaleTimeString();
+      }
     }
 
     savePrefsMeta() {
@@ -1167,8 +1174,12 @@
       const frag = [tools];
       const matches = (g) => {
         if (!filter) return true;
-        if ((g.name || "").toLowerCase().includes(filter)) return true;
-        if ((g.layers || []).some((L) => (L.name || "").toLowerCase().includes(filter))) return true;
+        const f = filter.toLowerCase();
+        if ((g.name || "").toLowerCase().includes(f)) return true;
+        if ((g.note || "").toLowerCase().includes(f)) return true;
+        if ((g.tags || []).some((tg) => String(tg).toLowerCase().includes(f))) return true;
+        if ((g.layers || []).some((L) =>
+          (L.name || "").toLowerCase().includes(f) || (L.note || "").toLowerCase().includes(f))) return true;
         return (g.children || []).some(matches);
       };
 
@@ -1213,7 +1224,12 @@
             type: "button", class: "cp-collapse",
             onclick: (e) => { e.stopPropagation(); g.collapsed = !g.collapsed; this.rebuildGroupList(); },
           }, g.collapsed ? "▸" : "▾"),
-          h("span", { class: "cp-row-name" }, g.folder ? "📁 " + g.name : g.name),
+          h("span", {
+            class: "cp-badge",
+            style: { background: g.color || (g.folder ? "#7fb2ff" : "#6ecf9a") },
+          }),
+          h("span", { class: "cp-icon" }, g.icon || (g.folder ? "📁" : (g.multipart ? "🧱" : "📦"))),
+          h("span", { class: "cp-row-name" }, g.name),
           g.locked ? h("span", { class: "cp-tag muted" }, "🔒") : null,
           g.folder
             ? h("span", { class: "cp-tag muted" }, "carpeta")
@@ -1278,6 +1294,11 @@
                   onclick: (e) => e.stopPropagation(),
                   onchange: (e) => { L.visible = e.target.checked; this.touch(); },
                 }),
+                h("span", {
+                  class: "cp-badge",
+                  style: { background: L.badgeColor || "#abb2bf" },
+                }),
+                h("span", { class: "cp-icon" }, L.icon || (L.kind === "sprite" ? "▣" : "◇")),
                 h("span", { class: "cp-row-name" }, L.name || "Capa"),
                 h("span", { class: "cp-tag muted" }, L.kind === "sprite" ? (L.source || "sprite") : (L.shape || "shape")),
               );
@@ -1663,6 +1684,15 @@
       const ao = this.doc.ao || (this.doc.ao = { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true });
       const setAo = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); };
 
+      kids.push(section({ id: "cp-snap", title: "Flujo / calidad" },
+        slider({
+          label: "Snap al mover capa (px)", min: 1, max: 8, step: 1,
+          value: this.doc.snapGrid ?? 1,
+          onChange: (v) => { this.doc.snapGrid = Number(v); this.savePrefsMeta(); },
+        }).el,
+        h("p", { class: "note" }, "Atajos: Ctrl+C/V/X/D, Supr, ↶ deshacer. Borrador local automático."),
+      ).el);
+
       kids.push(section({ id: "cp-ao", title: "Ambient occlusion" },
         h("p", { class: "note" }, "Oscurece contactos entre capas de la misma celda y entre celdas vecinas."),
         h("label", { class: "field check" },
@@ -1701,12 +1731,57 @@
           value: g.name,
           oninput: (e) => {
             g.name = e.target.value;
-            // Actualiza solo el texto de la lista, sin reconstruir el panel (mantiene el foco).
-            const head = this.groupList?.querySelector(".cp-group-head.active .cp-group-name");
+            const head = this.groupList?.querySelector(".cp-group-head.active .cp-row-name");
             if (head) head.textContent = g.name;
             this.savePrefsMeta();
           },
           onchange: () => this.savePrefsMeta(),
+        })));
+      const iconSet = g.folder ? FOLDER_ICONS : GROUP_ICONS;
+      kids.push(h("div", { class: "cp-sub" }, "Aspecto"));
+      kids.push(h("div", { class: "cp-icon-grid" },
+        ...iconSet.map((ic) => h("button", {
+          type: "button",
+          class: ["cp-icon-btn", (g.icon || "") === ic && "on"],
+          onclick: () => set(() => { g.icon = ic; }),
+        }, ic)),
+      ));
+      kids.push(h("div", { class: "cp-swatches" },
+        ...SWATCHES.map((col) => h("button", {
+          type: "button",
+          class: ["cp-swatch", g.color === col && "on"],
+          style: { background: col },
+          onclick: () => set(() => { g.color = col; }),
+        })),
+        h("input", {
+          type: "color",
+          class: "cp-color-input",
+          value: (g.color && String(g.color).startsWith("#")) ? String(g.color).slice(0, 7) : "#6ecf9a",
+          onchange: (e) => set(() => { g.color = e.target.value; }),
+        }),
+      ));
+      kids.push(h("label", { class: "field check" },
+        h("input", {
+          type: "checkbox",
+          checked: g.outline || null,
+          onchange: (e) => set(() => { g.outline = e.target.checked; }),
+        }),
+        h("span", null, "Outline de todas las piezas del grupo")));
+      kids.push(h("label", { class: "field" }, h("span", null, "Notas"),
+        h("textarea", {
+          class: "cp-note",
+          rows: 2,
+          placeholder: "Notas…",
+          value: g.note || "",
+          oninput: (e) => { g.note = e.target.value; this.savePrefsMeta(); },
+        })));
+      kids.push(h("label", { class: "field" }, h("span", null, "Tags (coma)"),
+        h("input", {
+          value: (g.tags || []).join(", "),
+          placeholder: "prop, build, foliage",
+          onchange: (e) => set(() => {
+            g.tags = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+          }),
         })));
       kids.push(h("label", { class: "field check" },
         h("input", {
@@ -1768,11 +1843,38 @@
           value: L.name,
           oninput: (e) => {
             L.name = e.target.value;
-            const row = this.groupList?.querySelector(".cp-layer.active .cp-layer-name");
+            const row = this.groupList?.querySelector(".cp-layer.active .cp-row-name");
             if (row) row.textContent = L.name;
             this.savePrefsMeta();
           },
           onchange: () => this.savePrefsMeta(),
+        })));
+      kids.push(h("div", { class: "cp-icon-grid" },
+        ...LAYER_ICONS.map((ic) => h("button", {
+          type: "button",
+          class: ["cp-icon-btn", (L.icon || "") === ic && "on"],
+          onclick: () => set(() => { L.icon = ic; }),
+        }, ic)),
+      ));
+      kids.push(h("div", { class: "cp-swatches" },
+        ...SWATCHES.map((col) => h("button", {
+          type: "button",
+          class: ["cp-swatch", L.badgeColor === col && "on"],
+          style: { background: col },
+          onclick: () => set(() => { L.badgeColor = col; }),
+        })),
+        h("input", {
+          type: "color",
+          class: "cp-color-input",
+          value: (L.badgeColor && String(L.badgeColor).startsWith("#")) ? String(L.badgeColor).slice(0, 7) : "#abb2bf",
+          onchange: (e) => set(() => { L.badgeColor = e.target.value; }),
+        }),
+      ));
+      kids.push(h("label", { class: "field" }, h("span", null, "Nota capa"),
+        h("input", {
+          value: L.note || "",
+          placeholder: "opcional",
+          oninput: (e) => { L.note = e.target.value; this.savePrefsMeta(); },
         })));
       kids.push(h("p", { class: "note" },
         L.kind === "sprite"
@@ -1894,6 +1996,11 @@
     }
 
     // ── render ──────────────────────────────────────────────────────────────
+
+    #snapVal(v) {
+      const s = Math.max(1, this.doc.snapGrid | 0 || 1);
+      return Math.round(v / s) * s;
+    }
 
     schedule() {
       clearTimeout(this._t);
@@ -2285,43 +2392,44 @@
       off.width = S; off.height = S;
       off.getContext("2d").putImageData(
         new ImageData(new Uint8ClampedArray(this.activeCell.color), S, S), 0, 0);
-      // Todo el contenido visible (sin atenuar nada)
       ctx.drawImage(off, 0, 0, c.width, c.height);
 
-      // Solo un contorno suave sobre la capa seleccionada
       const g = this.group();
       const li = this.doc.selectedLayer;
-      if (g && !g.folder && li >= 0 && g.layers?.[li]) {
-        const solo = this.renderGroupLayer(g, li);
-        if (solo?.color) {
-          const rgba = solo.color;
-          ctx.save();
-          ctx.strokeStyle = "rgba(255, 210, 90, 0.9)";
-          ctx.lineWidth = Math.max(1.5, scale * 0.9);
-          ctx.lineJoin = "round";
-          // Contorno por bordes opacos de esa capa (sin tocar el resto)
-          for (let y = 0; y < S; y++) {
-            for (let x = 0; x < S; x++) {
-              const a = rgba[(y * S + x) * 4 + 3];
-              if (a < 8) continue;
-              const edge =
-                x === 0 || y === 0 || x === S - 1 || y === S - 1 ||
-                rgba[(y * S + x - 1) * 4 + 3] < 8 ||
-                rgba[(y * S + x + 1) * 4 + 3] < 8 ||
-                rgba[((y - 1) * S + x) * 4 + 3] < 8 ||
-                rgba[((y + 1) * S + x) * 4 + 3] < 8;
-              if (!edge) continue;
-              ctx.fillStyle = "rgba(255, 210, 90, 0.85)";
-              ctx.fillRect(x * scale, y * scale, scale, scale);
-            }
+      const outlineLayer = (layerIndex, color) => {
+        const solo = this.renderGroupLayer(g, layerIndex);
+        if (!solo?.color) return;
+        const rgba = solo.color;
+        ctx.fillStyle = color;
+        for (let y = 0; y < S; y++) {
+          for (let x = 0; x < S; x++) {
+            const a = rgba[(y * S + x) * 4 + 3];
+            if (a < 8) continue;
+            const edge =
+              x === 0 || y === 0 || x === S - 1 || y === S - 1 ||
+              rgba[(y * S + x - 1) * 4 + 3] < 8 ||
+              rgba[(y * S + x + 1) * 4 + 3] < 8 ||
+              rgba[((y - 1) * S + x) * 4 + 3] < 8 ||
+              rgba[((y + 1) * S + x) * 4 + 3] < 8;
+            if (edge) ctx.fillRect(x * scale, y * scale, Math.max(1, scale), Math.max(1, scale));
           }
-          ctx.restore();
+        }
+      };
+      if (g && !g.folder) {
+        if (g.outline) {
+          const col = g.color || "rgba(255,210,90,0.85)";
+          const stroke = col.startsWith("#") ? col : "rgba(255,210,90,0.85)";
+          (g.layers || []).forEach((L, i) => {
+            if (L.visible === false) return;
+            outlineLayer(i, stroke);
+          });
+        } else if (li >= 0 && g.layers?.[li]) {
+          outlineLayer(li, "rgba(255, 210, 90, 0.9)");
         }
       }
 
-      // Diamante del suelo (guía iso, discreto)
       const hw = c.width / 2, hh = c.height / 4;
-      ctx.strokeStyle = "rgba(95, 211, 176, 0.45)";
+      ctx.strokeStyle = "rgba(95, 211, 176, 0.4)";
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(hw, 0.5);
