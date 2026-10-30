@@ -157,11 +157,18 @@
     if (!root) return out;
     const visit = (g) => {
       if (!g || g.visible === false) return;
-      if (!g.folder && g.layers && g.layers.length) out.push(g);
+      if (!g.folder && g.layers && g.layers.some((L) => L.visible !== false)) out.push(g);
       (g.children || []).forEach(visit);
     };
     visit(root);
     return out;
+  }
+
+  /** true si el grupo o algún descendiente tiene capas visibles (ignora carpetas). */
+  function hasContentInSubtree(root) {
+    if (!root || root.visible === false) return false;
+    if (!root.folder && root.layers && root.layers.some((L) => L.visible !== false)) return true;
+    return (root.children || []).some(hasContentInSubtree);
   }
 
   function findGroup(list, id, parent = null) {
@@ -570,7 +577,7 @@
             }
             g.view = mode;
             this.rebuildProps();
-            this.schedule();
+            this.schedule(true);
           },
         }, c, h("span", { class: "cp-view-card-label" }, mode));
       });
@@ -2175,6 +2182,34 @@
         }
       });
 
+      // Hijos organizativos (no multipart, no carpeta): se componen DENTRO de este grupo
+      for (const ch of g.children || []) {
+        if (!ch || ch.visible === false || ch.folder || ch.multipart) continue;
+        if (!hasContentInSubtree(ch)) continue;
+        const savedView = ch.view;
+        ch.view = "front"; // el padre aplica la vista final
+        let r;
+        try { r = this.renderGroup(ch); } finally { ch.view = savedView; }
+        if (!r?.color) continue;
+        for (let i = 0; i < S * S; i++) {
+          const pi = i * 4;
+          if (r.color[pi + 3] < 1) continue;
+          const dest = [color[pi], color[pi + 1], color[pi + 2], color[pi + 3]];
+          const srcPx = [r.color[pi], r.color[pi + 1], r.color[pi + 2], r.color[pi + 3]];
+          blendPixel(dest, srcPx, "normal", 1);
+          color[pi] = dest[0]; color[pi + 1] = dest[1]; color[pi + 2] = dest[2]; color[pi + 3] = dest[3];
+          if (r.depth && r.depth[i] > depth[i]) depth[i] = r.depth[i];
+        }
+        if (r.normal) {
+          if (!normal) normal = new Uint8ClampedArray(S * S * 4);
+          for (let i = 0; i < normal.length; i += 4) {
+            if (r.normal[i + 3] < 1) continue;
+            normal[i] = r.normal[i]; normal[i + 1] = r.normal[i + 1];
+            normal[i + 2] = r.normal[i + 2]; normal[i + 3] = r.normal[i + 3];
+          }
+        }
+      }
+
       const ao = this.doc.ao || {};
       let finalColor = color;
       if (ao.enabled !== false && (ao.strength ?? 0.5) > 0) {
@@ -2225,6 +2260,12 @@
         const v = Number(g[axis]);
         return Number.isFinite(v) ? Math.trunc(v) : 0;
       };
+      // ¿Hay algún multipart con contenido en el doc?
+      let anyMp = false;
+      walkGroups(this.doc.groups, (g) => {
+        if (g.multipart && !g.folder && g.visible !== false && hasContentInSubtree(g)) anyMp = true;
+      });
+
       walkGroups(this.doc.groups, (g, ctx) => {
         let anc = ctx.parent;
         while (anc) {
@@ -2234,13 +2275,20 @@
         if (g.folder || g.visible === false) return;
 
         const isMp = !!g.multipart;
-        const hasVisLayer = !!(g.layers && g.layers.some((L) => L.visible !== false));
-        if (!isMp && !hasVisLayer) return;
+        // Solo celdas con contenido real (capas propias o hijos organizativos)
+        if (!hasContentInSubtree(g)) return;
+        // Si hay multipartes, no mezclar anclas sueltas (evita la 3ª celda fantasma)
+        if (anyMp && !isMp) return;
+        // Hijos no-multipart se componen dentro del padre; no generan celda propia
+        // si el padre ya es multipart o grupo con capas
+        if (!isMp && ctx.parent && !ctx.parent.folder && !ctx.parent.multipart) {
+          // Se dibujan dentro del padre vía renderGroup
+          return;
+        }
 
         const ox = isMp ? offN(g, "offsetX") : 0;
         const oy = isMp ? offN(g, "offsetY") : 0;
         const oz = isMp ? offN(g, "offsetZ") : 0;
-        // Una celda por parte multipart (id), no fusionar por offset
         const key = isMp ? ("mp:" + g.id) : ("a:" + ox + "," + oy + "," + oz);
 
         if (!map.has(key)) {
@@ -2436,7 +2484,7 @@
     paintViewStrip() {
       const g = this.group();
       const S = this.doc.size || 64;
-      // Cada orientación muestra SOLO los grupos que tienen esa vista asignada
+      // Cada orientación = preview del grupo/carpeta seleccionado con esa vista aplicada
       for (const mode of this.viewModes || []) {
         const canvas = this.viewCanvases?.[mode];
         if (!canvas) continue;
@@ -2449,7 +2497,22 @@
             ctx.fillRect(x, y, tw, tw);
           }
         }
-        const buf = this.#compositeGroupsByView(mode, S);
+        let buf = null;
+        if (g && g.visible !== false) {
+          if (g.folder || groupHasDescendants(g)) {
+            // subárbol: render temporal con view en cada hijo drawable
+            buf = this.#previewSubtreeAsView(g, mode, S);
+          } else {
+            const saved = g.view;
+            g.view = mode;
+            try {
+              const cell = this.renderGroup(g);
+              if (cell?.color) buf = cell.color;
+            } finally {
+              g.view = saved;
+            }
+          }
+        }
         if (buf) {
           const off = document.createElement("canvas");
           off.width = S; off.height = S;
@@ -2458,7 +2521,6 @@
           const dw = S * scale, dh = S * scale;
           ctx.drawImage(off, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
         }
-        // Anillo si el grupo activo tiene esa orientación
         if (g && !g.folder && (g.view || "front") === mode) {
           ctx.strokeStyle = "rgba(110, 207, 154, 0.95)";
           ctx.lineWidth = 2;
@@ -2472,6 +2534,40 @@
         });
       }
       this.#paintMapThumbs(S);
+    }
+
+
+    #previewSubtreeAsView(root, mode, S) {
+      const color = new Uint8ClampedArray(S * S * 4);
+      let any = false;
+      const visit = (g) => {
+        if (!g || g.visible === false) return;
+        if (!g.folder && g.layers && g.layers.some((L) => L.visible !== false)) {
+          const saved = g.view;
+          g.view = mode;
+          try {
+            // renderGroup aplica view; evitar doble composición de hijos no-mp
+            const layersOnly = { ...g, children: [] };
+            const r = this.renderGroup(layersOnly);
+            if (r?.color) {
+              for (let i = 0; i < S * S; i++) {
+                const pi = i * 4;
+                if (r.color[pi + 3] < 1) continue;
+                any = true;
+                const dest = [color[pi], color[pi + 1], color[pi + 2], color[pi + 3]];
+                const srcPx = [r.color[pi], r.color[pi + 1], r.color[pi + 2], r.color[pi + 3]];
+                blendPixel(dest, srcPx, "normal", 1);
+                color[pi] = dest[0]; color[pi + 1] = dest[1]; color[pi + 2] = dest[2]; color[pi + 3] = dest[3];
+              }
+            }
+          } finally {
+            g.view = saved;
+          }
+        }
+        for (const ch of g.children || []) visit(ch);
+      };
+      visit(root);
+      return any ? color : null;
     }
 
     /** Raster 64×64 con todos los grupos visibles cuya view === mode. */
@@ -2853,20 +2949,21 @@
     }
 
     sendToAtlas() {
-      // Mismo contrato que Bloque → Atlas: pendingPlacement + activate("atlas").
-      // El usuario hace clic en la primera celda; el Atlas coloca N celdas en fila horizontal.
+      try {
       this.render();
-      const cells = this.exportCells();
+      let cells = this.exportCells().filter((c) => {
+        if (!c?.color) return false;
+        for (let i = 3; i < c.color.length; i += 16) if (c.color[i] > 8) return true;
+        return false;
+      });
       if (!cells.length) {
-        this.studio?.toast("No hay grupos visibles para enviar", { kind: "warn" });
+        this.studio?.toast("No hay celdas con arte para enviar al Atlas", { kind: "warn" });
         return;
       }
       const S = cells[0].size || this.doc.size || 64;
-      // Clonar buffers: el Composer puede re-renderizar y reutilizar arrays.
       const items = cells.map((c) => ({
         color: new Uint8ClampedArray(c.color),
-        // Siempre hay normal (ensureCellNormal en exportCells): el Atlas escribe _n.png
-        normal: new Uint8ClampedArray(c.normal),
+        normal: new Uint8ClampedArray(c.normal || ensureCellNormal(c.color, null, S)),
         label: c.label || ("celda " + c.offsetX + "," + c.offsetY + "," + c.offsetZ),
       }));
       const offsets = cells.map((c) => ({
@@ -2910,7 +3007,12 @@
           return '"parts": [\n' + lines.join(",\n") + "\n]";
         },
       };
+      this.studio?.toast("Elige una celda en el Atlas para colocar " + items.length + " parte(s)", { kind: "ok" });
       this.studio.activate("atlas");
+      } catch (err) {
+        console.error(err);
+        this.studio?.toast("Error al enviar al Atlas: " + (err?.message || err), { kind: "bad" });
+      }
     }
   }
 
