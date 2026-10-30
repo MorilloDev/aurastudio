@@ -137,6 +137,33 @@
     }
   }
 
+
+  function groupHasDescendants(g) {
+    return !!(g && g.children && g.children.length);
+  }
+
+  /** true si node es root o está bajo root en el árbol */
+  function isInSubtree(node, root) {
+    if (!node || !root) return false;
+    if (node.id === root.id) return true;
+    let found = false;
+    walkGroups(root.children || [], (c) => { if (c.id === node.id) found = true; });
+    return found;
+  }
+
+  /** Grupos dibujables (no carpeta, visibles, con capas) bajo root inclusive */
+  function drawableInSubtree(root) {
+    const out = [];
+    if (!root) return out;
+    const visit = (g) => {
+      if (!g || g.visible === false) return;
+      if (!g.folder && g.layers && g.layers.length) out.push(g);
+      (g.children || []).forEach(visit);
+    };
+    visit(root);
+    return out;
+  }
+
   function findGroup(list, id, parent = null) {
     if (!list || id == null) return null;
     for (let i = 0; i < list.length; i++) {
@@ -176,6 +203,7 @@
       size: 64, groups: [], selectedGroupId: null, selectedLayer: -1,
       filter: "",
       ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true },
+      snapGrid: 1,
     };
   }
 
@@ -672,7 +700,9 @@
           const c = clampShift(src.color, size, sx, sy);
           sx = c.x; sy = c.y;
         }
-        L.shiftX = sx; L.shiftY = sy;
+        const snap = Math.max(1, this.doc.snapGrid | 0 || 1);
+        L.shiftX = Math.round(sx / snap) * snap;
+        L.shiftY = Math.round(sy / snap) * snap;
         this.schedule();
       });
       const endDrag = (e) => {
@@ -1683,6 +1713,14 @@
       const ao = this.doc.ao || (this.doc.ao = { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true });
       const setAo = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); };
 
+      kids.push(section({ id: "cp-snap", title: "Snap" },
+        slider({
+          label: "Snap al mover capa (px)", min: 1, max: 8, step: 1,
+          value: this.doc.snapGrid ?? 1,
+          onChange: (v) => { this.doc.snapGrid = Number(v); this.savePrefsMeta(); },
+        }).el,
+      ).el);
+
       kids.push(section({ id: "cp-ao", title: "Ambient occlusion" },
         h("p", { class: "note" }, "Oscurece contactos entre capas de la misma celda y entre celdas vecinas."),
         h("label", { class: "field check" },
@@ -2090,7 +2128,7 @@
         }
         const cell = map.get(key);
         cell.groups.push(g);
-        if (active && g.id === active.id) cell.active = true;
+        if (active && isInSubtree(g, active)) cell.active = true;
         if (g.multipart) cell.label = g.name;
       });
       const cells = [...map.values()].map((c) => {
@@ -2162,10 +2200,15 @@
       const ag = this.group();
       if (ag && ag.visible) {
         // Buscar la celda que contiene al grupo activo
-        const active = cells.find((c) => c.groups.includes(ag));
-        this.activeCell = active
-          ? { size: S, color: active.color, normal: active.normal }
-          : this.renderGroup(ag);
+        // Si el grupo tiene hijos, la "parte activa" muestra todo el subárbol
+        if (ag.folder || groupHasDescendants(ag)) {
+          this.activeCell = this.renderSubtreeView(ag);
+        } else {
+          const active = cells.find((c) => c.groups.includes(ag));
+          this.activeCell = active
+            ? { size: S, color: active.color, normal: active.normal, depth: active.depth }
+            : this.renderGroup(ag);
+        }
       } else {
         this.activeCell = { size: S, color: new Uint8ClampedArray(S * S * 4), normal: null };
       }
@@ -2379,71 +2422,78 @@
     }
 
     paintPart() {
-      const S = this.activeCell?.size || this.doc.size || 64;
+      const cell = this.activeCell;
+      const S = cell?.size || this.doc.size || 64;
+      const W = cell?.w || S;
+      const H = cell?.h || S;
       const c = this.partCanvas;
-      const scale = this.#partScale();
-      c.width = S * scale;
-      c.height = S * scale;
+      // escala al ancho del buffer (puede ser multi-celda)
+      let scale = this.zoomPart > 0 ? this.zoomPart : 0;
+      if (!scale) {
+        const box = this.partView || this.partCanvas.parentElement;
+        const availW = (box?.clientWidth || 320) * 0.92;
+        const availH = (box?.clientHeight || 320) * 0.92;
+        scale = Math.max(1, Math.floor(Math.min(availW / W, availH / H)));
+      }
+      c.width = W * scale;
+      c.height = H * scale;
       this.syncZoomLabels();
       const ctx = c.getContext("2d");
       ctx.imageSmoothingEnabled = false;
       this.fillChecker(ctx, c.width, c.height);
-      if (!this.activeCell) return;
+      if (!cell) return;
       const off = document.createElement("canvas");
-      off.width = S; off.height = S;
-      let show = this.activeCell.color;
+      off.width = W; off.height = H;
+      let show = cell.color;
       const pm = this.previewMap || "color";
-      if (pm !== "color") {
-        const maps = this.#cellMaps(this.activeCell, S);
+      if (pm !== "color" && !cell.multi) {
+        const maps = this.#cellMaps(cell, S);
         if (maps[pm]) show = maps[pm];
       }
-      off.getContext("2d").putImageData(
-        new ImageData(new Uint8ClampedArray(show), S, S), 0, 0);
-      // Todo el contenido visible (sin atenuar nada)
-      ctx.drawImage(off, 0, 0, c.width, c.height);
-
-      // Solo un contorno suave sobre la capa seleccionada
+      if (show) {
+        off.getContext("2d").putImageData(
+          new ImageData(new Uint8ClampedArray(show), W, H), 0, 0);
+        ctx.drawImage(off, 0, 0, c.width, c.height);
+      }
+      // Outline que engloba todo el contenido opaco del grupo/subárbol
       const g = this.group();
-      const li = this.doc.selectedLayer;
-      if (g && !g.folder && li >= 0 && g.layers?.[li]) {
-        const solo = this.renderGroupLayer(g, li);
-        if (solo?.color) {
-          const rgba = solo.color;
-          ctx.save();
-          ctx.strokeStyle = "rgba(255, 210, 90, 0.9)";
-          ctx.lineWidth = Math.max(1.5, scale * 0.9);
-          ctx.lineJoin = "round";
-          // Contorno por bordes opacos de esa capa (sin tocar el resto)
-          for (let y = 0; y < S; y++) {
-            for (let x = 0; x < S; x++) {
-              const a = rgba[(y * S + x) * 4 + 3];
-              if (a < 8) continue;
-              const edge =
-                x === 0 || y === 0 || x === S - 1 || y === S - 1 ||
-                rgba[(y * S + x - 1) * 4 + 3] < 8 ||
-                rgba[(y * S + x + 1) * 4 + 3] < 8 ||
-                rgba[((y - 1) * S + x) * 4 + 3] < 8 ||
-                rgba[((y + 1) * S + x) * 4 + 3] < 8;
-              if (!edge) continue;
-              ctx.fillStyle = "rgba(255, 210, 90, 0.85)";
-              ctx.fillRect(x * scale, y * scale, scale, scale);
-            }
+      if (g && show) {
+        let minX = W, minY = H, maxX = 0, maxY = 0, any = false;
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            if (show[(y * W + x) * 4 + 3] < 8) continue;
+            any = true;
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
           }
-          ctx.restore();
+        }
+        if (any) {
+          ctx.strokeStyle = "rgba(255, 210, 90, 0.9)";
+          ctx.lineWidth = Math.max(2, Math.round(scale));
+          ctx.strokeRect(
+            minX * scale - 1,
+            minY * scale - 1,
+            (maxX - minX + 1) * scale + 2,
+            (maxY - minY + 1) * scale + 2,
+          );
         }
       }
 
-      // Diamante del suelo (guía iso, discreto)
-      const hw = c.width / 2, hh = c.height / 4;
-      ctx.strokeStyle = "rgba(95, 211, 176, 0.45)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(hw, 0.5);
-      ctx.lineTo(c.width - 0.5, hh);
-      ctx.lineTo(hw, hh * 2);
-      ctx.lineTo(0.5, hh);
-      ctx.closePath();
-      ctx.stroke();
+      // Diamante guía solo en celda simple
+      if (!cell.multi) {
+        const hw = c.width / 2, hh = c.height / 4;
+        ctx.strokeStyle = "rgba(95, 211, 176, 0.45)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(hw, 0.5);
+        ctx.lineTo(c.width - 0.5, hh);
+        ctx.lineTo(hw, hh * 2);
+        ctx.lineTo(0.5, hh);
+        ctx.closePath();
+        ctx.stroke();
+      }
     }
 
     paintEnsemble() {
