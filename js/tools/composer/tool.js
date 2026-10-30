@@ -511,6 +511,9 @@
       this.partView = h("div", { class: "cp-view" }, this.partCanvas);
       this.viewModes = ["front", "back", "inverted", "horizontal"];
       this.viewCanvases = {};
+      this.mapModes = ["color", "normal", "depth", "ao"];
+      this.mapCanvases = {};
+      this.previewMap = "color";
       const viewCards = this.viewModes.map((mode) => {
         const c = h("canvas", { class: "cp-view-thumb", width: 80, height: 80 });
         this.viewCanvases[mode] = c;
@@ -530,9 +533,26 @@
           },
         }, c, h("span", { class: "cp-view-card-label" }, mode));
       });
+      const mapLabels = { color: "Color", normal: "Normal", depth: "Depth", ao: "AO" };
+      const mapCards = this.mapModes.map((mode) => {
+        const c = h("canvas", { class: "cp-view-thumb", width: 80, height: 80 });
+        this.mapCanvases[mode] = c;
+        return h("button", {
+          type: "button",
+          class: ["cp-view-card", mode === "color" && "on"],
+          title: "Ver mapa " + mapLabels[mode],
+          onclick: () => {
+            this.previewMap = mode;
+            this.paintViewStrip();
+            this.paintPart();
+          },
+        }, c, h("span", { class: "cp-view-card-label" }, mapLabels[mode]));
+      });
       this.viewStrip = h("div", { class: "cp-view-strip" },
         h("div", { class: "cp-view-strip-label" }, "Vistas del grupo activo"),
-        h("div", { class: "cp-view-strip-row" }, ...viewCards),
+        h("div", { class: "cp-view-strip-row", "data-row": "orient" }, ...viewCards),
+        h("div", { class: "cp-view-strip-label" }, "Mapas"),
+        h("div", { class: "cp-view-strip-row", "data-row": "maps" }, ...mapCards),
       );
 
       this.ensView = h("div", { class: "cp-view" }, this.ensembleCanvas);
@@ -2251,15 +2271,103 @@
           ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
         }
       }
-      // highlight selected card
+      // highlight orientation cards
       if (this.viewStrip) {
-        this.viewStrip.querySelectorAll(".cp-view-card").forEach((card, i) => {
+        this.viewStrip.querySelector('[data-row="orient"]')?.querySelectorAll(".cp-view-card").forEach((card, i) => {
           const mode = this.viewModes[i];
-          card.classList.toggle("on", (g && !g.folder && (g.view || "front") === mode));
+          card.classList.toggle("on", !!(g && !g.folder && (g.view || "front") === mode));
+        });
+      }
+      // Mapas color / normal / depth / ao
+      this.#paintMapThumbs(g, S);
+    }
+
+    #paintMapThumbs(g, S) {
+      const drawChecker = (ctx, w, h) => {
+        const tw = 8;
+        for (let y = 0; y < h; y += tw) {
+          for (let x = 0; x < w; x += tw) {
+            ctx.fillStyle = ((x / tw + y / tw) & 1) ? "#2a2f35" : "#22262b";
+            ctx.fillRect(x, y, tw, tw);
+          }
+        }
+      };
+      const drawBuf = (canvas, rgba) => {
+        const ctx = canvas.getContext("2d");
+        ctx.imageSmoothingEnabled = false;
+        drawChecker(ctx, canvas.width, canvas.height);
+        if (!rgba) return;
+        const off = document.createElement("canvas");
+        off.width = S; off.height = S;
+        off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(rgba), S, S), 0, 0);
+        const scale = Math.min(canvas.width / S, canvas.height / S);
+        const dw = S * scale, dh = S * scale;
+        ctx.drawImage(off, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+      };
+
+      if (!g || g.folder) {
+        for (const mode of this.mapModes || []) {
+          const canvas = this.mapCanvases?.[mode];
+          if (canvas) drawBuf(canvas, null);
+        }
+        return;
+      }
+      const cell = this.renderGroup(g);
+      const maps = this.#cellMaps(cell, S);
+      for (const mode of this.mapModes || []) {
+        const canvas = this.mapCanvases?.[mode];
+        if (!canvas) continue;
+        drawBuf(canvas, maps[mode]);
+        if ((this.previewMap || "color") === mode) {
+          const ctx = canvas.getContext("2d");
+          ctx.strokeStyle = "rgba(127, 178, 255, 0.95)";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+        }
+      }
+      if (this.viewStrip) {
+        this.viewStrip.querySelector('[data-row="maps"]')?.querySelectorAll(".cp-view-card").forEach((card, i) => {
+          const mode = this.mapModes[i];
+          card.classList.toggle("on", (this.previewMap || "color") === mode);
         });
       }
     }
 
+    #cellMaps(cell, S) {
+      if (!cell?.color) return {};
+      const color = cell.color;
+      const normal = cell.normal && cell.normal.length ? cell.normal : ensureCellNormal(color, null, S);
+      const depthRgba = new Uint8ClampedArray(S * S * 4);
+      if (cell.depth) {
+        let min = Infinity, max = -Infinity;
+        for (let i = 0; i < S * S; i++) {
+          const d = cell.depth[i];
+          if (!Number.isFinite(d) || d === -Infinity) continue;
+          if (d < min) min = d;
+          if (d > max) max = d;
+        }
+        if (!Number.isFinite(min)) { min = 0; max = 1; }
+        const span = Math.max(1e-6, max - min);
+        for (let i = 0; i < S * S; i++) {
+          const pi = i * 4;
+          if (color[pi + 3] < 1) { depthRgba[pi + 3] = 0; continue; }
+          const d = cell.depth[i];
+          const v = Number.isFinite(d) && d !== -Infinity ? Math.round(((d - min) / span) * 255) : 128;
+          depthRgba[pi] = depthRgba[pi + 1] = depthRgba[pi + 2] = v;
+          depthRgba[pi + 3] = 255;
+        }
+      }
+      const ao = this.doc.ao || {};
+      let aoRgba = color;
+      if (cell.depth && ao.enabled !== false) {
+        aoRgba = applyScreenAO(color, cell.depth, S, S, {
+          strength: ao.strength ?? 0.5,
+          radius: ao.radius ?? 3,
+          samples: ao.samples ?? 12,
+        });
+      }
+      return { color, normal, depth: depthRgba, ao: aoRgba };
+    }
 
     renderGroupLayer(g, layerIndex) {
       if (!g || !g.layers || !g.layers[layerIndex]) return null;
@@ -2283,8 +2391,14 @@
       if (!this.activeCell) return;
       const off = document.createElement("canvas");
       off.width = S; off.height = S;
+      let show = this.activeCell.color;
+      const pm = this.previewMap || "color";
+      if (pm !== "color") {
+        const maps = this.#cellMaps(this.activeCell, S);
+        if (maps[pm]) show = maps[pm];
+      }
       off.getContext("2d").putImageData(
-        new ImageData(new Uint8ClampedArray(this.activeCell.color), S, S), 0, 0);
+        new ImageData(new Uint8ClampedArray(show), S, S), 0, 0);
       // Todo el contenido visible (sin atenuar nada)
       ctx.drawImage(off, 0, 0, c.width, c.height);
 
