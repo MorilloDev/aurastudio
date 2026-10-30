@@ -1195,10 +1195,17 @@
 
     touch() {
       this.dirty = true;
-      this.savePrefsMeta();
       this.rebuildGroupList();
       this.rebuildProps();
-      this.schedule();
+      this.schedule(true);
+      this.#debouncedSave();
+    }
+
+    #debouncedSave() {
+      clearTimeout(this._saveT);
+      this._saveT = setTimeout(() => {
+        try { this.savePrefsMeta(); } catch (e) { console.warn(e); }
+      }, 400);
     }
 
     savePrefsMeta() {
@@ -1290,7 +1297,14 @@
             checked: g.visible !== false,
             title: "Visible",
             onclick: (e) => e.stopPropagation(),
-            onchange: (e) => { g.visible = e.target.checked; this.touch(); },
+            onchange: (e) => {
+              e.stopPropagation();
+              g.visible = !!e.target.checked;
+              this.dirty = true;
+              this.schedule(true);
+              this.#debouncedSave();
+              this.rebuildGroupList();
+            },
           }),
           h("button", {
             type: "button", class: "cp-collapse",
@@ -1754,7 +1768,13 @@
     rebuildProps() {
       const g = this.group();
       const L = this.layer();
-      const set = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); this.rebuildGroupList(); };
+      const set = (fn) => {
+        fn();
+        this.dirty = true;
+        this.schedule(true);
+        this.#debouncedSave();
+        this.rebuildGroupList();
+      };
       // Sin grupo seleccionado: inspector vacío (no error).
       if (!g) {
         this.propsHost.replaceChildren(
@@ -2017,9 +2037,10 @@
 
     // ── render ──────────────────────────────────────────────────────────────
 
-    schedule() {
+    schedule(immediate = false) {
       clearTimeout(this._t);
-      this._t = setTimeout(() => this.render(), 40);
+      if (immediate) { this.render(); return; }
+      this._t = setTimeout(() => this.render(), 16);
     }
 
     layerSourceRgba(L) {
@@ -2701,7 +2722,6 @@
       // Contorno: diamante isométrico de la celda (no el cuadrado vacío de las esquinas).
       // El cuadrado 64×64 tiene esquinas transparentes por diseño del iso; el diamante es el “suelo” real.
       if (this.preview.outlines) {
-        ctx.font = `${Math.max(10, 9 * scale)}px sans-serif`;
         for (const o of this.preview.outlines) {
           const x = o.x * scale, y = o.y * scale, s = S * scale;
           const hw = s / 2, hh = s / 4; // HalfTileW / HalfTileH en pantalla
@@ -2732,9 +2752,13 @@
           ctx.moveTo(x + hw, y + hh * 2);
           ctx.lineTo(x + hw, y + s);
           ctx.stroke();
-          ctx.fillStyle = o.active ? "rgba(95, 211, 176, 0.95)" : "rgba(180,190,200,0.85)";
-          const tag = (o.name ? o.name + " · " : "") + `${o.ox},${o.oy},${o.oz}`;
-          ctx.fillText(tag, x + 4, y + 12);
+          const tag = `${o.ox},${o.oy},${o.oz}`;
+          ctx.font = `${Math.max(8, Math.round(8 * Math.min(scale, 1.5)))}px ui-sans-serif, system-ui, sans-serif`;
+          const tw = ctx.measureText(tag).width;
+          ctx.fillStyle = "rgba(0,0,0,0.5)";
+          ctx.fillRect(x + 2, y + 2, tw + 5, 10);
+          ctx.fillStyle = o.active ? "rgba(160, 230, 200, 0.95)" : "rgba(200,210,220,0.88)";
+          ctx.fillText(tag, x + 4, y + 10);
         }
       }
     }
