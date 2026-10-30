@@ -550,11 +550,11 @@
         return h("button", {
           type: "button",
           class: ["cp-view-card", mode === "front" && "is-default"],
-          title: "Aplicar vista «" + mode + "» al grupo activo",
+          title: "Preview de grupos con vista «" + mode + "». Clic = asignar al grupo activo",
           onclick: () => {
             const g = this.group();
             if (!g || g.folder) {
-              this.studio?.toast("Selecciona un grupo (no carpeta)", { kind: "warn" });
+              this.studio?.toast("Selecciona un grupo (no carpeta) para asignar la orientación", { kind: "warn" });
               return;
             }
             g.view = mode;
@@ -2315,12 +2315,12 @@
     paintViewStrip() {
       const g = this.group();
       const S = this.doc.size || 64;
+      // Cada orientación muestra SOLO los grupos que tienen esa vista asignada
       for (const mode of this.viewModes || []) {
         const canvas = this.viewCanvases?.[mode];
         if (!canvas) continue;
         const ctx = canvas.getContext("2d");
         ctx.imageSmoothingEnabled = false;
-        // checker
         const tw = 8;
         for (let y = 0; y < canvas.height; y += tw) {
           for (let x = 0; x < canvas.width; x += tw) {
@@ -2328,38 +2328,73 @@
             ctx.fillRect(x, y, tw, tw);
           }
         }
-        if (!g || g.folder) continue;
-        const saved = g.view;
-        g.view = mode;
-        const cell = this.renderGroup(g);
-        g.view = saved;
-        if (!cell?.color) continue;
-        const off = document.createElement("canvas");
-        off.width = S; off.height = S;
-        off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(cell.color), S, S), 0, 0);
-        const scale = Math.min(canvas.width / S, canvas.height / S);
-        const dw = S * scale, dh = S * scale;
-        const ox = (canvas.width - dw) / 2, oy = (canvas.height - dh) / 2;
-        ctx.drawImage(off, ox, oy, dw, dh);
-        // active ring
-        if ((g.view || "front") === mode) {
+        const buf = this.#compositeGroupsByView(mode, S);
+        if (buf) {
+          const off = document.createElement("canvas");
+          off.width = S; off.height = S;
+          off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(buf), S, S), 0, 0);
+          const scale = Math.min(canvas.width / S, canvas.height / S);
+          const dw = S * scale, dh = S * scale;
+          ctx.drawImage(off, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+        }
+        // Anillo si el grupo activo tiene esa orientación
+        if (g && !g.folder && (g.view || "front") === mode) {
           ctx.strokeStyle = "rgba(110, 207, 154, 0.95)";
           ctx.lineWidth = 2;
           ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
         }
       }
-      // highlight orientation cards
       if (this.viewStrip) {
         this.viewStrip.querySelector('[data-row="orient"]')?.querySelectorAll(".cp-view-card").forEach((card, i) => {
           const mode = this.viewModes[i];
           card.classList.toggle("on", !!(g && !g.folder && (g.view || "front") === mode));
         });
       }
-      // Mapas color / normal / depth / ao
-      this.#paintMapThumbs(g, S);
+      this.#paintMapThumbs(S);
     }
 
-    #paintMapThumbs(g, S) {
+    /** Raster 64×64 con todos los grupos visibles cuya view === mode. */
+    #compositeGroupsByView(mode, S) {
+      const color = new Uint8ClampedArray(S * S * 4);
+      let any = false;
+      walkGroups(this.doc.groups, (g, ctx) => {
+        let anc = ctx.parent;
+        while (anc) {
+          if (anc.visible === false) return;
+          anc = findGroup(this.doc.groups, anc.id)?.parent || null;
+        }
+        if (g.folder || g.visible === false) return;
+        if (!(g.layers && g.layers.length)) return;
+        if ((g.view || "front") !== mode) return;
+        const r = this.renderGroup(g);
+        if (!r?.color) return;
+        for (let i = 0; i < S * S; i++) {
+          const pi = i * 4;
+          if (r.color[pi + 3] < 1) continue;
+          any = true;
+          const dest = [color[pi], color[pi + 1], color[pi + 2], color[pi + 3]];
+          const srcPx = [r.color[pi], r.color[pi + 1], r.color[pi + 2], r.color[pi + 3]];
+          blendPixel(dest, srcPx, "normal", 1);
+          color[pi] = dest[0]; color[pi + 1] = dest[1]; color[pi + 2] = dest[2]; color[pi + 3] = dest[3];
+        }
+      });
+      return any ? color : null;
+    }
+
+    /** Celda según selección: capa | grupo | carpeta (subárbol). */
+    #selectionRenderCell(S) {
+      const g = this.group();
+      if (!g) return null;
+      const li = this.doc.selectedLayer;
+      if (li >= 0 && !g.folder && g.layers?.[li]) {
+        return this.renderGroupLayer(g, li);
+      }
+      if (g.folder || groupHasDescendants(g)) {
+        return this.renderSubtreeView(g);
+      }
+      return this.renderGroup(g);
+    }
+    #paintMapThumbs(S) {
       const drawChecker = (ctx, w, h) => {
         const tw = 8;
         for (let y = 0; y < h; y += tw) {
@@ -2369,32 +2404,36 @@
           }
         }
       };
-      const drawBuf = (canvas, rgba) => {
+      const drawBuf = (canvas, rgba, bw, bh) => {
         const ctx = canvas.getContext("2d");
         ctx.imageSmoothingEnabled = false;
         drawChecker(ctx, canvas.width, canvas.height);
         if (!rgba) return;
         const off = document.createElement("canvas");
-        off.width = S; off.height = S;
-        off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(rgba), S, S), 0, 0);
-        const scale = Math.min(canvas.width / S, canvas.height / S);
-        const dw = S * scale, dh = S * scale;
+        off.width = bw; off.height = bh;
+        off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(rgba), bw, bh), 0, 0);
+        const scale = Math.min(canvas.width / bw, canvas.height / bh);
+        const dw = bw * scale, dh = bh * scale;
         ctx.drawImage(off, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
       };
 
-      if (!g || g.folder) {
-        for (const mode of this.mapModes || []) {
-          const canvas = this.mapCanvases?.[mode];
-          if (canvas) drawBuf(canvas, null);
+      const cell = this.#selectionRenderCell(S);
+      let maps = {};
+      let bw = S, bh = S;
+      if (cell?.color) {
+        bw = cell.w || cell.size || S;
+        bh = cell.h || cell.size || S;
+        // #cellMaps espera size cuadrado; si multi, solo color en thumbs
+        if (cell.multi || bw !== S || bh !== S) {
+          maps = { color: cell.color, normal: null, depth: null, ao: cell.color };
+        } else {
+          maps = this.#cellMaps(cell, S);
         }
-        return;
       }
-      const cell = this.renderGroup(g);
-      const maps = this.#cellMaps(cell, S);
       for (const mode of this.mapModes || []) {
         const canvas = this.mapCanvases?.[mode];
         if (!canvas) continue;
-        drawBuf(canvas, maps[mode]);
+        drawBuf(canvas, maps[mode], bw, bh);
         if ((this.previewMap || "color") === mode) {
           const ctx = canvas.getContext("2d");
           ctx.strokeStyle = "rgba(127, 178, 255, 0.95)";
