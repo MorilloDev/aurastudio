@@ -516,6 +516,7 @@
       this.propsHost = h("div", { class: "cp-props" });
       this.zoomPartLabel = h("span", { class: "cp-zoom-lbl" }, "auto");
       this.zoomEnsLabel = h("span", { class: "cp-zoom-lbl" }, "auto");
+      this.statusLbl = h("span", { class: "cp-status" }, "");
 
       const toolbar = h("div", { class: "cp-toolbar" },
         h("div", { class: "cp-tool-group" },
@@ -541,6 +542,7 @@
           h("button", { title: "Acercar conjunto", onclick: () => this.bumpZoom("ens", 1) }, "+"),
           h("button", { title: "Ajustar conjunto", onclick: () => { this.zoomEnsemble = 0; this.paintEnsemble(); this.syncZoomLabels(); } }, "Ajustar")),
         h("span", { class: "grow" }),
+        this.statusLbl,
         h("div", { class: "cp-tool-group" },
           h("button", { onclick: () => this.exportPng() }, "PNG"),
           h("button", { onclick: () => this.exportMultipart() }, "JSON"),
@@ -2169,7 +2171,6 @@
         const v = Number(g[axis]);
         return Number.isFinite(v) ? Math.trunc(v) : 0;
       };
-      // Multipart: una celda por offset (aunque sin capas visibles) para ver el conjunto.
       walkGroups(this.doc.groups, (g, ctx) => {
         let anc = ctx.parent;
         while (anc) {
@@ -2177,38 +2178,45 @@
           anc = findGroup(this.doc.groups, anc.id)?.parent || null;
         }
         if (g.folder || g.visible === false) return;
+
+        const isMp = !!g.multipart;
         const hasVisLayer = !!(g.layers && g.layers.some((L) => L.visible !== false));
-        if (!g.multipart && !hasVisLayer) return;
-        // multipart sin capas visibles: igual reserva la celda (preview de posición)
-        const ox = g.multipart ? offN(g, "offsetX") : 0;
-        const oy = g.multipart ? offN(g, "offsetY") : 0;
-        const oz = g.multipart ? offN(g, "offsetZ") : 0;
-        const key = ox + "," + oy + "," + oz;
+        if (!isMp && !hasVisLayer) return;
+
+        const ox = isMp ? offN(g, "offsetX") : 0;
+        const oy = isMp ? offN(g, "offsetY") : 0;
+        const oz = isMp ? offN(g, "offsetZ") : 0;
+        // Una celda por parte multipart (id), no fusionar por offset
+        const key = isMp ? ("mp:" + g.id) : ("a:" + ox + "," + oy + "," + oz);
+
         if (!map.has(key)) {
           map.set(key, {
             offsetX: ox, offsetY: oy, offsetZ: oz,
             groups: [],
-            label: g.name,
+            label: g.name || key,
             active: false,
-            multipart: !!g.multipart,
+            multipart: isMp,
           });
         }
         const cell = map.get(key);
         cell.groups.push(g);
-        if (g.multipart) {
+        cell.offsetX = ox;
+        cell.offsetY = oy;
+        cell.offsetZ = oz;
+        if (isMp) {
           cell.multipart = true;
-          cell.label = g.name;
+          cell.label = g.name || cell.label;
         }
         if (active && isInSubtree(g, active)) cell.active = true;
       });
+
       const cells = [...map.values()].map((c) => {
-        // Componer todos los grupos de esta celda → un 64×64 + depth combinado
         const color = new Uint8ClampedArray(S * S * 4);
         const depth = new Float32Array(S * S).fill(-Infinity);
         let normal = null;
         for (const g of c.groups) {
           const r = this.renderGroup(g);
-          // renderGroup ya aplicó AO intra-grupo; re-fusionamos depth para AO entre celdas
+          if (!r?.color) continue;
           for (let i = 0; i < S * S; i++) {
             const pi = i * 4;
             if (r.color[pi + 3] < 1) continue;
@@ -2239,9 +2247,10 @@
           sort: this.sortKey(c.offsetX, c.offsetY, c.offsetZ),
         };
       });
-      cells.sort((a, b) => a.sort - b.sort);
+      cells.sort((a, b) => a.sort - b.sort || String(a.label).localeCompare(String(b.label)));
       return cells;
     }
+
 
     exportCells() {
       // Orden estable para Atlas: horizontal (offsetY, offsetX, offsetZ) — celdas en fila.
@@ -2349,6 +2358,16 @@
       this.paintPart();
       this.paintEnsemble();
       this.paintViewStrip();
+      // Indicador de celdas multipart en el título del conjunto
+      if (this.ensView) {
+        const n = cells.length;
+        const mp = cells.filter((c) => c.multipart).length;
+        const title = this.ensView.querySelector(".cp-view-title") || this.ensView.previousElementSibling;
+        // status opcional
+        if (this.statusLbl) {
+          this.statusLbl.textContent = n ? (`Conjunto: ${n} celda${n>1?"s":""}` + (mp ? ` (${mp} multipart)` : "")) : "Sin celdas";
+        }
+      }
     }
 
 
@@ -2713,10 +2732,9 @@
           ctx.moveTo(x + hw, y + hh * 2);
           ctx.lineTo(x + hw, y + s);
           ctx.stroke();
-          if (scale >= 2) {
-            ctx.fillStyle = o.active ? "rgba(95, 211, 176, 0.9)" : "rgba(180,190,200,0.75)";
-            ctx.fillText(`${o.ox},${o.oy},${o.oz}`, x + 4, y + 12);
-          }
+          ctx.fillStyle = o.active ? "rgba(95, 211, 176, 0.95)" : "rgba(180,190,200,0.85)";
+          const tag = (o.name ? o.name + " · " : "") + `${o.ox},${o.oy},${o.oz}`;
+          ctx.fillText(tag, x + 4, y + 12);
         }
       }
     }
