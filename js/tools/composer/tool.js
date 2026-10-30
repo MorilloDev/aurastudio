@@ -25,14 +25,6 @@
   const PREFS_KEY = "composer:doc";
   const QUEUE_KEY = "composer:queue";
 
-  const GROUP_ICONS = ["📦", "🧱", "🪑", "🌳", "🏠", "⚔️", "💎", "🔧", "⭐", "🎯", "🧩", "📐"];
-  const FOLDER_ICONS = ["📁", "📂", "🗂️", "🗃️", "📚", "🏷️"];
-  const LAYER_ICONS = ["◇", "▣", "●", "▲", "◆", "★", "✦", "⬡"];
-  const SWATCHES = [
-    "#6ecf9a", "#7fb2ff", "#f0c674", "#e06c75", "#c678dd",
-    "#56b6c2", "#d19a66", "#abb2bf", "#98c379", "#e5c07b",
-  ];
-
   const uid = () => "id" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   function defaultShapeLayer(i = 0) {
@@ -52,9 +44,6 @@
       color: null,
       normal: null,
       source: null,
-      icon: "◇",
-      badgeColor: "#abb2bf",
-      note: "",
     };
   }
 
@@ -78,9 +67,6 @@
       shape: null,
       params: {},
       rot3d: { x: 0, y: 0, z: 0 },
-      icon: meta.icon || "▣",
-      badgeColor: meta.badgeColor || "#d19a66",
-      note: meta.note || "",
     };
   }
 
@@ -98,13 +84,8 @@
       offsetZ: 0,
       layers: [],
       children: [],              // grupos anidados
-      entries: [],
-      view: "front",
-      icon: folder ? "📁" : (multipart ? "🧱" : "📦"),
-      color: folder ? "#7fb2ff" : (multipart ? "#f0c674" : "#6ecf9a"),
-      note: "",
-      tags: [],
-      outline: false,
+      entries: [],               // orden árbol: {type:"layer"|"group", id}
+      view: "front",             // front | back | inverted | horizontal
     };
   }
 
@@ -195,7 +176,6 @@
       size: 64, groups: [], selectedGroupId: null, selectedLayer: -1,
       filter: "",
       ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true },
-      snapGrid: 1,
     };
   }
 
@@ -498,7 +478,6 @@
       this.propsHost = h("div", { class: "cp-props" });
       this.zoomPartLabel = h("span", { class: "cp-zoom-lbl" }, "auto");
       this.zoomEnsLabel = h("span", { class: "cp-zoom-lbl" }, "auto");
-      this.statusLbl = h("span", { class: "cp-status" }, "Listo");
 
       const toolbar = h("div", { class: "cp-toolbar" },
         h("div", { class: "cp-tool-group" },
@@ -523,7 +502,6 @@
           h("button", { title: "Acercar conjunto", onclick: () => this.bumpZoom("ens", 1) }, "+"),
           h("button", { title: "Ajustar conjunto", onclick: () => { this.zoomEnsemble = 0; this.paintEnsemble(); this.syncZoomLabels(); } }, "Ajustar")),
         h("span", { class: "grow" }),
-        this.statusLbl,
         h("div", { class: "cp-tool-group" },
           h("button", { onclick: () => this.exportPng() }, "PNG"),
           h("button", { onclick: () => this.exportMultipart() }, "JSON"),
@@ -552,26 +530,9 @@
           },
         }, c, h("span", { class: "cp-view-card-label" }, mode));
       });
-      const mapCards = this.mapModes.map((mode) => {
-        const c = h("canvas", { class: "cp-view-thumb", width: 80, height: 80 });
-        this.mapCanvases[mode] = c;
-        const labels = { color: "Color", normal: "Normal", depth: "Depth", ao: "AO" };
-        return h("button", {
-          type: "button",
-          class: ["cp-view-card", mode === "color" && "on"],
-          title: "Vista " + labels[mode],
-          onclick: () => {
-            this.previewMap = mode;
-            this.paintViewStrip();
-            this.paintPart();
-          },
-        }, c, h("span", { class: "cp-view-card-label" }, labels[mode] || mode));
-      });
       this.viewStrip = h("div", { class: "cp-view-strip" },
-        h("div", { class: "cp-view-strip-label" }, "Orientación del grupo activo"),
+        h("div", { class: "cp-view-strip-label" }, "Vistas del grupo activo"),
         h("div", { class: "cp-view-strip-row" }, ...viewCards),
-        h("div", { class: "cp-view-strip-label" }, "Mapas (como en bloques)"),
-        h("div", { class: "cp-view-strip-row" }, ...mapCards),
       );
 
       this.ensView = h("div", { class: "cp-view" }, this.ensembleCanvas);
@@ -691,7 +652,7 @@
           const c = clampShift(src.color, size, sx, sy);
           sx = c.x; sy = c.y;
         }
-        L.shiftX = this.#snapVal(sx); L.shiftY = this.#snapVal(sy);
+        L.shiftX = sx; L.shiftY = sy;
         this.schedule();
       });
       const endDrag = (e) => {
@@ -1155,10 +1116,6 @@
       this.rebuildGroupList();
       this.rebuildProps();
       this.schedule();
-      if (this.statusLbl) {
-        const t0 = new Date();
-        this.statusLbl.textContent = "Guardado " + t0.toLocaleTimeString();
-      }
     }
 
     savePrefsMeta() {
@@ -1210,12 +1167,8 @@
       const frag = [tools];
       const matches = (g) => {
         if (!filter) return true;
-        const f = filter.toLowerCase();
-        if ((g.name || "").toLowerCase().includes(f)) return true;
-        if ((g.note || "").toLowerCase().includes(f)) return true;
-        if ((g.tags || []).some((tg) => String(tg).toLowerCase().includes(f))) return true;
-        if ((g.layers || []).some((L) =>
-          (L.name || "").toLowerCase().includes(f) || (L.note || "").toLowerCase().includes(f))) return true;
+        if ((g.name || "").toLowerCase().includes(filter)) return true;
+        if ((g.layers || []).some((L) => (L.name || "").toLowerCase().includes(filter))) return true;
         return (g.children || []).some(matches);
       };
 
@@ -1260,12 +1213,7 @@
             type: "button", class: "cp-collapse",
             onclick: (e) => { e.stopPropagation(); g.collapsed = !g.collapsed; this.rebuildGroupList(); },
           }, g.collapsed ? "▸" : "▾"),
-          h("span", {
-            class: "cp-badge",
-            style: { background: g.color || (g.folder ? "#7fb2ff" : "#6ecf9a") },
-          }),
-          h("span", { class: "cp-icon" }, g.icon || (g.folder ? "📁" : (g.multipart ? "🧱" : "📦"))),
-          h("span", { class: "cp-row-name" }, g.name),
+          h("span", { class: "cp-row-name" }, g.folder ? "📁 " + g.name : g.name),
           g.locked ? h("span", { class: "cp-tag muted" }, "🔒") : null,
           g.folder
             ? h("span", { class: "cp-tag muted" }, "carpeta")
@@ -1330,11 +1278,6 @@
                   onclick: (e) => e.stopPropagation(),
                   onchange: (e) => { L.visible = e.target.checked; this.touch(); },
                 }),
-                h("span", {
-                  class: "cp-badge",
-                  style: { background: L.badgeColor || "#abb2bf" },
-                }),
-                h("span", { class: "cp-icon" }, L.icon || (L.kind === "sprite" ? "▣" : "◇")),
                 h("span", { class: "cp-row-name" }, L.name || "Capa"),
                 h("span", { class: "cp-tag muted" }, L.kind === "sprite" ? (L.source || "sprite") : (L.shape || "shape")),
               );
@@ -1706,10 +1649,10 @@
     // ── props ───────────────────────────────────────────────────────────────
 
     rebuildProps() {
-      try {
       const g = this.group();
       const L = this.layer();
       const set = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); this.rebuildGroupList(); };
+      // Sin grupo seleccionado: inspector vacío (no error).
       if (!g) {
         this.propsHost.replaceChildren(
           h("p", { class: "note" }, "Ningún grupo seleccionado. Crea un grupo o parte, o elige uno en la lista."));
@@ -1719,15 +1662,6 @@
       const kids = [];
       const ao = this.doc.ao || (this.doc.ao = { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true });
       const setAo = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); };
-
-      kids.push(section({ id: "cp-snap", title: "Flujo / calidad" },
-        slider({
-          label: "Snap al mover capa (px)", min: 1, max: 8, step: 1,
-          value: this.doc.snapGrid ?? 1,
-          onChange: (v) => { this.doc.snapGrid = Number(v); this.savePrefsMeta(); },
-        }).el,
-        h("p", { class: "note" }, "Atajos: Ctrl+C/V/X/D, Supr, ↶ deshacer. Borrador local automático."),
-      ).el);
 
       kids.push(section({ id: "cp-ao", title: "Ambient occlusion" },
         h("p", { class: "note" }, "Oscurece contactos entre capas de la misma celda y entre celdas vecinas."),
@@ -1767,57 +1701,12 @@
           value: g.name,
           oninput: (e) => {
             g.name = e.target.value;
-            const head = this.groupList?.querySelector(".cp-group-head.active .cp-row-name");
+            // Actualiza solo el texto de la lista, sin reconstruir el panel (mantiene el foco).
+            const head = this.groupList?.querySelector(".cp-group-head.active .cp-group-name");
             if (head) head.textContent = g.name;
             this.savePrefsMeta();
           },
           onchange: () => this.savePrefsMeta(),
-        })));
-      const iconSet = g.folder ? (FOLDER_ICONS || ["📁"]) : (GROUP_ICONS || ["📦"]);
-      kids.push(h("div", { class: "cp-sub" }, "Aspecto"));
-      kids.push(h("div", { class: "cp-icon-grid" },
-        ...iconSet.map((ic) => h("button", {
-          type: "button",
-          class: ["cp-icon-btn", (g.icon || "") === ic && "on"],
-          onclick: () => set(() => { g.icon = ic; }),
-        }, ic)),
-      ));
-      kids.push(h("div", { class: "cp-swatches" },
-        ...SWATCHES.map((col) => h("button", {
-          type: "button",
-          class: ["cp-swatch", g.color === col && "on"],
-          style: { background: col },
-          onclick: () => set(() => { g.color = col; }),
-        })),
-        h("input", {
-          type: "color",
-          class: "cp-color-input",
-          value: (g.color && String(g.color).startsWith("#")) ? String(g.color).slice(0, 7) : "#6ecf9a",
-          onchange: (e) => set(() => { g.color = e.target.value; }),
-        }),
-      ));
-      kids.push(h("label", { class: "field check" },
-        h("input", {
-          type: "checkbox",
-          checked: g.outline || null,
-          onchange: (e) => set(() => { g.outline = e.target.checked; }),
-        }),
-        h("span", null, "Outline de todas las piezas del grupo")));
-      kids.push(h("label", { class: "field" }, h("span", null, "Notas"),
-        h("textarea", {
-          class: "cp-note",
-          rows: 2,
-          placeholder: "Notas…",
-          value: g.note || "",
-          oninput: (e) => { g.note = e.target.value; this.savePrefsMeta(); },
-        })));
-      kids.push(h("label", { class: "field" }, h("span", null, "Tags (coma)"),
-        h("input", {
-          value: (g.tags || []).join(", "),
-          placeholder: "prop, build, foliage",
-          onchange: (e) => set(() => {
-            g.tags = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
-          }),
         })));
       kids.push(h("label", { class: "field check" },
         h("input", {
@@ -1879,38 +1768,11 @@
           value: L.name,
           oninput: (e) => {
             L.name = e.target.value;
-            const row = this.groupList?.querySelector(".cp-layer.active .cp-row-name");
+            const row = this.groupList?.querySelector(".cp-layer.active .cp-layer-name");
             if (row) row.textContent = L.name;
             this.savePrefsMeta();
           },
           onchange: () => this.savePrefsMeta(),
-        })));
-      kids.push(h("div", { class: "cp-icon-grid" },
-        ...LAYER_ICONS.map((ic) => h("button", {
-          type: "button",
-          class: ["cp-icon-btn", (L.icon || "") === ic && "on"],
-          onclick: () => set(() => { L.icon = ic; }),
-        }, ic)),
-      ));
-      kids.push(h("div", { class: "cp-swatches" },
-        ...SWATCHES.map((col) => h("button", {
-          type: "button",
-          class: ["cp-swatch", L.badgeColor === col && "on"],
-          style: { background: col },
-          onclick: () => set(() => { L.badgeColor = col; }),
-        })),
-        h("input", {
-          type: "color",
-          class: "cp-color-input",
-          value: (L.badgeColor && String(L.badgeColor).startsWith("#")) ? String(L.badgeColor).slice(0, 7) : "#abb2bf",
-          onchange: (e) => set(() => { L.badgeColor = e.target.value; }),
-        }),
-      ));
-      kids.push(h("label", { class: "field" }, h("span", null, "Nota capa"),
-        h("input", {
-          value: L.note || "",
-          placeholder: "opcional",
-          oninput: (e) => { L.note = e.target.value; this.savePrefsMeta(); },
         })));
       kids.push(h("p", { class: "note" },
         L.kind === "sprite"
@@ -1920,7 +1782,7 @@
       if (L.kind !== "sprite") {
         kids.push(select({
           label: "Forma", value: L.shape || "cube",
-          options: Object.entries(Sh?.SHAPES || {}).map(([k, s]) => [k, s?.label || k]),
+          options: Object.entries(Sh.SHAPES).map(([k, s]) => [k, s.label]),
           onChange: (v) => set(() => { L.shape = v; this.rebuildProps(); }),
         }).el);
         for (const el of this.paramControls(L, set)) kids.push(el);
@@ -1973,11 +1835,6 @@
       ).el);
 
       this.propsHost.replaceChildren(...kids);
-      } catch (err) {
-        console.error("composer rebuildProps", err);
-        this.propsHost?.replaceChildren(
-          h("p", { class: "note" }, "Error en inspector: " + (err && err.message ? err.message : String(err))));
-      }
     }
 
     paramControls(L, set) {
@@ -2007,13 +1864,8 @@
     }
 
     gNum(g, key, label, min, max, set) {
-      min = Number(min); max = Number(max);
-      if (!Number.isFinite(min)) min = 0;
-      if (!Number.isFinite(max)) max = min;
-      let val = Number(g[key]);
-      if (!Number.isFinite(val)) val = 0;
       return slider({
-        label, min, max, step: 1, value: val,
+        label, min, max, step: 1, value: g[key] | 0,
         onChange: (v) => set(() => { g[key] = Number(v); }),
       }).el;
     }
@@ -2042,11 +1894,6 @@
     }
 
     // ── render ──────────────────────────────────────────────────────────────
-
-    #snapVal(v) {
-      const s = Math.max(1, this.doc.snapGrid | 0 || 1);
-      return Math.round(v / s) * s;
-    }
 
     schedule() {
       clearTimeout(this._t);
@@ -2371,128 +2218,48 @@
     paintViewStrip() {
       const g = this.group();
       const S = this.doc.size || 64;
-      // Orientaciones front/back/...
       for (const mode of this.viewModes || []) {
         const canvas = this.viewCanvases?.[mode];
         if (!canvas) continue;
         const ctx = canvas.getContext("2d");
         ctx.imageSmoothingEnabled = false;
-        this.#fillThumbChecker(ctx, canvas.width, canvas.height);
+        // checker
+        const tw = 8;
+        for (let y = 0; y < canvas.height; y += tw) {
+          for (let x = 0; x < canvas.width; x += tw) {
+            ctx.fillStyle = ((x / tw + y / tw) & 1) ? "#2a2f35" : "#22262b";
+            ctx.fillRect(x, y, tw, tw);
+          }
+        }
         if (!g || g.folder) continue;
         const saved = g.view;
         g.view = mode;
         const cell = this.renderGroup(g);
         g.view = saved;
         if (!cell?.color) continue;
-        this.#drawThumb(ctx, canvas, cell.color, S);
+        const off = document.createElement("canvas");
+        off.width = S; off.height = S;
+        off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(cell.color), S, S), 0, 0);
+        const scale = Math.min(canvas.width / S, canvas.height / S);
+        const dw = S * scale, dh = S * scale;
+        const ox = (canvas.width - dw) / 2, oy = (canvas.height - dh) / 2;
+        ctx.drawImage(off, ox, oy, dw, dh);
+        // active ring
         if ((g.view || "front") === mode) {
           ctx.strokeStyle = "rgba(110, 207, 154, 0.95)";
           ctx.lineWidth = 2;
           ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
         }
       }
+      // highlight selected card
       if (this.viewStrip) {
-        this.viewStrip.querySelectorAll(".cp-view-strip-row")[0]?.querySelectorAll(".cp-view-card").forEach((card, i) => {
+        this.viewStrip.querySelectorAll(".cp-view-card").forEach((card, i) => {
           const mode = this.viewModes[i];
           card.classList.toggle("on", (g && !g.folder && (g.view || "front") === mode));
         });
       }
-      // Mapas color / normal / depth / ao
-      if (g && !g.folder) {
-        const cell = this.renderGroup(g);
-        const maps = this.#cellMaps(cell, S);
-        for (const mode of this.mapModes || []) {
-          const canvas = this.mapCanvases?.[mode];
-          if (!canvas) continue;
-          const ctx = canvas.getContext("2d");
-          ctx.imageSmoothingEnabled = false;
-          this.#fillThumbChecker(ctx, canvas.width, canvas.height);
-          const buf = maps[mode];
-          if (buf) this.#drawThumb(ctx, canvas, buf, S);
-          if ((this.previewMap || "color") === mode) {
-            ctx.strokeStyle = "rgba(127, 178, 255, 0.95)";
-            ctx.lineWidth = 2;
-            ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
-          }
-        }
-        if (this.viewStrip) {
-          this.viewStrip.querySelectorAll(".cp-view-strip-row")[1]?.querySelectorAll(".cp-view-card").forEach((card, i) => {
-            const mode = this.mapModes[i];
-            card.classList.toggle("on", (this.previewMap || "color") === mode);
-          });
-        }
-      } else {
-        for (const mode of this.mapModes || []) {
-          const canvas = this.mapCanvases?.[mode];
-          if (!canvas) continue;
-          const ctx = canvas.getContext("2d");
-          this.#fillThumbChecker(ctx, canvas.width, canvas.height);
-        }
-      }
     }
 
-    #fillThumbChecker(ctx, w, h) {
-      const tw = 8;
-      for (let y = 0; y < h; y += tw) {
-        for (let x = 0; x < w; x += tw) {
-          ctx.fillStyle = ((x / tw + y / tw) & 1) ? "#2a2f35" : "#22262b";
-          ctx.fillRect(x, y, tw, tw);
-        }
-      }
-    }
-
-    #drawThumb(ctx, canvas, rgba, S) {
-      const off = document.createElement("canvas");
-      off.width = S; off.height = S;
-      off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(rgba), S, S), 0, 0);
-      const scale = Math.min(canvas.width / S, canvas.height / S);
-      const dw = S * scale, dh = S * scale;
-      const ox = (canvas.width - dw) / 2, oy = (canvas.height - dh) / 2;
-      ctx.drawImage(off, ox, oy, dw, dh);
-    }
-
-    /** Buffers visuales color/normal/depth/ao de una celda renderizada. */
-    #cellMaps(cell, S) {
-      if (!cell?.color) return {};
-      const color = cell.color;
-      let normal = cell.normal;
-      if (!normal) {
-        normal = ensureCellNormal(color, null, S);
-      }
-      // depth → gris
-      const depthRgba = new Uint8ClampedArray(S * S * 4);
-      if (cell.depth) {
-        let min = Infinity, max = -Infinity;
-        for (let i = 0; i < S * S; i++) {
-          const d = cell.depth[i];
-          if (d === -Infinity || !Number.isFinite(d)) continue;
-          if (d < min) min = d;
-          if (d > max) max = d;
-        }
-        if (!Number.isFinite(min)) { min = 0; max = 1; }
-        const span = Math.max(1e-6, max - min);
-        for (let i = 0; i < S * S; i++) {
-          const a = color[i * 4 + 3];
-          const pi = i * 4;
-          if (a < 1) { depthRgba[pi + 3] = 0; continue; }
-          const d = cell.depth[i];
-          const v = Number.isFinite(d) && d !== -Infinity ? Math.round(((d - min) / span) * 255) : 128;
-          depthRgba[pi] = depthRgba[pi + 1] = depthRgba[pi + 2] = v;
-          depthRgba[pi + 3] = 255;
-        }
-      }
-      // AO solo
-      const ao = this.doc.ao || {};
-      let aoRgba = color;
-      if (cell.depth && ao.enabled !== false) {
-        aoRgba = applyScreenAO(color, cell.depth, S, S, {
-          strength: ao.strength ?? 0.5,
-          radius: ao.radius ?? 3,
-          samples: ao.samples ?? 12,
-        });
-      }
-      return { color, normal, depth: depthRgba, ao: aoRgba };
-    }
 
     renderGroupLayer(g, layerIndex) {
       if (!g || !g.layers || !g.layers[layerIndex]) return null;
@@ -2516,53 +2283,45 @@
       if (!this.activeCell) return;
       const off = document.createElement("canvas");
       off.width = S; off.height = S;
-      let show = this.activeCell.color;
-      const pm = this.previewMap || "color";
-      if (pm !== "color") {
-        const maps = this.#cellMaps(this.activeCell, S);
-        if (maps[pm]) show = maps[pm];
-      }
-      if (show) {
-        off.getContext("2d").putImageData(
-          new ImageData(new Uint8ClampedArray(show), S, S), 0, 0);
-        ctx.drawImage(off, 0, 0, c.width, c.height);
-      }
+      off.getContext("2d").putImageData(
+        new ImageData(new Uint8ClampedArray(this.activeCell.color), S, S), 0, 0);
+      // Todo el contenido visible (sin atenuar nada)
+      ctx.drawImage(off, 0, 0, c.width, c.height);
 
+      // Solo un contorno suave sobre la capa seleccionada
       const g = this.group();
       const li = this.doc.selectedLayer;
-      const outlineLayer = (layerIndex, stroke) => {
-        const solo = this.renderGroupLayer(g, layerIndex);
-        if (!solo?.color) return;
-        const rgba = solo.color;
-        ctx.fillStyle = stroke;
-        for (let y = 0; y < S; y++) {
-          for (let x = 0; x < S; x++) {
-            const a = rgba[(y * S + x) * 4 + 3];
-            if (a < 8) continue;
-            const edge =
-              x === 0 || y === 0 || x === S - 1 || y === S - 1 ||
-              rgba[(y * S + x - 1) * 4 + 3] < 8 ||
-              rgba[(y * S + x + 1) * 4 + 3] < 8 ||
-              rgba[((y - 1) * S + x) * 4 + 3] < 8 ||
-              rgba[((y + 1) * S + x) * 4 + 3] < 8;
-            if (edge) ctx.fillRect(x * scale, y * scale, Math.max(1, scale), Math.max(1, scale));
+      if (g && !g.folder && li >= 0 && g.layers?.[li]) {
+        const solo = this.renderGroupLayer(g, li);
+        if (solo?.color) {
+          const rgba = solo.color;
+          ctx.save();
+          ctx.strokeStyle = "rgba(255, 210, 90, 0.9)";
+          ctx.lineWidth = Math.max(1.5, scale * 0.9);
+          ctx.lineJoin = "round";
+          // Contorno por bordes opacos de esa capa (sin tocar el resto)
+          for (let y = 0; y < S; y++) {
+            for (let x = 0; x < S; x++) {
+              const a = rgba[(y * S + x) * 4 + 3];
+              if (a < 8) continue;
+              const edge =
+                x === 0 || y === 0 || x === S - 1 || y === S - 1 ||
+                rgba[(y * S + x - 1) * 4 + 3] < 8 ||
+                rgba[(y * S + x + 1) * 4 + 3] < 8 ||
+                rgba[((y - 1) * S + x) * 4 + 3] < 8 ||
+                rgba[((y + 1) * S + x) * 4 + 3] < 8;
+              if (!edge) continue;
+              ctx.fillStyle = "rgba(255, 210, 90, 0.85)";
+              ctx.fillRect(x * scale, y * scale, scale, scale);
+            }
           }
-        }
-      };
-      if (g && !g.folder) {
-        if (g.outline) {
-          const col = (g.color && String(g.color).startsWith("#")) ? g.color : "rgba(255,210,90,0.85)";
-          (g.layers || []).forEach((L, i) => {
-            if (L.visible === false) return;
-            outlineLayer(i, col);
-          });
-        } else if (li >= 0 && g.layers?.[li]) {
-          outlineLayer(li, "rgba(255, 210, 90, 0.9)");
+          ctx.restore();
         }
       }
 
+      // Diamante del suelo (guía iso, discreto)
       const hw = c.width / 2, hh = c.height / 4;
-      ctx.strokeStyle = "rgba(95, 211, 176, 0.4)";
+      ctx.strokeStyle = "rgba(95, 211, 176, 0.45)";
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(hw, 0.5);
