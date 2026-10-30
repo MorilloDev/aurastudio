@@ -204,6 +204,7 @@
       filter: "",
       ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true },
       snapGrid: 1,
+      showOutline: true,
     };
   }
 
@@ -1735,12 +1736,23 @@
       const ao = this.doc.ao || (this.doc.ao = { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true });
       const setAo = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); };
 
-      kids.push(section({ id: "cp-snap", title: "Snap" },
+      kids.push(section({ id: "cp-snap", title: "Snap y outline" },
         slider({
           label: "Snap al mover capa (px)", min: 1, max: 8, step: 1,
           value: this.doc.snapGrid ?? 1,
           onChange: (v) => { this.doc.snapGrid = Number(v); this.savePrefsMeta(); },
         }).el,
+        h("label", { class: "field check" },
+          h("input", {
+            type: "checkbox",
+            checked: this.doc.showOutline !== false || null,
+            onchange: (e) => {
+              this.doc.showOutline = e.target.checked;
+              this.savePrefsMeta();
+              this.paintPart();
+            },
+          }),
+          h("span", null, "Mostrar outline de selección")),
       ).el);
 
       kids.push(section({ id: "cp-ao", title: "Ambient occlusion" },
@@ -2478,50 +2490,74 @@
         ctx.drawImage(off, 0, 0, c.width, c.height);
       }
       const g = this.group();
-      // 1) Outline por pieza (borde de cada capa del subárbol / grupo)
-      if (g) {
-        const pieces = drawableInSubtree(g);
-        const list = pieces.length ? pieces : (!g.folder && g.layers?.length ? [g] : []);
-        for (const pg of list) {
-          for (let li = 0; li < (pg.layers || []).length; li++) {
-            if (pg.layers[li].visible === false) continue;
-            const solo = this.renderGroupLayer(pg, li);
-            if (!solo?.color) continue;
-            const rgba = solo.color;
-            const sS = solo.size || S;
-            // Si la vista es multi, las piezas están en offsets distintos: outline solo en celda simple
-            if (cell.multi) continue;
-            ctx.fillStyle = "rgba(255, 210, 90, 0.75)";
-            for (let y = 0; y < sS; y++) {
-              for (let x = 0; x < sS; x++) {
-                const a = rgba[(y * sS + x) * 4 + 3];
-                if (a < 8) continue;
-                const edge =
-                  x === 0 || y === 0 || x === sS - 1 || y === sS - 1 ||
-                  rgba[(y * sS + x - 1) * 4 + 3] < 8 ||
-                  rgba[(y * sS + x + 1) * 4 + 3] < 8 ||
-                  rgba[((y - 1) * sS + x) * 4 + 3] < 8 ||
-                  rgba[((y + 1) * sS + x) * 4 + 3] < 8;
-                if (edge) ctx.fillRect(x * scale, y * scale, Math.max(1, scale), Math.max(1, scale));
+      // Outline según selección (capa | grupo | carpeta). Suave y opcional.
+      if (g && this.doc.showOutline !== false) {
+        const soft = "rgba(255, 210, 90, 0.4)";
+        const drawLayerEdge = (rgba, sS, color = soft) => {
+          if (!rgba || cell.multi) return;
+          ctx.fillStyle = color;
+          for (let y = 0; y < sS; y++) {
+            for (let x = 0; x < sS; x++) {
+              const a = rgba[(y * sS + x) * 4 + 3];
+              if (a < 8) continue;
+              const edge =
+                x === 0 || y === 0 || x === sS - 1 || y === sS - 1 ||
+                rgba[(y * sS + x - 1) * 4 + 3] < 8 ||
+                rgba[(y * sS + x + 1) * 4 + 3] < 8 ||
+                rgba[((y - 1) * sS + x) * 4 + 3] < 8 ||
+                rgba[((y + 1) * sS + x) * 4 + 3] < 8;
+              if (edge) ctx.fillRect(x * scale, y * scale, Math.max(1, scale), Math.max(1, scale));
+            }
+          }
+        };
+        const drawOuterOf = (buf, bw, bh, color = soft) => {
+          if (!buf) return;
+          const alpha = (x, y) => {
+            if (x < 0 || y < 0 || x >= bw || y >= bh) return 0;
+            return buf[(y * bw + x) * 4 + 3];
+          };
+          ctx.fillStyle = color;
+          for (let y = 0; y < bh; y++) {
+            for (let x = 0; x < bw; x++) {
+              if (alpha(x, y) < 8) continue;
+              if (alpha(x - 1, y) < 8 || alpha(x + 1, y) < 8 ||
+                  alpha(x, y - 1) < 8 || alpha(x, y + 1) < 8) {
+                ctx.fillRect(x * scale, y * scale, Math.max(1, scale), Math.max(1, scale));
               }
             }
           }
-        }
-      }
-      // 2) Outline grupal: contorno externo de TODAS las piezas juntas (alpha del buffer show)
-      if (g && show) {
-        const alpha = (x, y) => {
-          if (x < 0 || y < 0 || x >= W || y >= H) return 0;
-          return show[(y * W + x) * 4 + 3];
         };
-        ctx.fillStyle = "rgba(110, 207, 154, 0.95)";
-        for (let y = 0; y < H; y++) {
-          for (let x = 0; x < W; x++) {
-            if (alpha(x, y) < 8) continue;
-            const outer =
-              alpha(x - 1, y) < 8 || alpha(x + 1, y) < 8 ||
-              alpha(x, y - 1) < 8 || alpha(x, y + 1) < 8;
-            if (outer) ctx.fillRect(x * scale, y * scale, Math.max(1, scale), Math.max(1, scale));
+        const li = this.doc.selectedLayer;
+
+        if (li >= 0 && !g.folder && g.layers?.[li]) {
+          // Una sola capa/pieza seleccionada
+          const solo = this.renderGroupLayer(g, li);
+          if (solo?.color) drawLayerEdge(solo.color, solo.size || S, soft);
+        } else if (g.folder) {
+          // Carpeta: outline de cada elemento + contorno exterior de todo
+          const pieces = drawableInSubtree(g);
+          if (!cell.multi) {
+            for (const pg of pieces) {
+              for (let i = 0; i < (pg.layers || []).length; i++) {
+                if (pg.layers[i].visible === false) continue;
+                const solo = this.renderGroupLayer(pg, i);
+                if (solo?.color) drawLayerEdge(solo.color, solo.size || S, "rgba(255, 210, 90, 0.28)");
+              }
+            }
+          }
+          if (show) drawOuterOf(show, W, H, "rgba(110, 207, 154, 0.45)");
+        } else {
+          // Grupo (sin capa concreta): outline de las capas de ESTE grupo
+          if (!cell.multi) {
+            for (let i = 0; i < (g.layers || []).length; i++) {
+              if (g.layers[i].visible === false) continue;
+              const solo = this.renderGroupLayer(g, i);
+              if (solo?.color) drawLayerEdge(solo.color, solo.size || S, soft);
+            }
+          }
+          // Si tiene hijos, también contorno del subárbol visible
+          if (groupHasDescendants(g) && show) {
+            drawOuterOf(show, W, H, "rgba(110, 207, 154, 0.4)");
           }
         }
       }
