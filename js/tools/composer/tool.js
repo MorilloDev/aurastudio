@@ -84,8 +84,47 @@
       offsetZ: 0,
       layers: [],
       children: [],              // grupos anidados
+      entries: [],               // orden árbol: {type:"layer"|"group", id}
       view: "front",             // front | back | inverted | horizontal
     };
+  }
+
+
+  /** Orden unificado capas + hijos para el árbol (subir/bajar entre tipos). */
+  function ensureEntries(g) {
+    if (!g) return;
+    g.layers = g.layers || [];
+    g.children = g.children || [];
+    const layerIds = new Set(g.layers.map((L) => L.id));
+    const childIds = new Set(g.children.map((c) => c.id));
+    let entries = Array.isArray(g.entries) ? g.entries.slice() : null;
+    if (!entries || !entries.length) {
+      entries = [
+        ...g.layers.map((L) => ({ type: "layer", id: L.id })),
+        ...g.children.map((c) => ({ type: "group", id: c.id })),
+      ];
+    } else {
+      // Filtrar huérfanos y añadir faltantes al final
+      entries = entries.filter((e) =>
+        (e.type === "layer" && layerIds.has(e.id)) ||
+        (e.type === "group" && childIds.has(e.id)));
+      for (const L of g.layers) {
+        if (!entries.some((e) => e.type === "layer" && e.id === L.id))
+          entries.push({ type: "layer", id: L.id });
+      }
+      for (const c of g.children) {
+        if (!entries.some((e) => e.type === "group" && e.id === c.id))
+          entries.push({ type: "group", id: c.id });
+      }
+    }
+    g.entries = entries;
+  }
+
+  function moveEntry(list, index, dir) {
+    const j = index + dir;
+    if (j < 0 || j >= list.length) return false;
+    [list[index], list[j]] = [list[j], list[index]];
+    return true;
   }
 
   /** Recorre el árbol de grupos (profundidad). */
@@ -845,10 +884,21 @@
       if (cur) {
         cur.children = cur.children || [];
         cur.children.push(g);
+        ensureEntries(cur);
+        cur.entries.push({ type: "group", id: g.id });
+        // dedupe if ensureEntries already added
+        const seen = new Set();
+        cur.entries = cur.entries.filter((e) => {
+          const k = e.type + ":" + e.id;
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
         cur.collapsed = false;
       } else {
         this.doc.groups.push(g);
       }
+      ensureEntries(g);
       this.doc.selectedGroupId = g.id;
       this.doc.selectedLayer = -1;
       this.touch();
@@ -878,7 +928,11 @@
         g = this.group();
       }
       if (!g) return;
-      g.layers.push(defaultShapeLayer(g.layers.length));
+      const L = defaultShapeLayer(g.layers.length);
+      g.layers.push(L);
+      ensureEntries(g);
+      if (!g.entries.some((e) => e.type === "layer" && e.id === L.id))
+        g.entries.push({ type: "layer", id: L.id });
       this.doc.selectedLayer = g.layers.length - 1;
       this.touch();
     }
@@ -915,7 +969,10 @@
           this.studio?.toast("Capa bloqueada", { kind: "warn" });
           return;
         }
+        const rid = g.layers[this.doc.selectedLayer]?.id;
         g.layers.splice(this.doc.selectedLayer, 1);
+        ensureEntries(g);
+        if (rid) g.entries = g.entries.filter((e) => !(e.type === "layer" && e.id === rid));
         this.doc.selectedLayer = g.layers.length
           ? Math.min(this.doc.selectedLayer, g.layers.length - 1)
           : -1;
@@ -926,7 +983,12 @@
       // Borrar grupo del árbol
       const ref = this.groupRef();
       if (!ref) return;
+      const removedId = ref.group.id;
       ref.list.splice(ref.index, 1);
+      if (ref.parent) {
+        ensureEntries(ref.parent);
+        ref.parent.entries = ref.parent.entries.filter((e) => !(e.type === "group" && e.id === removedId));
+      }
       if (!this.doc.groups.length) {
         this.doc.selectedGroupId = null;
         this.doc.selectedLayer = -1;
@@ -1076,6 +1138,7 @@
           return row;
         }),
         children: (g.children || []).map(serG),
+        entries: (g.entries || []).map((e) => ({ type: e.type, id: e.id })),
       });
       prefs.set(PREFS_KEY, {
         size: this.doc.size,
@@ -1172,50 +1235,58 @@
         frag.push(head);
 
         if (!g.collapsed) {
-          (g.layers || []).forEach((L, li) => {
-            if (filter && !(L.name || "").toLowerCase().includes(filter) && !(g.name || "").toLowerCase().includes(filter)) return;
-            const row = h("div", {
-              class: ["cp-row", "cp-layer", isSel && li === this.doc.selectedLayer && "active", L.locked && "locked", depthCls],
-              style: { "--d": depth + 1 },
-              "data-drop": "layer",
-              "data-id": L.id,
-              "data-gid": g.id,
-              "data-li": String(li),
-              onclick: () => this.selectGroup(g.id, li),
-              oncontextmenu: (e) => {
-                e.preventDefault();
-                this.selectGroup(g.id, li);
-                this.#openCtx(e, { type: "layer", id: L.id, groupId: g.id, index: li });
+          ensureEntries(g);
+          for (const ent of g.entries) {
+            if (ent.type === "layer") {
+              const li = (g.layers || []).findIndex((L) => L.id === ent.id);
+              if (li < 0) continue;
+              const L = g.layers[li];
+              if (filter && !(L.name || "").toLowerCase().includes(filter) && !(g.name || "").toLowerCase().includes(filter)) continue;
+              const row = h("div", {
+                class: ["cp-row", "cp-layer", isSel && li === this.doc.selectedLayer && "active", L.locked && "locked", depthCls],
+                style: { "--d": depth + 1 },
+                "data-drop": "layer",
+                "data-id": L.id,
+                "data-gid": g.id,
+                "data-li": String(li),
+                onclick: () => this.selectGroup(g.id, li),
+                oncontextmenu: (e) => {
+                  e.preventDefault();
+                  this.selectGroup(g.id, li);
+                  this.#openCtx(e, { type: "layer", id: L.id, groupId: g.id, index: li });
+                },
               },
-            },
-              h("span", {
-                class: "cp-grip",
-                title: "Arrastrar capa",
-                draggable: !L.locked && !g.locked,
-                ondragstart: (e) => {
-                  e.stopPropagation();
-                  e.dataTransfer.setData("application/x-cp-layer", L.id);
-                  e.dataTransfer.setData("text/plain", "layer:" + L.id);
-                  e.dataTransfer.effectAllowed = "move";
-                  e.currentTarget.closest(".cp-row")?.classList.add("cp-dragging");
-                },
-                ondragend: (e) => {
-                  e.currentTarget.closest(".cp-row")?.classList.remove("cp-dragging");
-                  this.groupList.querySelectorAll(".cp-drop").forEach((el) => el.classList.remove("cp-drop"));
-                },
-              }, "⠿"),
-              h("input", {
-                type: "checkbox", class: "cp-vis",
-                checked: L.visible !== false || null,
-                onclick: (e) => e.stopPropagation(),
-                onchange: (e) => { L.visible = e.target.checked; this.touch(); },
-              }),
-              h("span", { class: "cp-row-name" }, L.name || "Capa"),
-              h("span", { class: "cp-tag muted" }, L.kind === "sprite" ? (L.source || "sprite") : (L.shape || "shape")),
-            );
-            frag.push(row);
-          });
-          (g.children || []).forEach((ch) => renderGroup(ch, depth + 1));
+                h("span", {
+                  class: "cp-grip",
+                  title: "Arrastrar capa",
+                  draggable: !L.locked && !g.locked,
+                  ondragstart: (e) => {
+                    e.stopPropagation();
+                    e.dataTransfer.setData("application/x-cp-layer", L.id);
+                    e.dataTransfer.setData("text/plain", "layer:" + L.id);
+                    e.dataTransfer.effectAllowed = "move";
+                    e.currentTarget.closest(".cp-row")?.classList.add("cp-dragging");
+                  },
+                  ondragend: (e) => {
+                    e.currentTarget.closest(".cp-row")?.classList.remove("cp-dragging");
+                    this.groupList.querySelectorAll(".cp-drop").forEach((el) => el.classList.remove("cp-drop"));
+                  },
+                }, "⠿"),
+                h("input", {
+                  type: "checkbox", class: "cp-vis",
+                  checked: L.visible !== false || null,
+                  onclick: (e) => e.stopPropagation(),
+                  onchange: (e) => { L.visible = e.target.checked; this.touch(); },
+                }),
+                h("span", { class: "cp-row-name" }, L.name || "Capa"),
+                h("span", { class: "cp-tag muted" }, L.kind === "sprite" ? (L.source || "sprite") : (L.shape || "shape")),
+              );
+              frag.push(row);
+            } else if (ent.type === "group") {
+              const ch = (g.children || []).find((c) => c.id === ent.id);
+              if (ch) renderGroup(ch, depth + 1);
+            }
+          }
         }
       };
 
@@ -1291,8 +1362,8 @@
         const li = target.index;
         // Subir/bajar: solo reordena dentro del mismo grupo (no sale del grupo).
         items.push(
-          { label: "Subir en el grupo", disabled: !g || li <= 0, action: () => this.moveLayerInGroup(target.groupId, li, -1) },
-          { label: "Bajar en el grupo", disabled: !g || !g.layers || li >= g.layers.length - 1, action: () => this.moveLayerInGroup(target.groupId, li, 1) },
+          { label: "Subir (también sobre grupos)", disabled: !g || (() => { ensureEntries(g); const id = g.layers[li]?.id; const ei = g.entries.findIndex((e) => e.type === "layer" && e.id === id); return ei <= 0; })(), action: () => this.moveLayerInGroup(target.groupId, li, -1) },
+          { label: "Bajar (también bajo grupos)", disabled: !g || (() => { ensureEntries(g); const id = g.layers[li]?.id; const ei = g.entries.findIndex((e) => e.type === "layer" && e.id === id); return ei < 0 || ei >= g.entries.length - 1; })(), action: () => this.moveLayerInGroup(target.groupId, li, 1) },
           { sep: true },
         );
         const destinations = [];
@@ -1317,8 +1388,18 @@
         const g = findGroup(this.doc.groups, target.id)?.group;
         const ref = findGroup(this.doc.groups, target.id);
         items.push(
-          { label: "Subir en la lista", disabled: !ref || ref.index <= 0, action: () => this.moveGroupInList(target.id, -1) },
-          { label: "Bajar en la lista", disabled: !ref || ref.index >= ref.list.length - 1, action: () => this.moveGroupInList(target.id, 1) },
+          { label: "Subir (lista / sobre capas)", disabled: !ref || (() => {
+            if (!ref.parent) return ref.index <= 0;
+            ensureEntries(ref.parent);
+            const ei = ref.parent.entries.findIndex((e) => e.type === "group" && e.id === target.id);
+            return ei <= 0;
+          })(), action: () => this.moveGroupAmongSiblings(target.id, -1) },
+          { label: "Bajar (lista / bajo capas)", disabled: !ref || (() => {
+            if (!ref.parent) return ref.index >= ref.list.length - 1;
+            ensureEntries(ref.parent);
+            const ei = ref.parent.entries.findIndex((e) => e.type === "group" && e.id === target.id);
+            return ei < 0 || ei >= ref.parent.entries.length - 1;
+          })(), action: () => this.moveGroupAmongSiblings(target.id, 1) },
           { sep: true },
           { label: g?.locked ? "Desbloquear" : "Bloquear", action: () => { if (g) { g.locked = !g.locked; this.touch(); } } },
           { label: "Duplicar grupo", action: () => { this.selectGroup(target.id, -1); this.duplicateGroup(); } },
@@ -1389,27 +1470,47 @@
 
     moveLayerInGroup(groupId, li, dir) {
       const g = findGroup(this.doc.groups, groupId)?.group;
-      if (!g) return;
-      const j = li + dir;
-      if (j < 0 || j >= g.layers.length) return;
+      if (!g || !g.layers?.[li]) return;
+      ensureEntries(g);
+      const layerId = g.layers[li].id;
+      const ei = g.entries.findIndex((e) => e.type === "layer" && e.id === layerId);
+      if (ei < 0) return;
       this.pushHistory();
-      [g.layers[li], g.layers[j]] = [g.layers[j], g.layers[li]];
+      if (!moveEntry(g.entries, ei, dir)) return;
+      // Reconstruir orden de g.layers según entries (solo capas)
+      const byId = new Map(g.layers.map((L) => [L.id, L]));
+      g.layers = g.entries.filter((e) => e.type === "layer").map((e) => byId.get(e.id)).filter(Boolean);
       this.doc.selectedGroupId = groupId;
-      this.doc.selectedLayer = j;
+      this.doc.selectedLayer = g.layers.findIndex((L) => L.id === layerId);
+      this.touch();
+    }
+
+    /** Sube/baja un grupo o carpeta en el entries del padre (puede cruzar capas). */
+    moveGroupAmongSiblings(groupId, dir) {
+      const ref = findGroup(this.doc.groups, groupId);
+      if (!ref) return;
+      this.pushHistory();
+      if (!ref.parent) {
+        // Raíz: solo entre grupos top-level
+        const j = ref.index + dir;
+        if (j < 0 || j >= ref.list.length) return;
+        [ref.list[ref.index], ref.list[j]] = [ref.list[j], ref.list[ref.index]];
+      } else {
+        const parent = ref.parent;
+        ensureEntries(parent);
+        const ei = parent.entries.findIndex((e) => e.type === "group" && e.id === groupId);
+        if (ei < 0 || !moveEntry(parent.entries, ei, dir)) return;
+        // Sync children array order from entries
+        const byId = new Map((parent.children || []).map((c) => [c.id, c]));
+        parent.children = parent.entries.filter((e) => e.type === "group").map((e) => byId.get(e.id)).filter(Boolean);
+      }
+      this.doc.selectedGroupId = groupId;
+      this.doc.selectedLayer = -1;
       this.touch();
     }
 
     moveGroupInList(groupId, dir) {
-      const ref = findGroup(this.doc.groups, groupId);
-      if (!ref) return;
-      const j = ref.index + dir;
-      if (j < 0 || j >= ref.list.length) return;
-      this.pushHistory();
-      const a = ref.list;
-      [a[ref.index], a[j]] = [a[j], a[ref.index]];
-      this.doc.selectedGroupId = groupId;
-      this.doc.selectedLayer = -1;
-      this.touch();
+      this.moveGroupAmongSiblings(groupId, dir);
     }
 
     moveGroupToRoot(groupId) {
@@ -1483,6 +1584,14 @@
       const dest = toRef.group;
       dest.children = dest.children || [];
       dest.children.push(node);
+      ensureEntries(dest);
+      if (!dest.entries.some((e) => e.type === "group" && e.id === node.id))
+        dest.entries.push({ type: "group", id: node.id });
+      // Quitar del entries del padre anterior
+      if (ref.parent) {
+        ensureEntries(ref.parent);
+        ref.parent.entries = ref.parent.entries.filter((e) => !(e.type === "group" && e.id === node.id));
+      }
       dest.collapsed = false;
       this.doc.selectedGroupId = node.id;
       this.doc.selectedLayer = -1;
@@ -1514,10 +1623,14 @@
       if (cur) {
         cur.children = cur.children || [];
         cur.children.push(g);
+        ensureEntries(cur);
+        if (!cur.entries.some((e) => e.type === "group" && e.id === g.id))
+          cur.entries.push({ type: "group", id: g.id });
         cur.collapsed = false;
       } else {
         this.doc.groups.push(g);
       }
+      ensureEntries(g);
       this.doc.selectedGroupId = g.id;
       this.doc.selectedLayer = -1;
       this.touch();
@@ -2172,41 +2285,43 @@
       off.width = S; off.height = S;
       off.getContext("2d").putImageData(
         new ImageData(new Uint8ClampedArray(this.activeCell.color), S, S), 0, 0);
+      // Todo el contenido visible (sin atenuar nada)
+      ctx.drawImage(off, 0, 0, c.width, c.height);
+
+      // Solo un contorno suave sobre la capa seleccionada
       const g = this.group();
       const li = this.doc.selectedLayer;
-      const layerFocus = g && !g.folder && li >= 0 && g.layers && g.layers[li];
-      if (layerFocus) {
-        ctx.globalAlpha = 0.28;
-        ctx.drawImage(off, 0, 0, c.width, c.height);
-        ctx.globalAlpha = 1;
+      if (g && !g.folder && li >= 0 && g.layers?.[li]) {
         const solo = this.renderGroupLayer(g, li);
         if (solo?.color) {
-          const so = document.createElement("canvas");
-          so.width = S; so.height = S;
-          so.getContext("2d").putImageData(
-            new ImageData(new Uint8ClampedArray(solo.color), S, S), 0, 0);
-          ctx.drawImage(so, 0, 0, c.width, c.height);
-        }
-        ctx.strokeStyle = "rgba(255, 210, 90, 0.95)";
-        ctx.lineWidth = Math.max(2, Math.round(scale / 2));
-        ctx.strokeRect(1.5, 1.5, c.width - 3, c.height - 3);
-        const name = g.layers[li].name || ("Capa " + (li + 1));
-        ctx.font = `bold ${Math.max(11, 10 * scale)}px system-ui`;
-        ctx.fillStyle = "rgba(255, 210, 90, 0.95)";
-        ctx.fillText("★ " + name, 6 * scale, 14 * scale);
-      } else {
-        ctx.drawImage(off, 0, 0, c.width, c.height);
-        ctx.strokeStyle = "rgba(95, 211, 176, 0.95)";
-        ctx.lineWidth = Math.max(2, Math.round(scale / 2));
-        ctx.strokeRect(0.5, 0.5, c.width - 1, c.height - 1);
-        if (g && !g.folder) {
-          ctx.font = `bold ${Math.max(11, 10 * scale)}px system-ui`;
-          ctx.fillStyle = "rgba(95, 211, 176, 0.9)";
-          ctx.fillText("◆ " + (g.name || "Grupo"), 6 * scale, 14 * scale);
+          const rgba = solo.color;
+          ctx.save();
+          ctx.strokeStyle = "rgba(255, 210, 90, 0.9)";
+          ctx.lineWidth = Math.max(1.5, scale * 0.9);
+          ctx.lineJoin = "round";
+          // Contorno por bordes opacos de esa capa (sin tocar el resto)
+          for (let y = 0; y < S; y++) {
+            for (let x = 0; x < S; x++) {
+              const a = rgba[(y * S + x) * 4 + 3];
+              if (a < 8) continue;
+              const edge =
+                x === 0 || y === 0 || x === S - 1 || y === S - 1 ||
+                rgba[(y * S + x - 1) * 4 + 3] < 8 ||
+                rgba[(y * S + x + 1) * 4 + 3] < 8 ||
+                rgba[((y - 1) * S + x) * 4 + 3] < 8 ||
+                rgba[((y + 1) * S + x) * 4 + 3] < 8;
+              if (!edge) continue;
+              ctx.fillStyle = "rgba(255, 210, 90, 0.85)";
+              ctx.fillRect(x * scale, y * scale, scale, scale);
+            }
+          }
+          ctx.restore();
         }
       }
+
+      // Diamante del suelo (guía iso, discreto)
       const hw = c.width / 2, hh = c.height / 4;
-      ctx.strokeStyle = layerFocus ? "rgba(255, 210, 90, 0.7)" : "rgba(95, 211, 176, 0.9)";
+      ctx.strokeStyle = "rgba(95, 211, 176, 0.45)";
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(hw, 0.5);
