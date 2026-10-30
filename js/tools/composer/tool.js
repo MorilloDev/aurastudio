@@ -165,6 +165,9 @@
   }
 
   /** true si el grupo o algún descendiente tiene capas visibles (ignora carpetas). */
+  const VIEW_ORDER = { front: 0, back: 1, inverted: 2, horizontal: 3 };
+  const VIEW_LIST = ["front", "back", "inverted", "horizontal"];
+
   function hasContentInSubtree(root) {
     if (!root || root.visible === false) return false;
     if (!root.folder && root.layers && root.layers.some((L) => L.visible !== false)) return true;
@@ -740,7 +743,14 @@
         for (const o of this.preview.outlines) {
           if (x >= o.x && y >= o.y && x < o.x + o.w && y < o.y + o.h) hit = o;
         }
-        if (!hit) return;
+        if (!hit) {
+          this.doc.selectedGroupId = null;
+          this.doc.selectedLayer = -1;
+          this.rebuildGroupList();
+          this.rebuildProps();
+          this.schedule(true);
+          return;
+        }
         let hitId = null;
         walkGroups(this.doc.groups, (g) => {
           if (!g.visible || g.folder) return;
@@ -749,7 +759,18 @@
           const oz = g.multipart ? (g.offsetZ | 0) : 0;
           if (ox === hit.ox && oy === hit.oy && oz === hit.oz) hitId = g.id;
         });
-        if (hitId) this.selectGroup(hitId, 0);
+        if (hitId) this.selectGroup(hitId, -1);
+      });
+
+      // Clic en vacío del árbol = deseleccionar
+      this.groupList?.addEventListener("click", (e) => {
+        if (e.target === this.groupList || e.target.classList?.contains("cp-tree-empty")) {
+          this.doc.selectedGroupId = null;
+          this.doc.selectedLayer = -1;
+          this.rebuildGroupList();
+          this.rebuildProps();
+          this.schedule(true);
+        }
       });
     }
 
@@ -1138,6 +1159,37 @@
         ? { ...result, color: parts[0].color, normal: parts[0].normal, depth: parts[0].depth, size: parts[0].size || result.size }
         : result;
 
+      // Varias orientaciones: cada una = grupo con etiqueta view
+      const orients = result?.orientations || meta?.orientations || null;
+      if (orients && typeof orients === "object") {
+        const baseName = meta.name || meta.source || "bloque";
+        const size = result.size || 64;
+        this.doc.size = Math.max(this.doc.size || 64, size);
+        let idx = 0;
+        for (const view of VIEW_LIST) {
+          const o = orients[view];
+          if (!o?.color) continue;
+          const g = defaultGroup(this.doc.groups.length + idx, true);
+          g.name = baseName + " · " + view;
+          g.view = view;
+          g.multipart = true;
+          g.offsetX = idx; g.offsetY = 0; g.offsetZ = 0;
+          const layer = spriteLayerFromResult({
+            color: o.color, normal: o.normal, depth: o.depth, size: o.size || size,
+          }, { name: g.name, source: meta.source });
+          g.layers = [layer];
+          this.doc.groups.push(g);
+          idx++;
+        }
+        if (idx) {
+          this.doc.selectedGroupId = this.doc.groups[this.doc.groups.length - 1]?.id || null;
+          this.doc.selectedLayer = 0;
+          this.dirty = true;
+          this.touch();
+          return;
+        }
+      }
+
       let g = this.group();
       if (!g) {
         this.addGroup(false);
@@ -1148,9 +1200,8 @@
       const layer = spriteLayerFromResult(single, meta);
       if (single.depth) layer.depth = new Uint8ClampedArray(single.depth);
       if (single.size) this.doc.size = Math.max(this.doc.size || 64, single.size);
+      if (meta.view && VIEW_LIST.includes(meta.view)) g.view = meta.view;
 
-      // Si hay capa seleccionada → reemplazar su contenido (mismo slot).
-      // Si no hay capa → crear una nueva en el grupo.
       const L = this.layer();
       if (L) {
         L.kind = "sprite";
@@ -1161,7 +1212,6 @@
         L.size = layer.size;
         L.source = layer.source;
         L.shape = null;
-        // mantener shift/blend/opacity/tint del usuario
       } else {
         g.layers.push(layer);
         this.doc.selectedLayer = g.layers.length - 1;
@@ -1323,6 +1373,7 @@
             : g.multipart
               ? h("span", { class: "cp-tag mp" }, (g.offsetX | 0) + "," + (g.offsetY | 0) + "," + (g.offsetZ | 0))
               : h("span", { class: "cp-tag muted" }, "grupo"),
+          g.view && g.view !== "front" ? h("span", { class: "cp-tag view" }, g.view) : null,
           !g.folder ? h("button", {
             type: "button",
             class: ["cp-mp-btn", g.multipart && "on"],
@@ -1869,18 +1920,51 @@
         }),
         h("span", null, "Multipart (esta carpeta = una celda del tile)")));
 
+      const curView = VIEW_LIST.includes(g.view) ? g.view : "front";
       kids.push(h("div", { class: "field" },
-        h("label", null, "Vista"),
+        h("label", null, "Vista (etiqueta de orientación)"),
         h("select", {
-          value: g.view || "front",
-          onchange: (e) => set(() => { g.view = e.target.value; }),
+          onchange: (e) => {
+            g.view = e.target.value;
+            this.dirty = true;
+            this.schedule(true);
+            this.#debouncedSave();
+            this.rebuildGroupList();
+          },
         },
-          h("option", { value: "front" }, "Front (default)"),
-          h("option", { value: "back" }, "Back"),
-          h("option", { value: "inverted" }, "Inverted"),
-          h("option", { value: "horizontal" }, "Horizontal"),
+          ...VIEW_LIST.map((v) => h("option", {
+            value: v,
+            selected: v === curView || null,
+          }, v === "front" ? "Front (default)" : v.charAt(0).toUpperCase() + v.slice(1))),
         ),
       ));
+      // Atajos de posición de celda (multipart)
+      if (g.multipart) {
+        const place = (ox, oy, oz, label) => h("button", {
+          type: "button", class: "cp-mini-btn",
+          title: label,
+          onclick: () => {
+            g.offsetX = ox; g.offsetY = oy; g.offsetZ = oz;
+            this.dirty = true;
+            this.schedule(true);
+            this.#debouncedSave();
+            this.rebuildGroupList();
+            this.rebuildProps();
+          },
+        }, label);
+        kids.push(h("div", { class: "field" },
+          h("label", null, "Posición rápida"),
+          h("div", { class: "cp-place-row" },
+            place(0, 0, 0, "Base"),
+            place(1, 0, 0, "→ X+"),
+            place(-1, 0, 0, "← X-"),
+            place(0, 0, 1, "Z+"),
+            place(0, 0, -1, "Z-"),
+            place(0, 1, 0, "↑ Y+"),
+            place(0, -1, 0, "↓ Y-"),
+          ),
+        ));
+      }
       kids.push(h("p", { class: "note" },
         "Vista del sprite como en bloques: front, back (espejo), inverted (arriba/abajo), horizontal (rotado)."));
 
@@ -2354,23 +2438,41 @@
     }
 
 
-    exportCells() {
-      // Orden estable para Atlas: horizontal (offsetY, offsetX, offsetZ) — celdas en fila.
-      // Cada celda lleva color + normal (_n) listos, como Bloque/Planta.
-      const cells = this.buildCells().slice().sort((a, b) =>
-        (a.offsetY - b.offsetY) || (a.offsetX - b.offsetX) || (a.offsetZ - b.offsetZ));
-      return cells.map((c) => {
+    exportCells(filterRoot = null) {
+      // Orden Atlas: por orientación (front, back, inverted, horizontal), luego offsets.
+      // Cada celda = color + normal (_n).
+      let cells = this.buildCells().slice();
+      if (filterRoot) {
+        const ids = new Set();
+        const mark = (g) => {
+          if (!g) return;
+          ids.add(g.id);
+          (g.children || []).forEach(mark);
+        };
+        mark(filterRoot);
+        cells = cells.filter((c) => (c.groups || []).some((g) => ids.has(g.id)));
+      }
+      // Vista de la celda = vista del primer grupo multipart / principal
+      cells = cells.map((c) => {
+        const g0 = (c.groups || [])[0];
+        const view = (g0 && VIEW_LIST.includes(g0.view) ? g0.view : "front");
         const size = c.size || this.doc.size || 64;
         return {
           size,
           color: c.color,
           normal: ensureCellNormal(c.color, c.normal, size),
-          offsetX: c.offsetX,
-          offsetY: c.offsetY,
-          offsetZ: c.offsetZ,
+          offsetX: c.offsetX | 0,
+          offsetY: c.offsetY | 0,
+          offsetZ: c.offsetZ | 0,
           label: c.label,
+          view,
+          groups: c.groups,
         };
       });
+      cells.sort((a, b) =>
+        ((VIEW_ORDER[a.view] ?? 9) - (VIEW_ORDER[b.view] ?? 9)) ||
+        (a.offsetY - b.offsetY) || (a.offsetX - b.offsetX) || (a.offsetZ - b.offsetZ));
+      return cells;
     }
 
     render() {
@@ -2484,7 +2586,7 @@
     paintViewStrip() {
       const g = this.group();
       const S = this.doc.size || 64;
-      // Cada orientación = preview del grupo/carpeta seleccionado con esa vista aplicada
+      // Solo grupos que YA tienen esa etiqueta de orientación (no transforma el seleccionado)
       for (const mode of this.viewModes || []) {
         const canvas = this.viewCanvases?.[mode];
         if (!canvas) continue;
@@ -2497,22 +2599,7 @@
             ctx.fillRect(x, y, tw, tw);
           }
         }
-        let buf = null;
-        if (g && g.visible !== false) {
-          if (g.folder || groupHasDescendants(g)) {
-            // subárbol: render temporal con view en cada hijo drawable
-            buf = this.#previewSubtreeAsView(g, mode, S);
-          } else {
-            const saved = g.view;
-            g.view = mode;
-            try {
-              const cell = this.renderGroup(g);
-              if (cell?.color) buf = cell.color;
-            } finally {
-              g.view = saved;
-            }
-          }
-        }
+        const buf = this.#compositeGroupsByView(mode, S);
         if (buf) {
           const off = document.createElement("canvas");
           off.width = S; off.height = S;
@@ -2950,65 +3037,76 @@
 
     sendToAtlas() {
       try {
-      this.render();
-      let cells = this.exportCells().filter((c) => {
-        if (!c?.color) return false;
-        for (let i = 3; i < c.color.length; i += 16) if (c.color[i] > 8) return true;
-        return false;
-      });
-      if (!cells.length) {
-        this.studio?.toast("No hay celdas con arte para enviar al Atlas", { kind: "warn" });
-        return;
-      }
-      const S = cells[0].size || this.doc.size || 64;
-      const items = cells.map((c) => ({
-        color: new Uint8ClampedArray(c.color),
-        normal: new Uint8ClampedArray(c.normal || ensureCellNormal(c.color, null, S)),
-        label: c.label || ("celda " + c.offsetX + "," + c.offsetY + "," + c.offsetZ),
-      }));
-      const offsets = cells.map((c) => ({
-        offsetX: c.offsetX | 0,
-        offsetY: c.offsetY | 0,
-        offsetZ: c.offsetZ | 0,
-      }));
-
-      this.studio.pendingPlacement = {
-        label: "Composer",
-        name: "",
-        kind: "composer",
-        size: S,
-        sheetKey: null,
-        items,
-        buildTile: (coords) => {
-          if (!coords?.length) return null;
-          if (coords.length === 1 && offsets.length === 1) {
-            return { art: { default: { front: coords[0] } } };
-          }
-          return {
-            parts: offsets.map((o, i) => ({
-              offsetX: o.offsetX,
-              offsetY: o.offsetY,
-              offsetZ: o.offsetZ,
-              art: { default: { front: coords[i] || coords[0] } },
-            })),
-          };
-        },
-        snippet: (coords) => {
-          if (!coords?.length) return "";
-          if (coords.length === 1 && offsets.length === 1) {
-            const cell = coords[0];
-            return '"art": { "default": { "front": [' + cell[0] + ", " + cell[1] + "] } }";
-          }
-          const lines = offsets.map((o, i) => {
-            const cell = coords[i] || coords[0];
-            return '    { "offsetX": ' + o.offsetX + ', "offsetY": ' + o.offsetY + ', "offsetZ": ' + o.offsetZ +
-              ', "art": { "default": { "front": [' + cell[0] + ", " + cell[1] + "] } } }";
-          });
-          return '"parts": [\n' + lines.join(",\n") + "\n]";
-        },
-      };
-      this.studio?.toast("Elige una celda en el Atlas para colocar " + items.length + " parte(s)", { kind: "ok" });
-      this.studio.activate("atlas");
+        this.render();
+        const ag = this.group();
+        // Padre seleccionado → exporta todo el subárbol; si no hay, todo el doc
+        let cells = this.exportCells(ag || null);
+        if (ag && !cells.length) {
+          // Padre sin celdas propias: intentar todo el documento
+          cells = this.exportCells(null);
+        }
+        cells = cells.filter((c) => {
+          if (!c?.color) return false;
+          for (let i = 3; i < c.color.length; i += 16) if (c.color[i] > 8) return true;
+          return false;
+        });
+        if (!cells.length) {
+          this.studio?.toast("No hay celdas con arte para enviar al Atlas", { kind: "warn" });
+          return;
+        }
+        const S = cells[0].size || this.doc.size || 64;
+        const items = cells.map((c) => ({
+          color: new Uint8ClampedArray(c.color),
+          normal: new Uint8ClampedArray(c.normal || ensureCellNormal(c.color, null, S)),
+          label: (c.view ? c.view + " · " : "") + (c.label || (c.offsetX + "," + c.offsetY + "," + c.offsetZ)),
+        }));
+        const offsets = cells.map((c) => ({
+          offsetX: c.offsetX | 0,
+          offsetY: c.offsetY | 0,
+          offsetZ: c.offsetZ | 0,
+          view: c.view || "front",
+        }));
+        this.studio.pendingPlacement = {
+          label: "Composer",
+          name: "",
+          kind: "composer",
+          size: S,
+          sheetKey: null,
+          items,
+          buildTile: (coords) => {
+            if (!coords?.length) return null;
+            if (coords.length === 1 && offsets.length === 1) {
+              return { art: { default: { front: coords[0] } } };
+            }
+            return {
+              parts: offsets.map((o, i) => ({
+                offsetX: o.offsetX,
+                offsetY: o.offsetY,
+                offsetZ: o.offsetZ,
+                art: { default: { [o.view || "front"]: coords[i] || coords[0] } },
+              })),
+            };
+          },
+          snippet: (coords) => {
+            if (!coords?.length) return "";
+            if (coords.length === 1 && offsets.length === 1) {
+              const cell = coords[0];
+              return '"art": { "default": { "front": [' + cell[0] + ", " + cell[1] + "] } }";
+            }
+            const lines = offsets.map((o, i) => {
+              const cell = coords[i] || coords[0];
+              const vk = o.view || "front";
+              return '    { "offsetX": ' + o.offsetX + ', "offsetY": ' + o.offsetY + ', "offsetZ": ' + o.offsetZ +
+                ', "art": { "default": { "' + vk + '": [' + cell[0] + ", " + cell[1] + "] } } }";
+            });
+            return '"parts": [\n' + lines.join(",\n") + "\n]";
+          },
+        };
+        const byView = {};
+        for (const c of cells) byView[c.view || "front"] = (byView[c.view || "front"] || 0) + 1;
+        const summary = VIEW_LIST.filter((v) => byView[v]).map((v) => v + "×" + byView[v]).join(", ");
+        this.studio?.toast("Atlas: " + items.length + " celda(s) [" + summary + "]. Haz clic en una celda.", { kind: "ok" });
+        this.studio.activate("atlas");
       } catch (err) {
         console.error(err);
         this.studio?.toast("Error al enviar al Atlas: " + (err?.message || err), { kind: "bad" });

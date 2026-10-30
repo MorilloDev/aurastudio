@@ -699,9 +699,11 @@
       }));
       const output = section({ id: "bk-out", title: "Vista previa" },
         this.sizeSel.el,
-        h("p", { class: "note" }, "Para Atlas, multipart y composici\u00f3n usa ", h("b", null, "Aplicar al Composer"), "."),
         h("div", { class: "bk-maps" }, this.mapChecks.map((c) => c.el)),
         this.scaleSel.el,
+        h("button", { class: "primary", onclick: () => this.applyToComposer() }, "Aplicar al Composer"),
+        h("button", { onclick: () => this.#sendCurrentToAtlas() }, "Atlas (actual) →"),
+        h("button", { onclick: () => this.#sendVariantsToAtlas() }, "Atlas (variantes) →"),
         h("button", { onclick: () => this.#download() }, "Descargar vista previa"),
         h("button", { onclick: () => this.#downloadVariants() }, "Descargar tira de variantes"));
 
@@ -1210,15 +1212,42 @@
       return this.#addToComposer(true);
     }
 
-    /** Copia la vista previa actual al Composer como capa (sprite). */
+    /** facing del generador → etiqueta de vista del Composer */
+    #facingToView(facing) {
+      if (facing === "back") return "back";
+      if (facing === "left" || facing === "right") return "horizontal";
+      return "front";
+    }
+
+    /**
+     * Aplica al Composer: cada variante (frente/atrás/…) = un grupo con su etiqueta de vista.
+     * Si solo hay una, va al grupo seleccionado (o crea uno).
+     */
     #addToComposer(fromHub = false) {
       if (!this.result) {
         this.studio.toast("Genera una pieza antes de añadirla", { kind: "warn" });
         return false;
       }
       const name = (this.#baseName && this.#baseName()) || ("bloque_" + (this.piece?.shape || "cube"));
-      // AO del motor ya va en el sprite; el Composer no vuelve a aplicar AO de generador.
-      const ok = Aura.composerTool?.queueResult?.(this.result, { name, source: "bloque" });
+      let all = [];
+      try { all = this.#allVariantResults?.() || []; } catch { all = []; }
+      const orientations = {};
+      if (all.length > 1) {
+        for (const { variant: v, result: r } of all) {
+          if (!r?.color) continue;
+          const view = this.#facingToView(v.facing);
+          // primera de cada view gana; front/back prioritarios
+          if (!orientations[view]) {
+            orientations[view] = {
+              color: r.color, normal: r.normal, depth: r.depth, size: r.size,
+            };
+          }
+        }
+      }
+      const payload = all.length > 1 && Object.keys(orientations).length
+        ? { size: this.result.size, color: this.result.color, normal: this.result.normal, orientations }
+        : this.result;
+      const ok = Aura.composerTool?.queueResult?.(payload, { name, source: "bloque" });
       if (!ok) {
         this.studio.toast("Composer no disponible", { kind: "warn" });
         return false;
@@ -1228,8 +1257,84 @@
         this.studio.activate?.("create");
         this.studio.tools?.find?.((t) => t.id === "create")?.show?.("composer");
       }
-      this.studio.toast("Bloque añadido al Composer", { kind: "ok" });
+      const n = Object.keys(orientations).length || 1;
+      this.studio.toast(n > 1
+        ? ("Bloque: " + n + " orientaciones en el Composer")
+        : "Bloque añadido al Composer", { kind: "ok" });
       return true;
+    }
+
+    #sendCurrentToAtlas() {
+      if (!this.result) {
+        this.studio.toast("Genera una pieza primero", { kind: "warn" });
+        return;
+      }
+      const S = this.result.size || 64;
+      this.studio.pendingPlacement = {
+        label: "Bloque",
+        name: "",
+        kind: "block",
+        size: S,
+        sheetKey: null,
+        items: [{
+          color: new Uint8ClampedArray(this.result.color),
+          normal: this.result.normal ? new Uint8ClampedArray(this.result.normal) : null,
+          label: "bloque",
+        }],
+        buildTile: (coords) => coords?.[0] ? { art: { default: { front: coords[0] } } } : null,
+        snippet: (coords) => coords?.[0]
+          ? '"art": { "default": { "front": [' + coords[0][0] + ", " + coords[0][1] + "] } }"
+          : "",
+      };
+      this.studio.toast("Elige una celda en el Atlas", { kind: "ok" });
+      this.studio.activate("atlas");
+    }
+
+    #sendVariantsToAtlas() {
+      if (!this.result) {
+        this.studio.toast("Genera una pieza primero", { kind: "warn" });
+        return;
+      }
+      let all = [];
+      try { all = this.#allVariantResults(); } catch { all = []; }
+      if (!all.length) {
+        this.#sendCurrentToAtlas();
+        return;
+      }
+      const S = all[0].result.size || 64;
+      const items = all.map(({ variant: v, result: r }) => ({
+        color: new Uint8ClampedArray(r.color),
+        normal: r.normal ? new Uint8ClampedArray(r.normal) : null,
+        label: v.label || v.id || "var",
+      }));
+      this.studio.pendingPlacement = {
+        label: "Bloque variantes",
+        name: "",
+        kind: "block",
+        size: S,
+        sheetKey: null,
+        items,
+        buildTile: (coords) => {
+          if (!coords?.length) return null;
+          const art = { default: {} };
+          all.forEach(({ variant: v }, i) => {
+            const key = v.facing || "front";
+            if (coords[i]) art.default[key] = coords[i];
+          });
+          return { art };
+        },
+        snippet: (coords) => {
+          if (!coords?.length) return "";
+          const lines = all.map(({ variant: v }, i) => {
+            const cell = coords[i] || coords[0];
+            const key = v.facing || "front";
+            return '    "' + key + '": [' + cell[0] + ", " + cell[1] + "]";
+          });
+          return '"art": { "default": {\n' + lines.join(",\n") + "\n  } }";
+        },
+      };
+      this.studio.toast("Atlas: " + items.length + " variantes. Haz clic en una celda.", { kind: "ok" });
+      this.studio.activate("atlas");
     }
 
 

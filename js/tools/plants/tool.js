@@ -353,9 +353,9 @@
       }));
       const output = section({ id: "pl-out", title: "Vista previa" },
         this.sizeSel.el,
-        h("p", { class: "note" }, "Para Atlas y multipart usa ", h("b", null, "Aplicar al Composer"), "."),
         h("div", { class: "bk-maps" }, this.mapChecks.map((c) => c.el)),
         this.scaleSel.el,
+        h("button", { class: "primary", onclick: () => this.applyToComposer() }, "Aplicar al Composer"),
         h("button", { onclick: () => this.#download() }, "Descargar vista previa"),
         h("button", { onclick: () => this.#downloadVariants() }, "Descargar tira de variantes"));
 

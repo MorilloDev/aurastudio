@@ -557,3 +557,6 @@
   width: 64px;
   height: 64px;
 }
+.cp-place-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.cp-place-row .cp-mini-btn { font-size: 11px; padding: 2px 6px; }
+.cp-tag.view { background: rgba(127,178,255,0.2); color: #9ec5ff; font-size: 10px; }
