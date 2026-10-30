@@ -1276,7 +1276,7 @@
           }, "⠿"),
           h("input", {
             type: "checkbox", class: "cp-vis",
-            checked: g.visible !== false || null,
+            checked: g.visible !== false,
             title: "Visible",
             onclick: (e) => e.stopPropagation(),
             onchange: (e) => { g.visible = e.target.checked; this.touch(); },
@@ -1346,9 +1346,15 @@
                 }, "⠿"),
                 h("input", {
                   type: "checkbox", class: "cp-vis",
-                  checked: L.visible !== false || null,
+                  checked: L.visible !== false,
                   onclick: (e) => e.stopPropagation(),
-                  onchange: (e) => { L.visible = e.target.checked; this.touch(); },
+                  onchange: (e) => {
+                    e.stopPropagation();
+                    L.visible = !!e.target.checked;
+                    this.savePrefsMeta();
+                    this.schedule();
+                    this.rebuildGroupList();
+                  },
                 }),
                 h("span", { class: "cp-row-name" }, L.name || "Capa"),
                 h("span", { class: "cp-tag muted" }, L.kind === "sprite" ? (L.source || "sprite") : (L.shape || "shape")),
@@ -2057,7 +2063,7 @@
       const color = new Uint8ClampedArray(S * S * 4);
       const depth = new Float32Array(S * S).fill(-Infinity);
       let normal = null;
-      const layers = (g.layers || []).filter((L) => L.visible);
+      const layers = (g.layers || []).filter((L) => L.visible !== false);
       layers.forEach((L, li) => {
         const src = this.layerSourceRgba(L);
         if (!src?.color) return;
@@ -2146,8 +2152,8 @@
           const pref = findGroup(this.doc.groups, anc.id);
           anc = pref?.parent || null;
         }
-        if (g.folder || !g.visible) return;
-        if (!(g.layers && g.layers.length)) return;
+        if (g.folder || g.visible === false) return;
+        if (!(g.layers && g.layers.some((L) => L.visible !== false))) return;
         const ox = g.multipart ? (g.offsetX | 0) : 0;
         const oy = g.multipart ? (g.offsetY | 0) : 0;
         const oz = g.multipart ? (g.offsetZ | 0) : 0;
@@ -2364,7 +2370,7 @@
           anc = findGroup(this.doc.groups, anc.id)?.parent || null;
         }
         if (g.folder || g.visible === false) return;
-        if (!(g.layers && g.layers.length)) return;
+        if (!(g.layers && g.layers.some((L) => L.visible !== false))) return;
         if ((g.view || "front") !== mode) return;
         const r = this.renderGroup(g);
         if (!r?.color) return;
@@ -2386,7 +2392,7 @@
       const g = this.group();
       if (!g) return null;
       const li = this.doc.selectedLayer;
-      if (li >= 0 && !g.folder && g.layers?.[li]) {
+      if (li >= 0 && !g.folder && g.layers?.[li] && g.layers[li].visible !== false) {
         return this.renderGroupLayer(g, li);
       }
       if (g.folder || groupHasDescendants(g)) {
@@ -2488,10 +2494,13 @@
     renderGroupLayer(g, layerIndex) {
       if (!g || !g.layers || !g.layers[layerIndex]) return null;
       const saved = g.layers.map((L) => L.visible);
-      g.layers.forEach((L, i) => { L.visible = i === layerIndex; });
-      const cell = this.renderGroup(g);
-      g.layers.forEach((L, i) => { L.visible = saved[i]; });
-      return cell;
+      try {
+        // Solo para este render temporal: no mutar estado persistente
+        g.layers.forEach((L, i) => { L.visible = i === layerIndex; });
+        return this.renderGroup(g);
+      } finally {
+        g.layers.forEach((L, i) => { L.visible = saved[i]; });
+      }
     }
 
     paintPart() {
@@ -2569,9 +2578,11 @@
         const li = this.doc.selectedLayer;
 
         if (li >= 0 && !g.folder && g.layers?.[li]) {
-          // Una sola capa/pieza seleccionada
-          const solo = this.renderGroupLayer(g, li);
-          if (solo?.color) drawLayerEdge(solo.color, solo.size || S, soft);
+          // Una sola capa/pieza: outline solo si está visible (no oculta el resto del render)
+          if (g.layers[li].visible !== false) {
+            const solo = this.renderGroupLayer(g, li);
+            if (solo?.color) drawLayerEdge(solo.color, solo.size || S, soft);
+          }
         } else if (g.folder) {
           // Carpeta: outline de cada elemento + contorno exterior de todo
           const pieces = drawableInSubtree(g);
