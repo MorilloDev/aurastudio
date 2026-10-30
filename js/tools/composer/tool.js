@@ -84,47 +84,8 @@
       offsetZ: 0,
       layers: [],
       children: [],              // grupos anidados
-      entries: [],               // orden árbol: {type:"layer"|"group", id}
       view: "front",             // front | back | inverted | horizontal
     };
-  }
-
-
-  /** Orden unificado capas + hijos para el árbol (subir/bajar entre tipos). */
-  function ensureEntries(g) {
-    if (!g) return;
-    g.layers = g.layers || [];
-    g.children = g.children || [];
-    const layerIds = new Set(g.layers.map((L) => L.id));
-    const childIds = new Set(g.children.map((c) => c.id));
-    let entries = Array.isArray(g.entries) ? g.entries.slice() : null;
-    if (!entries || !entries.length) {
-      entries = [
-        ...g.layers.map((L) => ({ type: "layer", id: L.id })),
-        ...g.children.map((c) => ({ type: "group", id: c.id })),
-      ];
-    } else {
-      // Filtrar huérfanos y añadir faltantes al final
-      entries = entries.filter((e) =>
-        (e.type === "layer" && layerIds.has(e.id)) ||
-        (e.type === "group" && childIds.has(e.id)));
-      for (const L of g.layers) {
-        if (!entries.some((e) => e.type === "layer" && e.id === L.id))
-          entries.push({ type: "layer", id: L.id });
-      }
-      for (const c of g.children) {
-        if (!entries.some((e) => e.type === "group" && e.id === c.id))
-          entries.push({ type: "group", id: c.id });
-      }
-    }
-    g.entries = entries;
-  }
-
-  function moveEntry(list, index, dir) {
-    const j = index + dir;
-    if (j < 0 || j >= list.length) return false;
-    [list[index], list[j]] = [list[j], list[index]];
-    return true;
   }
 
   /** Recorre el árbol de grupos (profundidad). */
@@ -135,33 +96,6 @@
       fn(g, { parent, index: i, list, depth });
       if (g.children?.length) walkGroups(g.children, fn, g, depth + 1);
     }
-  }
-
-
-  function groupHasDescendants(g) {
-    return !!(g && g.children && g.children.length);
-  }
-
-  /** true si node es root o está bajo root en el árbol */
-  function isInSubtree(node, root) {
-    if (!node || !root) return false;
-    if (node.id === root.id) return true;
-    let found = false;
-    walkGroups(root.children || [], (c) => { if (c.id === node.id) found = true; });
-    return found;
-  }
-
-  /** Grupos dibujables (no carpeta, visibles, con capas) bajo root inclusive */
-  function drawableInSubtree(root) {
-    const out = [];
-    if (!root) return out;
-    const visit = (g) => {
-      if (!g || g.visible === false) return;
-      if (!g.folder && g.layers && g.layers.length) out.push(g);
-      (g.children || []).forEach(visit);
-    };
-    visit(root);
-    return out;
   }
 
   function findGroup(list, id, parent = null) {
@@ -203,8 +137,6 @@
       size: 64, groups: [], selectedGroupId: null, selectedLayer: -1,
       filter: "",
       ao: { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true },
-      snapGrid: 1,
-      showOutline: true,
     };
   }
 
@@ -224,23 +156,14 @@
       return { ...b, ...l, color, normal, depth };
     });
     const children = (g.children || []).map((c, ci) => normalizeGroup(c, ci));
-    const num = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.trunc(n) : 0; };
-    const folder = !!g.folder;
-    const multipart = !!g.multipart && !folder;
-    const out = {
+    return {
       ...base, ...g,
-      folder,
+      folder: !!g.folder,
       locked: !!g.locked,
-      multipart,
-      offsetX: num(g.offsetX ?? base.offsetX),
-      offsetY: num(g.offsetY ?? base.offsetY),
-      offsetZ: num(g.offsetZ ?? base.offsetZ),
       view: ["front","back","inverted","horizontal"].includes(g.view) ? g.view : "front",
       children,
       layers,
     };
-    ensureEntries(out);
-    return out;
   }
 
   function migrateDoc(raw) {
@@ -516,15 +439,13 @@
       this.propsHost = h("div", { class: "cp-props" });
       this.zoomPartLabel = h("span", { class: "cp-zoom-lbl" }, "auto");
       this.zoomEnsLabel = h("span", { class: "cp-zoom-lbl" }, "auto");
-      this.statusLbl = h("span", { class: "cp-status" }, "");
 
       const toolbar = h("div", { class: "cp-toolbar" },
         h("div", { class: "cp-tool-group" },
           h("button", { title: "Grupo organización", onclick: () => this.addGroup(false) }, "+ Grupo"),
           h("button", { class: "primary", title: "Celda multipart", onclick: () => this.addGroup(true) }, "+ Parte"),
           h("button", { title: "Carpeta (anida grupos)", onclick: () => this.addFolder() }, "+ Carpeta"),
-          h("button", { title: "Deshacer (Ctrl+Z)", onclick: () => this.undo() }, "↶"),
-          h("button", { title: "Rehacer (Ctrl+Y)", onclick: () => this.redo() }, "↷")),
+          h("button", { title: "Deshacer", onclick: () => this.undo() }, "↶")),
         h("div", { class: "cp-tool-group" },
           h("button", { title: "Ctrl+C", onclick: () => this.copyLayer() }, "Copiar"),
           h("button", { title: "Ctrl+X", onclick: () => this.cutLayer() }, "Cortar"),
@@ -542,7 +463,6 @@
           h("button", { title: "Acercar conjunto", onclick: () => this.bumpZoom("ens", 1) }, "+"),
           h("button", { title: "Ajustar conjunto", onclick: () => { this.zoomEnsemble = 0; this.paintEnsemble(); this.syncZoomLabels(); } }, "Ajustar")),
         h("span", { class: "grow" }),
-        this.statusLbl,
         h("div", { class: "cp-tool-group" },
           h("button", { onclick: () => this.exportPng() }, "PNG"),
           h("button", { onclick: () => this.exportMultipart() }, "JSON"),
@@ -552,20 +472,17 @@
       this.partView = h("div", { class: "cp-view" }, this.partCanvas);
       this.viewModes = ["front", "back", "inverted", "horizontal"];
       this.viewCanvases = {};
-      this.mapModes = ["color", "normal", "depth", "ao"];
-      this.mapCanvases = {};
-      this.previewMap = "color";
       const viewCards = this.viewModes.map((mode) => {
         const c = h("canvas", { class: "cp-view-thumb", width: 80, height: 80 });
         this.viewCanvases[mode] = c;
         return h("button", {
           type: "button",
           class: ["cp-view-card", mode === "front" && "is-default"],
-          title: "Preview de grupos con vista «" + mode + "». Clic = asignar al grupo activo",
+          title: "Aplicar vista «" + mode + "» al grupo activo",
           onclick: () => {
             const g = this.group();
             if (!g || g.folder) {
-              this.studio?.toast("Selecciona un grupo (no carpeta) para asignar la orientación", { kind: "warn" });
+              this.studio?.toast("Selecciona un grupo (no carpeta)", { kind: "warn" });
               return;
             }
             g.view = mode;
@@ -574,32 +491,9 @@
           },
         }, c, h("span", { class: "cp-view-card-label" }, mode));
       });
-      const mapLabels = { color: "Color", normal: "Normal", depth: "Depth", ao: "AO" };
-      const mapCards = this.mapModes.map((mode) => {
-        const c = h("canvas", { class: "cp-view-thumb", width: 80, height: 80 });
-        this.mapCanvases[mode] = c;
-        return h("button", {
-          type: "button",
-          class: ["cp-view-card", mode === "color" && "on"],
-          title: "Ver mapa " + mapLabels[mode],
-          onclick: () => {
-            this.previewMap = mode;
-            this.paintViewStrip();
-            this.paintPart();
-          },
-        }, c, h("span", { class: "cp-view-card-label" }, mapLabels[mode]));
-      });
       this.viewStrip = h("div", { class: "cp-view-strip" },
-        h("div", { class: "cp-view-strip-inline" },
-          h("div", { class: "cp-view-strip-block" },
-            h("div", { class: "cp-view-strip-label" }, "Orientación"),
-            h("div", { class: "cp-view-strip-row", "data-row": "orient" }, ...viewCards),
-          ),
-          h("div", { class: "cp-view-strip-block" },
-            h("div", { class: "cp-view-strip-label" }, "Mapas"),
-            h("div", { class: "cp-view-strip-row", "data-row": "maps" }, ...mapCards),
-          ),
-        ),
+        h("div", { class: "cp-view-strip-label" }, "Vistas del grupo activo"),
+        h("div", { class: "cp-view-strip-row" }, ...viewCards),
       );
 
       this.ensView = h("div", { class: "cp-view" }, this.ensembleCanvas);
@@ -608,7 +502,20 @@
       host.appendChild(h("div", { class: "cp cp-3col" },
         h("aside", { class: "cp-left" },
           h("div", { class: "cp-side-head" },
-            h("b", null, "Grupos / Partes")),
+            h("b", null, "Grupos / Partes"),
+            h("span", { class: "grow" }),
+            h("button", {
+              type: "button", class: "cp-mini-btn", title: "Grupo de organización",
+              onclick: () => this.addGroup(false),
+            }, "+ Grupo"),
+            h("button", {
+              type: "button", class: "cp-mini-btn primary", title: "Nueva celda multipart",
+              onclick: () => this.addGroup(true),
+            }, "+ Parte"),
+            h("button", {
+              type: "button", class: "cp-mini-btn", title: "Carpeta contenedora",
+              onclick: () => this.addFolder(),
+            }, "+ Carpeta")),
           this.groupList,
           h("div", { class: "cp-gen-block" },
             h("div", { class: "cp-side-head" }, h("b", null, "Generar")),
@@ -670,8 +577,7 @@
         else if (mod && e.key === "v") { e.preventDefault(); this.pasteLayer(); }
         else if (mod && e.key === "d") { e.preventDefault(); this.duplicateLayer(); }
         else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); this.removeSelected(); }
-        else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); this.undo(); }
-        else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase() === "z"))) { e.preventDefault(); this.redo(); }
+        else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); this.undo(); }
       });
     }
 
@@ -707,9 +613,7 @@
           const c = clampShift(src.color, size, sx, sy);
           sx = c.x; sy = c.y;
         }
-        const snap = Math.max(1, this.doc.snapGrid | 0 || 1);
-        L.shiftX = Math.round(sx / snap) * snap;
-        L.shiftY = Math.round(sy / snap) * snap;
+        L.shiftX = sx; L.shiftY = sy;
         this.schedule();
       });
       const endDrag = (e) => {
@@ -909,41 +813,15 @@
       this.touch();
     }
 
-    #captureSnap() {
-      const snap = {
-        selectedGroupId: this.doc.selectedGroupId,
-        selectedLayer: this.doc.selectedLayer,
-        groups: JSON.parse(JSON.stringify(this.doc.groups, (k, v) => {
-          if (v instanceof Uint8ClampedArray || v instanceof Float32Array) return null;
-          return v;
-        })),
-        pixels: {},
-      };
-      walkGroups(this.doc.groups, (g) => {
-        for (const L of g.layers || []) {
-          if (L.color) snap.pixels[L.id] = {
-            color: Array.from(L.color),
-            normal: L.normal ? Array.from(L.normal) : null,
-          };
-        }
-      });
-      return snap;
-    }
-
     undo() {
       if (!this._undo?.length) return;
+      const cur = this._undo.pop();
       this._redo = this._redo || [];
-      this._redo.push(this.#captureSnap());
-      this.restoreSnap(this._undo.pop());
+      // push current before restore
+      const before = cur; // already popped current tip is the state to restore TO... 
+      // Fix: undo stack stores past states; on mutation we push. So pop and restore.
+      this.restoreSnap(before);
       this.studio?.toast("Deshacer", { kind: "ok" });
-    }
-
-    redo() {
-      if (!this._redo?.length) return;
-      this._undo = this._undo || [];
-      this._undo.push(this.#captureSnap());
-      this.restoreSnap(this._redo.pop());
-      this.studio?.toast("Rehacer", { kind: "ok" });
     }
 
     // ── mutations ───────────────────────────────────────────────────────────
@@ -962,26 +840,15 @@
         while (used.has(x + ",0,0")) x++;
         g.offsetX = x;
       }
-      // Anidar bajo el grupo o carpeta seleccionado; si no hay selección, raíz
+      // Si el grupo activo es carpeta, anidar dentro; si no, top-level
       const cur = this.group();
-      if (cur) {
+      if (cur?.folder) {
         cur.children = cur.children || [];
         cur.children.push(g);
-        ensureEntries(cur);
-        cur.entries.push({ type: "group", id: g.id });
-        // dedupe if ensureEntries already added
-        const seen = new Set();
-        cur.entries = cur.entries.filter((e) => {
-          const k = e.type + ":" + e.id;
-          if (seen.has(k)) return false;
-          seen.add(k);
-          return true;
-        });
         cur.collapsed = false;
       } else {
         this.doc.groups.push(g);
       }
-      ensureEntries(g);
       this.doc.selectedGroupId = g.id;
       this.doc.selectedLayer = -1;
       this.touch();
@@ -1011,11 +878,7 @@
         g = this.group();
       }
       if (!g) return;
-      const L = defaultShapeLayer(g.layers.length);
-      g.layers.push(L);
-      ensureEntries(g);
-      if (!g.entries.some((e) => e.type === "layer" && e.id === L.id))
-        g.entries.push({ type: "layer", id: L.id });
+      g.layers.push(defaultShapeLayer(g.layers.length));
       this.doc.selectedLayer = g.layers.length - 1;
       this.touch();
     }
@@ -1052,10 +915,7 @@
           this.studio?.toast("Capa bloqueada", { kind: "warn" });
           return;
         }
-        const rid = g.layers[this.doc.selectedLayer]?.id;
         g.layers.splice(this.doc.selectedLayer, 1);
-        ensureEntries(g);
-        if (rid) g.entries = g.entries.filter((e) => !(e.type === "layer" && e.id === rid));
         this.doc.selectedLayer = g.layers.length
           ? Math.min(this.doc.selectedLayer, g.layers.length - 1)
           : -1;
@@ -1066,12 +926,7 @@
       // Borrar grupo del árbol
       const ref = this.groupRef();
       if (!ref) return;
-      const removedId = ref.group.id;
       ref.list.splice(ref.index, 1);
-      if (ref.parent) {
-        ensureEntries(ref.parent);
-        ref.parent.entries = ref.parent.entries.filter((e) => !(e.type === "group" && e.id === removedId));
-      }
       if (!this.doc.groups.length) {
         this.doc.selectedGroupId = null;
         this.doc.selectedLayer = -1;
@@ -1195,16 +1050,10 @@
 
     touch() {
       this.dirty = true;
-      this.schedule(true);
-      this.#debouncedSave();
+      this.savePrefsMeta();
       this.rebuildGroupList();
-    }
-
-    #debouncedSave() {
-      clearTimeout(this._saveT);
-      this._saveT = setTimeout(() => {
-        try { this.savePrefsMeta(); } catch (e) { console.warn(e); }
-      }, 400);
+      this.rebuildProps();
+      this.schedule();
     }
 
     savePrefsMeta() {
@@ -1227,7 +1076,6 @@
           return row;
         }),
         children: (g.children || []).map(serG),
-        entries: (g.entries || []).map((e) => ({ type: e.type, id: e.id })),
       });
       prefs.set(PREFS_KEY, {
         size: this.doc.size,
@@ -1293,17 +1141,10 @@
           }, "⠿"),
           h("input", {
             type: "checkbox", class: "cp-vis",
-            checked: g.visible !== false,
+            checked: g.visible !== false || null,
             title: "Visible",
             onclick: (e) => e.stopPropagation(),
-            onchange: (e) => {
-              e.stopPropagation();
-              g.visible = !!e.target.checked;
-              this.dirty = true;
-              this.schedule(true);
-              this.#debouncedSave();
-              this.rebuildGroupList();
-            },
+            onchange: (e) => { g.visible = e.target.checked; this.touch(); },
           }),
           h("button", {
             type: "button", class: "cp-collapse",
@@ -1324,19 +1165,6 @@
               e.stopPropagation();
               if (g.locked) return;
               g.multipart = !g.multipart;
-              if (g.multipart) {
-                const used = new Set();
-                walkGroups(this.doc.groups, (x) => {
-                  if (x.multipart && x.id !== g.id)
-                    used.add((Number(x.offsetX)|0) + "," + (Number(x.offsetY)|0) + "," + (Number(x.offsetZ)|0));
-                });
-                let key = (Number(g.offsetX)|0) + "," + (Number(g.offsetY)|0) + "," + (Number(g.offsetZ)|0);
-                if (used.has(key)) {
-                  let x = 0;
-                  while (used.has(x + ",0,0")) x++;
-                  g.offsetX = x; g.offsetY = 0; g.offsetZ = 0;
-                }
-              }
               this.touch();
             },
           }, "MP") : null,
@@ -1344,64 +1172,50 @@
         frag.push(head);
 
         if (!g.collapsed) {
-          ensureEntries(g);
-          for (const ent of g.entries) {
-            if (ent.type === "layer") {
-              const li = (g.layers || []).findIndex((L) => L.id === ent.id);
-              if (li < 0) continue;
-              const L = g.layers[li];
-              if (filter && !(L.name || "").toLowerCase().includes(filter) && !(g.name || "").toLowerCase().includes(filter)) continue;
-              const row = h("div", {
-                class: ["cp-row", "cp-layer", isSel && li === this.doc.selectedLayer && "active", L.locked && "locked", depthCls],
-                style: { "--d": depth + 1 },
-                "data-drop": "layer",
-                "data-id": L.id,
-                "data-gid": g.id,
-                "data-li": String(li),
-                onclick: () => this.selectGroup(g.id, li),
-                oncontextmenu: (e) => {
-                  e.preventDefault();
-                  this.selectGroup(g.id, li);
-                  this.#openCtx(e, { type: "layer", id: L.id, groupId: g.id, index: li });
-                },
+          (g.layers || []).forEach((L, li) => {
+            if (filter && !(L.name || "").toLowerCase().includes(filter) && !(g.name || "").toLowerCase().includes(filter)) return;
+            const row = h("div", {
+              class: ["cp-row", "cp-layer", isSel && li === this.doc.selectedLayer && "active", L.locked && "locked", depthCls],
+              style: { "--d": depth + 1 },
+              "data-drop": "layer",
+              "data-id": L.id,
+              "data-gid": g.id,
+              "data-li": String(li),
+              onclick: () => this.selectGroup(g.id, li),
+              oncontextmenu: (e) => {
+                e.preventDefault();
+                this.selectGroup(g.id, li);
+                this.#openCtx(e, { type: "layer", id: L.id, groupId: g.id, index: li });
               },
-                h("span", {
-                  class: "cp-grip",
-                  title: "Arrastrar capa",
-                  draggable: !L.locked && !g.locked,
-                  ondragstart: (e) => {
-                    e.stopPropagation();
-                    e.dataTransfer.setData("application/x-cp-layer", L.id);
-                    e.dataTransfer.setData("text/plain", "layer:" + L.id);
-                    e.dataTransfer.effectAllowed = "move";
-                    e.currentTarget.closest(".cp-row")?.classList.add("cp-dragging");
-                  },
-                  ondragend: (e) => {
-                    e.currentTarget.closest(".cp-row")?.classList.remove("cp-dragging");
-                    this.groupList.querySelectorAll(".cp-drop").forEach((el) => el.classList.remove("cp-drop"));
-                  },
-                }, "⠿"),
-                h("input", {
-                  type: "checkbox", class: "cp-vis",
-                  checked: L.visible !== false,
-                  onclick: (e) => e.stopPropagation(),
-                  onchange: (e) => {
-                    e.stopPropagation();
-                    L.visible = !!e.target.checked;
-                    this.savePrefsMeta();
-                    this.schedule();
-                    this.rebuildGroupList();
-                  },
-                }),
-                h("span", { class: "cp-row-name" }, L.name || "Capa"),
-                h("span", { class: "cp-tag muted" }, L.kind === "sprite" ? (L.source || "sprite") : (L.shape || "shape")),
-              );
-              frag.push(row);
-            } else if (ent.type === "group") {
-              const ch = (g.children || []).find((c) => c.id === ent.id);
-              if (ch) renderGroup(ch, depth + 1);
-            }
-          }
+            },
+              h("span", {
+                class: "cp-grip",
+                title: "Arrastrar capa",
+                draggable: !L.locked && !g.locked,
+                ondragstart: (e) => {
+                  e.stopPropagation();
+                  e.dataTransfer.setData("application/x-cp-layer", L.id);
+                  e.dataTransfer.setData("text/plain", "layer:" + L.id);
+                  e.dataTransfer.effectAllowed = "move";
+                  e.currentTarget.closest(".cp-row")?.classList.add("cp-dragging");
+                },
+                ondragend: (e) => {
+                  e.currentTarget.closest(".cp-row")?.classList.remove("cp-dragging");
+                  this.groupList.querySelectorAll(".cp-drop").forEach((el) => el.classList.remove("cp-drop"));
+                },
+              }, "⠿"),
+              h("input", {
+                type: "checkbox", class: "cp-vis",
+                checked: L.visible !== false || null,
+                onclick: (e) => e.stopPropagation(),
+                onchange: (e) => { L.visible = e.target.checked; this.touch(); },
+              }),
+              h("span", { class: "cp-row-name" }, L.name || "Capa"),
+              h("span", { class: "cp-tag muted" }, L.kind === "sprite" ? (L.source || "sprite") : (L.shape || "shape")),
+            );
+            frag.push(row);
+          });
+          (g.children || []).forEach((ch) => renderGroup(ch, depth + 1));
         }
       };
 
@@ -1418,7 +1232,6 @@
           oninput: (e) => { this.doc.filter = e.target.value; this.rebuildGroupList(); },
         }),
         h("button", { type: "button", title: "Deshacer (Ctrl+Z)", onclick: () => this.undo() }, "↶"),
-        h("button", { type: "button", title: "Rehacer (Ctrl+Y)", onclick: () => this.redo() }, "↷"),
       ];
     }
 
@@ -1478,8 +1291,8 @@
         const li = target.index;
         // Subir/bajar: solo reordena dentro del mismo grupo (no sale del grupo).
         items.push(
-          { label: "Subir (también sobre grupos)", disabled: !g || (() => { ensureEntries(g); const id = g.layers[li]?.id; const ei = g.entries.findIndex((e) => e.type === "layer" && e.id === id); return ei <= 0; })(), action: () => this.moveLayerInGroup(target.groupId, li, -1) },
-          { label: "Bajar (también bajo grupos)", disabled: !g || (() => { ensureEntries(g); const id = g.layers[li]?.id; const ei = g.entries.findIndex((e) => e.type === "layer" && e.id === id); return ei < 0 || ei >= g.entries.length - 1; })(), action: () => this.moveLayerInGroup(target.groupId, li, 1) },
+          { label: "Subir en el grupo", disabled: !g || li <= 0, action: () => this.moveLayerInGroup(target.groupId, li, -1) },
+          { label: "Bajar en el grupo", disabled: !g || !g.layers || li >= g.layers.length - 1, action: () => this.moveLayerInGroup(target.groupId, li, 1) },
           { sep: true },
         );
         const destinations = [];
@@ -1504,44 +1317,34 @@
         const g = findGroup(this.doc.groups, target.id)?.group;
         const ref = findGroup(this.doc.groups, target.id);
         items.push(
-          { label: "Subir (lista / sobre capas)", disabled: !ref || (() => {
-            if (!ref.parent) return ref.index <= 0;
-            ensureEntries(ref.parent);
-            const ei = ref.parent.entries.findIndex((e) => e.type === "group" && e.id === target.id);
-            return ei <= 0;
-          })(), action: () => this.moveGroupAmongSiblings(target.id, -1) },
-          { label: "Bajar (lista / bajo capas)", disabled: !ref || (() => {
-            if (!ref.parent) return ref.index >= ref.list.length - 1;
-            ensureEntries(ref.parent);
-            const ei = ref.parent.entries.findIndex((e) => e.type === "group" && e.id === target.id);
-            return ei < 0 || ei >= ref.parent.entries.length - 1;
-          })(), action: () => this.moveGroupAmongSiblings(target.id, 1) },
+          { label: "Subir en la lista", disabled: !ref || ref.index <= 0, action: () => this.moveGroupInList(target.id, -1) },
+          { label: "Bajar en la lista", disabled: !ref || ref.index >= ref.list.length - 1, action: () => this.moveGroupInList(target.id, 1) },
           { sep: true },
           { label: g?.locked ? "Desbloquear" : "Bloquear", action: () => { if (g) { g.locked = !g.locked; this.touch(); } } },
           { label: "Duplicar grupo", action: () => { this.selectGroup(target.id, -1); this.duplicateGroup(); } },
           { sep: true },
         );
-        const banned = new Set([target.id]);
-        walkGroups(g?.children || [], (c) => banned.add(c.id));
-        const hosts = [];
+        const folders = [];
         walkGroups(this.doc.groups, (gg) => {
-          if (!banned.has(gg.id)) hosts.push(gg);
+          if (gg.folder && gg.id !== target.id) folders.push(gg);
         });
-        if (hosts.length) {
-          hosts.slice(0, 24).forEach((ff) => {
+        if (folders.length) {
+          folders.forEach((ff) => {
             items.push({
-              label: (ff.folder ? "Mover a 📁 " : "Mover dentro de ") + ff.name,
+              label: "Mover a 📁 " + ff.name,
               action: () => this.moveGroupTo(target.id, ff.id),
             });
           });
           items.push({ sep: true });
         }
-        items.push(
-          { sep: true },
-          { label: "＋ Carpeta dentro", action: () => { this.selectGroup(target.id, -1); this.addNested("folder"); } },
-          { label: "＋ Grupo dentro", action: () => { this.selectGroup(target.id, -1); this.addNested("group"); } },
-          { label: "＋ Parte dentro", action: () => { this.selectGroup(target.id, -1); this.addNested("part"); } },
-        );
+        if (g?.folder) {
+          items.push(
+            { sep: true },
+            { label: "＋ Subcarpeta aquí", action: () => { this.selectGroup(target.id, -1); this.addNested("folder"); } },
+            { label: "＋ Grupo aquí", action: () => { this.selectGroup(target.id, -1); this.addNested("group"); } },
+            { label: "＋ Parte multipart aquí", action: () => { this.selectGroup(target.id, -1); this.addNested("part"); } },
+          );
+        }
         items.push(
           { label: "Sacar de carpeta (raíz)", action: () => this.moveGroupToRoot(target.id), disabled: !ref?.parent },
           { sep: true },
@@ -1586,47 +1389,27 @@
 
     moveLayerInGroup(groupId, li, dir) {
       const g = findGroup(this.doc.groups, groupId)?.group;
-      if (!g || !g.layers?.[li]) return;
-      ensureEntries(g);
-      const layerId = g.layers[li].id;
-      const ei = g.entries.findIndex((e) => e.type === "layer" && e.id === layerId);
-      if (ei < 0) return;
+      if (!g) return;
+      const j = li + dir;
+      if (j < 0 || j >= g.layers.length) return;
       this.pushHistory();
-      if (!moveEntry(g.entries, ei, dir)) return;
-      // Reconstruir orden de g.layers según entries (solo capas)
-      const byId = new Map(g.layers.map((L) => [L.id, L]));
-      g.layers = g.entries.filter((e) => e.type === "layer").map((e) => byId.get(e.id)).filter(Boolean);
+      [g.layers[li], g.layers[j]] = [g.layers[j], g.layers[li]];
       this.doc.selectedGroupId = groupId;
-      this.doc.selectedLayer = g.layers.findIndex((L) => L.id === layerId);
-      this.touch();
-    }
-
-    /** Sube/baja un grupo o carpeta en el entries del padre (puede cruzar capas). */
-    moveGroupAmongSiblings(groupId, dir) {
-      const ref = findGroup(this.doc.groups, groupId);
-      if (!ref) return;
-      this.pushHistory();
-      if (!ref.parent) {
-        // Raíz: solo entre grupos top-level
-        const j = ref.index + dir;
-        if (j < 0 || j >= ref.list.length) return;
-        [ref.list[ref.index], ref.list[j]] = [ref.list[j], ref.list[ref.index]];
-      } else {
-        const parent = ref.parent;
-        ensureEntries(parent);
-        const ei = parent.entries.findIndex((e) => e.type === "group" && e.id === groupId);
-        if (ei < 0 || !moveEntry(parent.entries, ei, dir)) return;
-        // Sync children array order from entries
-        const byId = new Map((parent.children || []).map((c) => [c.id, c]));
-        parent.children = parent.entries.filter((e) => e.type === "group").map((e) => byId.get(e.id)).filter(Boolean);
-      }
-      this.doc.selectedGroupId = groupId;
-      this.doc.selectedLayer = -1;
+      this.doc.selectedLayer = j;
       this.touch();
     }
 
     moveGroupInList(groupId, dir) {
-      this.moveGroupAmongSiblings(groupId, dir);
+      const ref = findGroup(this.doc.groups, groupId);
+      if (!ref) return;
+      const j = ref.index + dir;
+      if (j < 0 || j >= ref.list.length) return;
+      this.pushHistory();
+      const a = ref.list;
+      [a[ref.index], a[j]] = [a[j], a[ref.index]];
+      this.doc.selectedGroupId = groupId;
+      this.doc.selectedLayer = -1;
+      this.touch();
     }
 
     moveGroupToRoot(groupId) {
@@ -1698,22 +1481,19 @@
       }
       const [node] = ref.list.splice(ref.index, 1);
       const dest = toRef.group;
-      dest.children = dest.children || [];
-      dest.children.push(node);
-      ensureEntries(dest);
-      if (!dest.entries.some((e) => e.type === "group" && e.id === node.id))
-        dest.entries.push({ type: "group", id: node.id });
-      // Quitar del entries del padre anterior
-      if (ref.parent) {
-        ensureEntries(ref.parent);
-        ref.parent.entries = ref.parent.entries.filter((e) => !(e.type === "group" && e.id === node.id));
+      if (dest.folder) {
+        dest.children = dest.children || [];
+        dest.children.push(node);
+        dest.collapsed = false;
+      } else {
+        // Hermano: insertar después del destino en la misma lista
+        toRef.list.splice(toRef.index + 1, 0, node);
       }
-      dest.collapsed = false;
       this.doc.selectedGroupId = node.id;
       this.doc.selectedLayer = -1;
       this.touch();
       this.studio?.toast(
-        `«${node.name}» → dentro de «${dest.name}»`,
+        dest.folder ? `«${node.name}» → 📁 ${dest.name}` : `«${node.name}» movido`,
         { kind: "ok" },
       );
     }
@@ -1721,6 +1501,17 @@
     /** Crea carpeta/grupo/parte como hijo de la carpeta activa (o raíz). */
     addNested(kind) {
       const cur = this.group();
+      const parentFolder = cur?.folder ? cur : (findGroup(this.doc.groups, this.doc.selectedGroupId)?.parent || null);
+      // If current is folder, nest inside it; else if parent is folder, nest there; else root
+      let hostList = this.doc.groups;
+      let hostFolder = null;
+      if (cur?.folder) {
+        hostFolder = cur;
+        hostList = cur.children = cur.children || [];
+      } else if (parentFolder?.folder) {
+        hostFolder = parentFolder;
+        hostList = parentFolder.children = parentFolder.children || [];
+      }
       this.pushHistory();
       const count = { n: 0 };
       walkGroups(this.doc.groups, () => { count.n++; });
@@ -1730,30 +1521,17 @@
       if (multipart && !folder) {
         const used = new Set();
         walkGroups(this.doc.groups, (x) => {
-          if (x.multipart) used.add((x.offsetX | 0) + "," + (x.offsetY | 0) + "," + (x.offsetZ | 0));
+          if (x.multipart) used.add((x.offsetX|0) + "," + (x.offsetY|0) + "," + (x.offsetZ|0));
         });
         let x = 0;
         while (used.has(x + ",0,0")) x++;
         g.offsetX = x;
       }
-      if (cur) {
-        cur.children = cur.children || [];
-        cur.children.push(g);
-        ensureEntries(cur);
-        if (!cur.entries.some((e) => e.type === "group" && e.id === g.id))
-          cur.entries.push({ type: "group", id: g.id });
-        cur.collapsed = false;
-      } else {
-        this.doc.groups.push(g);
-      }
-      ensureEntries(g);
+      hostList.push(g);
+      if (hostFolder) hostFolder.collapsed = false;
       this.doc.selectedGroupId = g.id;
       this.doc.selectedLayer = -1;
       this.touch();
-      this.studio?.toast(
-        cur ? `«${g.name}» dentro de «${cur.name}»` : `«${g.name}» en raíz`,
-        { kind: "ok" },
-      );
     }
 
     moveLayer(gi, li, dir) {
@@ -1767,19 +1545,7 @@
     rebuildProps() {
       const g = this.group();
       const L = this.layer();
-      const set = (fn) => {
-        fn();
-        this.dirty = true;
-        this.schedule(true);
-        this.#debouncedSave();
-      };
-      const setTree = (fn) => {
-        fn();
-        this.dirty = true;
-        this.schedule(true);
-        this.#debouncedSave();
-        this.rebuildGroupList();
-      };
+      const set = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); this.rebuildGroupList(); };
       // Sin grupo seleccionado: inspector vacío (no error).
       if (!g) {
         this.propsHost.replaceChildren(
@@ -1789,26 +1555,7 @@
 
       const kids = [];
       const ao = this.doc.ao || (this.doc.ao = { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true });
-      const setAo = (fn) => { fn(); this.schedule(true); this.#debouncedSave(); };
-
-      kids.push(section({ id: "cp-snap", title: "Snap y outline" },
-        slider({
-          label: "Snap al mover capa (px)", min: 1, max: 8, step: 1,
-          value: this.doc.snapGrid ?? 1,
-          onChange: (v) => { this.doc.snapGrid = Number(v); this.savePrefsMeta(); },
-        }).el,
-        h("label", { class: "field check" },
-          h("input", {
-            type: "checkbox",
-            checked: this.doc.showOutline !== false || null,
-            onchange: (e) => {
-              this.doc.showOutline = e.target.checked;
-              this.savePrefsMeta();
-              this.paintPart();
-            },
-          }),
-          h("span", null, "Mostrar outline de selección")),
-      ).el);
+      const setAo = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); };
 
       kids.push(section({ id: "cp-ao", title: "Ambient occlusion" },
         h("p", { class: "note" }, "Oscurece contactos entre capas de la misma celda y entre celdas vecinas."),
@@ -1858,7 +1605,7 @@
       kids.push(h("label", { class: "field check" },
         h("input", {
           type: "checkbox", checked: g.multipart || null,
-          onchange: (e) => setTree(() => { g.multipart = e.target.checked; this.rebuildProps(); }),
+          onchange: (e) => set(() => { g.multipart = e.target.checked; this.rebuildProps(); }),
         }),
         h("span", null, "Multipart (esta carpeta = una celda del tile)")));
 
@@ -2011,23 +1758,9 @@
     }
 
     gNum(g, key, label, min, max, set) {
-      min = Number(min); max = Number(max);
-      if (!Number.isFinite(min)) min = 0;
-      if (!Number.isFinite(max)) max = min;
-      let val = Number(g[key]);
-      if (!Number.isFinite(val)) val = 0;
-      const apply = (v) => {
-        g[key] = Math.trunc(Number(v));
-        this.dirty = true;
-        // Actualiza etiqueta MP en el árbol sin reconstruir
-        const tag = this.groupList?.querySelector(`.cp-row[data-id="${g.id}"] .cp-tag.mp`);
-        if (tag) tag.textContent = (g.offsetX|0) + "," + (g.offsetY|0) + "," + (g.offsetZ|0);
-        this.schedule(true);
-      };
       return slider({
-        label, min, max, step: 1, value: val,
-        onInput: (v) => apply(v),
-        onChange: (v) => { apply(v); this.#debouncedSave(); },
+        label, min, max, step: 1, value: g[key] | 0,
+        onChange: (v) => set(() => { g[key] = Number(v); }),
       }).el;
     }
 
@@ -2056,10 +1789,9 @@
 
     // ── render ──────────────────────────────────────────────────────────────
 
-    schedule(immediate = false) {
+    schedule() {
       clearTimeout(this._t);
-      if (immediate) { this.render(); return; }
-      this._t = setTimeout(() => this.render(), 16);
+      this._t = setTimeout(() => this.render(), 40);
     }
 
     layerSourceRgba(L) {
@@ -2127,7 +1859,7 @@
       const color = new Uint8ClampedArray(S * S * 4);
       const depth = new Float32Array(S * S).fill(-Infinity);
       let normal = null;
-      const layers = (g.layers || []).filter((L) => L.visible !== false);
+      const layers = (g.layers || []).filter((L) => L.visible);
       layers.forEach((L, li) => {
         const src = this.layerSourceRgba(L);
         if (!src?.color) return;
@@ -2207,56 +1939,42 @@
       const S = this.doc.size || 64;
       const map = new Map();
       const active = this.group();
-      const offN = (g, axis) => {
-        const v = Number(g[axis]);
-        return Number.isFinite(v) ? Math.trunc(v) : 0;
-      };
+      // Carpetas no aportan celdas; solo grupos visibles con capas (multipart o ancla).
       walkGroups(this.doc.groups, (g, ctx) => {
+        // Cascada: si un ancestro está oculto, no dibujar
         let anc = ctx.parent;
         while (anc) {
           if (anc.visible === false) return;
-          anc = findGroup(this.doc.groups, anc.id)?.parent || null;
+          const pref = findGroup(this.doc.groups, anc.id);
+          anc = pref?.parent || null;
         }
-        if (g.folder || g.visible === false) return;
-
-        const isMp = !!g.multipart;
-        const hasVisLayer = !!(g.layers && g.layers.some((L) => L.visible !== false));
-        if (!isMp && !hasVisLayer) return;
-
-        const ox = isMp ? offN(g, "offsetX") : 0;
-        const oy = isMp ? offN(g, "offsetY") : 0;
-        const oz = isMp ? offN(g, "offsetZ") : 0;
-        // Una celda por parte multipart (id), no fusionar por offset
-        const key = isMp ? ("mp:" + g.id) : ("a:" + ox + "," + oy + "," + oz);
-
+        if (g.folder || !g.visible) return;
+        if (!(g.layers && g.layers.length)) return;
+        const ox = g.multipart ? (g.offsetX | 0) : 0;
+        const oy = g.multipart ? (g.offsetY | 0) : 0;
+        const oz = g.multipart ? (g.offsetZ | 0) : 0;
+        const key = ox + "," + oy + "," + oz;
         if (!map.has(key)) {
           map.set(key, {
             offsetX: ox, offsetY: oy, offsetZ: oz,
             groups: [],
-            label: g.name || key,
+            label: g.name,
             active: false,
-            multipart: isMp,
           });
         }
         const cell = map.get(key);
         cell.groups.push(g);
-        cell.offsetX = ox;
-        cell.offsetY = oy;
-        cell.offsetZ = oz;
-        if (isMp) {
-          cell.multipart = true;
-          cell.label = g.name || cell.label;
-        }
-        if (active && isInSubtree(g, active)) cell.active = true;
+        if (active && g.id === active.id) cell.active = true;
+        if (g.multipart) cell.label = g.name;
       });
-
       const cells = [...map.values()].map((c) => {
+        // Componer todos los grupos de esta celda → un 64×64 + depth combinado
         const color = new Uint8ClampedArray(S * S * 4);
         const depth = new Float32Array(S * S).fill(-Infinity);
         let normal = null;
         for (const g of c.groups) {
           const r = this.renderGroup(g);
-          if (!r?.color) continue;
+          // renderGroup ya aplicó AO intra-grupo; re-fusionamos depth para AO entre celdas
           for (let i = 0; i < S * S; i++) {
             const pi = i * 4;
             if (r.color[pi + 3] < 1) continue;
@@ -2287,10 +2005,9 @@
           sort: this.sortKey(c.offsetX, c.offsetY, c.offsetZ),
         };
       });
-      cells.sort((a, b) => a.sort - b.sort || String(a.label).localeCompare(String(b.label)));
+      cells.sort((a, b) => a.sort - b.sort);
       return cells;
     }
-
 
     exportCells() {
       // Orden estable para Atlas: horizontal (offsetY, offsetX, offsetZ) — celdas en fila.
@@ -2319,30 +2036,21 @@
       const ag = this.group();
       if (ag && ag.visible) {
         // Buscar la celda que contiene al grupo activo
-        // Si el grupo tiene hijos, la "parte activa" muestra todo el subárbol
-        if (ag.folder || groupHasDescendants(ag)) {
-          this.activeCell = this.renderSubtreeView(ag);
-        } else {
-          const active = cells.find((c) => c.groups.includes(ag));
-          this.activeCell = active
-            ? { size: S, color: active.color, normal: active.normal, depth: active.depth }
-            : this.renderGroup(ag);
-        }
+        const active = cells.find((c) => c.groups.includes(ag));
+        this.activeCell = active
+          ? { size: S, color: active.color, normal: active.normal }
+          : this.renderGroup(ag);
       } else {
         this.activeCell = { size: S, color: new Uint8ClampedArray(S * S * 4), normal: null };
       }
 
-      // Conjunto: bounds reales de TODAS las celdas (incl. offsets negativos)
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      if (!cells.length) {
-        minX = 0; minY = 0; maxX = S; maxY = S;
-      } else {
-        for (const c of cells) {
-          minX = Math.min(minX, c.px);
-          minY = Math.min(minY, c.py);
-          maxX = Math.max(maxX, c.px + S);
-          maxY = Math.max(maxY, c.py + S);
-        }
+      // Conjunto: colocar cada celda 64×64 en su sitio iso (sin reescalar ni cortar).
+      let minX = 0, minY = 0, maxX = S, maxY = S;
+      for (const c of cells) {
+        minX = Math.min(minX, c.px);
+        minY = Math.min(minY, c.py);
+        maxX = Math.max(maxX, c.px + S);
+        maxY = Math.max(maxY, c.py + S);
       }
       const pad = 4;
       minX -= pad; minY -= pad; maxX += pad; maxY += pad;
@@ -2389,7 +2097,7 @@
         outlines: cells.map((c) => ({
           x: c.px - minX, y: c.py - minY, w: S, h: S,
           active: c.active,
-          multipart: !!(c.multipart || c.groups.some((g) => g.multipart)),
+          multipart: c.groups.some((g) => g.multipart),
           name: c.label,
           ox: c.offsetX, oy: c.offsetY, oz: c.offsetZ,
         })),
@@ -2398,28 +2106,18 @@
       this.paintPart();
       this.paintEnsemble();
       this.paintViewStrip();
-      // Indicador de celdas multipart en el título del conjunto
-      if (this.ensView) {
-        const n = cells.length;
-        const mp = cells.filter((c) => c.multipart).length;
-        const title = this.ensView.querySelector(".cp-view-title") || this.ensView.previousElementSibling;
-        // status opcional
-        if (this.statusLbl) {
-          this.statusLbl.textContent = n ? (`Conjunto: ${n} celda${n>1?"s":""}` + (mp ? ` (${mp} multipart)` : "")) : "Sin celdas";
-        }
-      }
     }
 
 
     paintViewStrip() {
       const g = this.group();
       const S = this.doc.size || 64;
-      // Cada orientación muestra SOLO los grupos que tienen esa vista asignada
       for (const mode of this.viewModes || []) {
         const canvas = this.viewCanvases?.[mode];
         if (!canvas) continue;
         const ctx = canvas.getContext("2d");
         ctx.imageSmoothingEnabled = false;
+        // checker
         const tw = 8;
         for (let y = 0; y < canvas.height; y += tw) {
           for (let x = 0; x < canvas.width; x += tw) {
@@ -2427,297 +2125,66 @@
             ctx.fillRect(x, y, tw, tw);
           }
         }
-        const buf = this.#compositeGroupsByView(mode, S);
-        if (buf) {
-          const off = document.createElement("canvas");
-          off.width = S; off.height = S;
-          off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(buf), S, S), 0, 0);
-          const scale = Math.min(canvas.width / S, canvas.height / S);
-          const dw = S * scale, dh = S * scale;
-          ctx.drawImage(off, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
-        }
-        // Anillo si el grupo activo tiene esa orientación
-        if (g && !g.folder && (g.view || "front") === mode) {
+        if (!g || g.folder) continue;
+        const saved = g.view;
+        g.view = mode;
+        const cell = this.renderGroup(g);
+        g.view = saved;
+        if (!cell?.color) continue;
+        const off = document.createElement("canvas");
+        off.width = S; off.height = S;
+        off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(cell.color), S, S), 0, 0);
+        const scale = Math.min(canvas.width / S, canvas.height / S);
+        const dw = S * scale, dh = S * scale;
+        const ox = (canvas.width - dw) / 2, oy = (canvas.height - dh) / 2;
+        ctx.drawImage(off, ox, oy, dw, dh);
+        // active ring
+        if ((g.view || "front") === mode) {
           ctx.strokeStyle = "rgba(110, 207, 154, 0.95)";
           ctx.lineWidth = 2;
           ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
         }
       }
+      // highlight selected card
       if (this.viewStrip) {
-        this.viewStrip.querySelector('[data-row="orient"]')?.querySelectorAll(".cp-view-card").forEach((card, i) => {
+        this.viewStrip.querySelectorAll(".cp-view-card").forEach((card, i) => {
           const mode = this.viewModes[i];
-          card.classList.toggle("on", !!(g && !g.folder && (g.view || "front") === mode));
+          card.classList.toggle("on", (g && !g.folder && (g.view || "front") === mode));
         });
-      }
-      this.#paintMapThumbs(S);
-    }
-
-    /** Raster 64×64 con todos los grupos visibles cuya view === mode. */
-    #compositeGroupsByView(mode, S) {
-      const color = new Uint8ClampedArray(S * S * 4);
-      let any = false;
-      walkGroups(this.doc.groups, (g, ctx) => {
-        let anc = ctx.parent;
-        while (anc) {
-          if (anc.visible === false) return;
-          anc = findGroup(this.doc.groups, anc.id)?.parent || null;
-        }
-        if (g.folder || g.visible === false) return;
-        if (!(g.layers && g.layers.some((L) => L.visible !== false))) return;
-        if ((g.view || "front") !== mode) return;
-        const r = this.renderGroup(g);
-        if (!r?.color) return;
-        for (let i = 0; i < S * S; i++) {
-          const pi = i * 4;
-          if (r.color[pi + 3] < 1) continue;
-          any = true;
-          const dest = [color[pi], color[pi + 1], color[pi + 2], color[pi + 3]];
-          const srcPx = [r.color[pi], r.color[pi + 1], r.color[pi + 2], r.color[pi + 3]];
-          blendPixel(dest, srcPx, "normal", 1);
-          color[pi] = dest[0]; color[pi + 1] = dest[1]; color[pi + 2] = dest[2]; color[pi + 3] = dest[3];
-        }
-      });
-      return any ? color : null;
-    }
-
-    /** Celda según selección: capa | grupo | carpeta (subárbol). */
-    #selectionRenderCell(S) {
-      const g = this.group();
-      if (!g) return null;
-      const li = this.doc.selectedLayer;
-      if (li >= 0 && !g.folder && g.layers?.[li] && g.layers[li].visible !== false) {
-        return this.renderGroupLayer(g, li);
-      }
-      if (g.folder || groupHasDescendants(g)) {
-        return this.renderSubtreeView(g);
-      }
-      return this.renderGroup(g);
-    }
-    #paintMapThumbs(S) {
-      const drawChecker = (ctx, w, h) => {
-        const tw = 8;
-        for (let y = 0; y < h; y += tw) {
-          for (let x = 0; x < w; x += tw) {
-            ctx.fillStyle = ((x / tw + y / tw) & 1) ? "#2a2f35" : "#22262b";
-            ctx.fillRect(x, y, tw, tw);
-          }
-        }
-      };
-      const drawBuf = (canvas, rgba, bw, bh) => {
-        const ctx = canvas.getContext("2d");
-        ctx.imageSmoothingEnabled = false;
-        drawChecker(ctx, canvas.width, canvas.height);
-        if (!rgba) return;
-        const off = document.createElement("canvas");
-        off.width = bw; off.height = bh;
-        off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(rgba), bw, bh), 0, 0);
-        const scale = Math.min(canvas.width / bw, canvas.height / bh);
-        const dw = bw * scale, dh = bh * scale;
-        ctx.drawImage(off, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
-      };
-
-      const cell = this.#selectionRenderCell(S);
-      let maps = {};
-      let bw = S, bh = S;
-      if (cell?.color) {
-        bw = cell.w || cell.size || S;
-        bh = cell.h || cell.size || S;
-        // #cellMaps espera size cuadrado; si multi, solo color en thumbs
-        if (cell.multi || bw !== S || bh !== S) {
-          maps = { color: cell.color, normal: null, depth: null, ao: cell.color };
-        } else {
-          maps = this.#cellMaps(cell, S);
-        }
-      }
-      for (const mode of this.mapModes || []) {
-        const canvas = this.mapCanvases?.[mode];
-        if (!canvas) continue;
-        drawBuf(canvas, maps[mode], bw, bh);
-        if ((this.previewMap || "color") === mode) {
-          const ctx = canvas.getContext("2d");
-          ctx.strokeStyle = "rgba(127, 178, 255, 0.95)";
-          ctx.lineWidth = 2;
-          ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
-        }
-      }
-      if (this.viewStrip) {
-        this.viewStrip.querySelector('[data-row="maps"]')?.querySelectorAll(".cp-view-card").forEach((card, i) => {
-          const mode = this.mapModes[i];
-          card.classList.toggle("on", (this.previewMap || "color") === mode);
-        });
-      }
-    }
-
-    #cellMaps(cell, S) {
-      if (!cell?.color) return {};
-      const color = cell.color;
-      const normal = cell.normal && cell.normal.length ? cell.normal : ensureCellNormal(color, null, S);
-      const depthRgba = new Uint8ClampedArray(S * S * 4);
-      if (cell.depth) {
-        let min = Infinity, max = -Infinity;
-        for (let i = 0; i < S * S; i++) {
-          const d = cell.depth[i];
-          if (!Number.isFinite(d) || d === -Infinity) continue;
-          if (d < min) min = d;
-          if (d > max) max = d;
-        }
-        if (!Number.isFinite(min)) { min = 0; max = 1; }
-        const span = Math.max(1e-6, max - min);
-        for (let i = 0; i < S * S; i++) {
-          const pi = i * 4;
-          if (color[pi + 3] < 1) { depthRgba[pi + 3] = 0; continue; }
-          const d = cell.depth[i];
-          const v = Number.isFinite(d) && d !== -Infinity ? Math.round(((d - min) / span) * 255) : 128;
-          depthRgba[pi] = depthRgba[pi + 1] = depthRgba[pi + 2] = v;
-          depthRgba[pi + 3] = 255;
-        }
-      }
-      const ao = this.doc.ao || {};
-      let aoRgba = color;
-      if (cell.depth && ao.enabled !== false) {
-        aoRgba = applyScreenAO(color, cell.depth, S, S, {
-          strength: ao.strength ?? 0.5,
-          radius: ao.radius ?? 3,
-          samples: ao.samples ?? 12,
-        });
-      }
-      return { color, normal, depth: depthRgba, ao: aoRgba };
-    }
-
-    renderGroupLayer(g, layerIndex) {
-      if (!g || !g.layers || !g.layers[layerIndex]) return null;
-      const saved = g.layers.map((L) => L.visible);
-      try {
-        // Solo para este render temporal: no mutar estado persistente
-        g.layers.forEach((L, i) => { L.visible = i === layerIndex; });
-        return this.renderGroup(g);
-      } finally {
-        g.layers.forEach((L, i) => { L.visible = saved[i]; });
       }
     }
 
     paintPart() {
-      const cell = this.activeCell;
-      const S = cell?.size || this.doc.size || 64;
-      const W = cell?.w || S;
-      const H = cell?.h || S;
+      // Siempre S×S (64×64): la celda completa, centrada en el panel.
+      const S = this.activeCell?.size || this.doc.size || 64;
       const c = this.partCanvas;
-      // escala al ancho del buffer (puede ser multi-celda)
-      let scale = this.zoomPart > 0 ? this.zoomPart : 0;
-      if (!scale) {
-        const box = this.partView || this.partCanvas.parentElement;
-        const availW = (box?.clientWidth || 320) * 0.92;
-        const availH = (box?.clientHeight || 320) * 0.92;
-        scale = Math.max(1, Math.floor(Math.min(availW / W, availH / H)));
-      }
-      c.width = W * scale;
-      c.height = H * scale;
+      const scale = this.#partScale();
+      c.width = S * scale;
+      c.height = S * scale;
       this.syncZoomLabels();
       const ctx = c.getContext("2d");
       ctx.imageSmoothingEnabled = false;
       this.fillChecker(ctx, c.width, c.height);
-      if (!cell) return;
+      if (!this.activeCell) return;
       const off = document.createElement("canvas");
-      off.width = W; off.height = H;
-      let show = cell.color;
-      const pm = this.previewMap || "color";
-      if (pm !== "color" && !cell.multi) {
-        const maps = this.#cellMaps(cell, S);
-        if (maps[pm]) show = maps[pm];
-      }
-      if (show) {
-        off.getContext("2d").putImageData(
-          new ImageData(new Uint8ClampedArray(show), W, H), 0, 0);
-        ctx.drawImage(off, 0, 0, c.width, c.height);
-      }
-      const g = this.group();
-      // Outline según selección (capa | grupo | carpeta). Suave y opcional.
-      if (g && this.doc.showOutline !== false) {
-        const soft = "rgba(255, 210, 90, 0.4)";
-        const drawLayerEdge = (rgba, sS, color = soft) => {
-          if (!rgba || cell.multi) return;
-          ctx.fillStyle = color;
-          for (let y = 0; y < sS; y++) {
-            for (let x = 0; x < sS; x++) {
-              const a = rgba[(y * sS + x) * 4 + 3];
-              if (a < 8) continue;
-              const edge =
-                x === 0 || y === 0 || x === sS - 1 || y === sS - 1 ||
-                rgba[(y * sS + x - 1) * 4 + 3] < 8 ||
-                rgba[(y * sS + x + 1) * 4 + 3] < 8 ||
-                rgba[((y - 1) * sS + x) * 4 + 3] < 8 ||
-                rgba[((y + 1) * sS + x) * 4 + 3] < 8;
-              if (edge) ctx.fillRect(x * scale, y * scale, Math.max(1, scale), Math.max(1, scale));
-            }
-          }
-        };
-        const drawOuterOf = (buf, bw, bh, color = soft) => {
-          if (!buf) return;
-          const alpha = (x, y) => {
-            if (x < 0 || y < 0 || x >= bw || y >= bh) return 0;
-            return buf[(y * bw + x) * 4 + 3];
-          };
-          ctx.fillStyle = color;
-          for (let y = 0; y < bh; y++) {
-            for (let x = 0; x < bw; x++) {
-              if (alpha(x, y) < 8) continue;
-              if (alpha(x - 1, y) < 8 || alpha(x + 1, y) < 8 ||
-                  alpha(x, y - 1) < 8 || alpha(x, y + 1) < 8) {
-                ctx.fillRect(x * scale, y * scale, Math.max(1, scale), Math.max(1, scale));
-              }
-            }
-          }
-        };
-        const li = this.doc.selectedLayer;
-
-        if (li >= 0 && !g.folder && g.layers?.[li]) {
-          // Una sola capa/pieza: outline solo si está visible (no oculta el resto del render)
-          if (g.layers[li].visible !== false) {
-            const solo = this.renderGroupLayer(g, li);
-            if (solo?.color) drawLayerEdge(solo.color, solo.size || S, soft);
-          }
-        } else if (g.folder) {
-          // Carpeta: outline de cada elemento + contorno exterior de todo
-          const pieces = drawableInSubtree(g);
-          if (!cell.multi) {
-            for (const pg of pieces) {
-              for (let i = 0; i < (pg.layers || []).length; i++) {
-                if (pg.layers[i].visible === false) continue;
-                const solo = this.renderGroupLayer(pg, i);
-                if (solo?.color) drawLayerEdge(solo.color, solo.size || S, "rgba(255, 210, 90, 0.28)");
-              }
-            }
-          }
-          if (show) drawOuterOf(show, W, H, "rgba(110, 207, 154, 0.45)");
-        } else {
-          // Grupo (sin capa concreta): outline de las capas de ESTE grupo
-          if (!cell.multi) {
-            for (let i = 0; i < (g.layers || []).length; i++) {
-              if (g.layers[i].visible === false) continue;
-              const solo = this.renderGroupLayer(g, i);
-              if (solo?.color) drawLayerEdge(solo.color, solo.size || S, soft);
-            }
-          }
-          // Si tiene hijos, también contorno del subárbol visible
-          if (groupHasDescendants(g) && show) {
-            drawOuterOf(show, W, H, "rgba(110, 207, 154, 0.4)");
-          }
-        }
-      }
-
-      // Diamante guía solo en celda simple
-      if (!cell.multi) {
-        const hw = c.width / 2, hh = c.height / 4;
-        ctx.strokeStyle = "rgba(95, 211, 176, 0.35)";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(hw, 0.5);
-        ctx.lineTo(c.width - 0.5, hh);
-        ctx.lineTo(hw, hh * 2);
-        ctx.lineTo(0.5, hh);
-        ctx.closePath();
-        ctx.stroke();
-      }
+      off.width = S; off.height = S;
+      off.getContext("2d").putImageData(
+        new ImageData(new Uint8ClampedArray(this.activeCell.color), S, S), 0, 0);
+      ctx.drawImage(off, 0, 0, c.width, c.height);
+      // Marco de la celda 64×64 (el arte iso deja las esquinas vacías a propósito)
+      ctx.strokeStyle = "rgba(95, 211, 176, 0.35)";
+      ctx.lineWidth = Math.max(1, Math.round(scale / 2));
+      ctx.strokeRect(0.5, 0.5, c.width - 1, c.height - 1);
+      // Diamante del suelo del tile (donde ancla el juego: centro en 32,16)
+      const hw = c.width / 2, hh = c.height / 4;
+      ctx.strokeStyle = "rgba(95, 211, 176, 0.9)";
+      ctx.beginPath();
+      ctx.moveTo(hw, 0.5);
+      ctx.lineTo(c.width - 0.5, hh);
+      ctx.lineTo(hw, hh * 2);
+      ctx.lineTo(0.5, hh);
+      ctx.closePath();
+      ctx.stroke();
     }
 
     paintEnsemble() {
@@ -2741,33 +2208,14 @@
       // Contorno: diamante isométrico de la celda (no el cuadrado vacío de las esquinas).
       // El cuadrado 64×64 tiene esquinas transparentes por diseño del iso; el diamante es el “suelo” real.
       if (this.preview.outlines) {
+        ctx.font = `${Math.max(10, 9 * scale)}px sans-serif`;
         for (const o of this.preview.outlines) {
           const x = o.x * scale, y = o.y * scale, s = S * scale;
           const hw = s / 2, hh = s / 4; // HalfTileW / HalfTileH en pantalla
-          if (o.active) {
-            ctx.fillStyle = "rgba(95, 211, 176, 0.12)";
-            ctx.beginPath();
-            ctx.moveTo(x + hw, y);
-            ctx.lineTo(x + s, y + hh);
-            ctx.lineTo(x + hw, y + hh * 2);
-            ctx.lineTo(x, y + hh);
-            ctx.closePath();
-            ctx.fill();
-          }
           ctx.strokeStyle = o.active
             ? "rgba(95, 211, 176, 0.95)"
-            : (o.multipart ? "rgba(127, 178, 255, 0.9)" : "rgba(255,255,255,0.35)");
-          ctx.lineWidth = o.active ? 2.5 : (o.multipart ? 2 : 1);
-          if (o.multipart && !o.active) {
-            ctx.fillStyle = "rgba(127, 178, 255, 0.08)";
-            ctx.beginPath();
-            ctx.moveTo(x + hw, y);
-            ctx.lineTo(x + s, y + hh);
-            ctx.lineTo(x + hw, y + hh * 2);
-            ctx.lineTo(x, y + hh);
-            ctx.closePath();
-            ctx.fill();
-          }
+            : (o.multipart ? "rgba(127, 178, 255, 0.65)" : "rgba(255,255,255,0.3)");
+          ctx.lineWidth = o.active ? 2 : 1;
           // Diamante superior (centro del tile en y = hh desde el top-left del sprite)
           ctx.beginPath();
           ctx.moveTo(x + hw, y);           // top
@@ -2781,13 +2229,10 @@
           ctx.moveTo(x + hw, y + hh * 2);
           ctx.lineTo(x + hw, y + s);
           ctx.stroke();
-          const tag = `${o.ox},${o.oy},${o.oz}`;
-          ctx.font = `${Math.max(8, Math.round(8 * Math.min(scale, 1.5)))}px ui-sans-serif, system-ui, sans-serif`;
-          const tw = ctx.measureText(tag).width;
-          ctx.fillStyle = "rgba(0,0,0,0.5)";
-          ctx.fillRect(x + 2, y + 2, tw + 5, 10);
-          ctx.fillStyle = o.active ? "rgba(160, 230, 200, 0.95)" : "rgba(200,210,220,0.88)";
-          ctx.fillText(tag, x + 4, y + 10);
+          if (scale >= 2) {
+            ctx.fillStyle = o.active ? "rgba(95, 211, 176, 0.9)" : "rgba(180,190,200,0.75)";
+            ctx.fillText(`${o.ox},${o.oy},${o.oz}`, x + 4, y + 12);
+          }
         }
       }
     }
