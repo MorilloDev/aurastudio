@@ -615,28 +615,39 @@
       this.ensView = h("div", { class: "cp-view" }, this.ensembleCanvas);
 
       // Layout 3 columnas: árbol | lienzo | inspector
+      this.statusBarLeft = h("span", { class: "cp-st-ok" }, "● Composer");
+      this.statusBarMid = h("span", { class: "cp-st-mono" }, "64×64");
+      this.statusBarInfo = h("span", null, "");
+
       host.appendChild(h("div", { class: "cp cp-3col" },
+        h("div", { class: "cp-workflow" },
+          h("span", { class: "cp-wf-step done" }, h("span", { class: "cp-wf-n" }, "1"), " Generar"),
+          h("span", { class: "cp-wf-arrow" }, "→"),
+          h("span", { class: "cp-wf-step active" }, h("span", { class: "cp-wf-n" }, "2"), " Componer"),
+          h("span", { class: "cp-wf-arrow" }, "→"),
+          h("span", { class: "cp-wf-step" }, h("span", { class: "cp-wf-n" }, "3"), " Atlas"),
+          h("span", { class: "cp-wf-arrow" }, "→"),
+          h("span", { class: "cp-wf-step" }, h("span", { class: "cp-wf-n" }, "4"), " JSON"),
+          h("span", { class: "cp-wf-grow" }),
+          h("span", { class: "cp-wf-hint" }, "multipart → Atlas en fila por orientación")),
         h("aside", { class: "cp-left" },
           h("div", { class: "cp-side-head" },
-            h("b", null, "Grupos / Partes")),
+            h("b", null, "Jerarquía")),
           this.groupList,
           h("div", { class: "cp-gen-block" },
-            h("div", { class: "cp-side-head" }, h("b", null, "Generar")),
             h("button", {
               type: "button", class: "cp-gen-btn",
               title: "Abrir generador de bloques",
               onclick: () => this.studio?.tools?.find?.((x) => x.id === "create")?.openGenerator?.("blocks")
-                || this.studio?.tools?.find?.((x) => x.id === "create")?.show?.("blocks"),
-            }, "▣ Bloque…"),
+            }, "▣ Bloque"),
             h("button", {
               type: "button", class: "cp-gen-btn plant",
               title: "Abrir generador de plantas",
               onclick: () => this.studio?.tools?.find?.((x) => x.id === "create")?.openGenerator?.("plants")
-                || this.studio?.tools?.find?.((x) => x.id === "create")?.show?.("plants"),
-            }, "🌿 Planta…"),
+            }, "🌿 Planta"),
             h("button", {
               type: "button", class: "cp-gen-btn form",
-              onclick: () => this.addShapeLayer(),
+              onclick: () => this.addShapeLayer()
             }, "◇ Forma"))),
         h("div", { class: "cp-center" },
           toolbar,
@@ -655,7 +666,17 @@
             this.viewStrip)),
         h("aside", { class: "cp-right" },
           h("div", { class: "cp-side-head" }, h("b", null, "Inspector")),
-          this.propsHost)));
+          this.propsHost),
+        h("div", { class: "cp-statusbar" },
+          this.statusBarLeft,
+          h("span", { class: "cp-st-sep" }),
+          this.statusBarMid,
+          h("span", { class: "cp-st-sep" }),
+          this.statusBarInfo,
+          h("span", { class: "cp-st-right" },
+            h("span", { class: "cp-st-mono" }, "Ctrl+Z deshacer"),
+            h("span", null, "Listo")))));
+
 
       this.bindCanvasEvents();
       this.bindKeys(host);
@@ -2576,8 +2597,21 @@
         const mp = cells.filter((c) => c.multipart).length;
         const title = this.ensView.querySelector(".cp-view-title") || this.ensView.previousElementSibling;
         // status opcional
-        if (this.statusLbl) {
-          this.statusLbl.textContent = n ? (`Conjunto: ${n} celda${n>1?"s":""}` + (mp ? ` (${mp} multipart)` : "")) : "Sin celdas";
+        const msg = n ? (`Conjunto: ${n} celda${n>1?"s":""}` + (mp ? ` (${mp} multipart)` : "")) : "Sin celdas";
+        if (this.statusLbl) this.statusLbl.textContent = msg;
+        if (this.statusBarMid) this.statusBarMid.textContent = (this.doc.size || 64) + "×" + (this.doc.size || 64);
+        if (this.statusBarInfo) {
+          let layers = 0;
+          const countL = (gs) => {
+            for (const g of gs || []) {
+              layers += (g.layers || []).length;
+              countL(g.children);
+            }
+          };
+          countL(this.doc.groups);
+          this.statusBarInfo.textContent = n
+            ? (mp + " multipart · " + layers + " capas")
+            : (layers ? layers + " capas" : "Sin celdas");
         }
       }
     }
