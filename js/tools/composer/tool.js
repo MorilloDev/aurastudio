@@ -1195,10 +1195,9 @@
 
     touch() {
       this.dirty = true;
-      this.rebuildGroupList();
-      this.rebuildProps();
       this.schedule(true);
       this.#debouncedSave();
+      this.rebuildGroupList();
     }
 
     #debouncedSave() {
@@ -1773,6 +1772,12 @@
         this.dirty = true;
         this.schedule(true);
         this.#debouncedSave();
+      };
+      const setTree = (fn) => {
+        fn();
+        this.dirty = true;
+        this.schedule(true);
+        this.#debouncedSave();
         this.rebuildGroupList();
       };
       // Sin grupo seleccionado: inspector vacío (no error).
@@ -1784,7 +1789,7 @@
 
       const kids = [];
       const ao = this.doc.ao || (this.doc.ao = { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true });
-      const setAo = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); };
+      const setAo = (fn) => { fn(); this.schedule(true); this.#debouncedSave(); };
 
       kids.push(section({ id: "cp-snap", title: "Snap y outline" },
         slider({
@@ -1853,7 +1858,7 @@
       kids.push(h("label", { class: "field check" },
         h("input", {
           type: "checkbox", checked: g.multipart || null,
-          onchange: (e) => set(() => { g.multipart = e.target.checked; this.rebuildProps(); }),
+          onchange: (e) => setTree(() => { g.multipart = e.target.checked; this.rebuildProps(); }),
         }),
         h("span", null, "Multipart (esta carpeta = una celda del tile)")));
 
@@ -2006,9 +2011,23 @@
     }
 
     gNum(g, key, label, min, max, set) {
+      min = Number(min); max = Number(max);
+      if (!Number.isFinite(min)) min = 0;
+      if (!Number.isFinite(max)) max = min;
+      let val = Number(g[key]);
+      if (!Number.isFinite(val)) val = 0;
+      const apply = (v) => {
+        g[key] = Math.trunc(Number(v));
+        this.dirty = true;
+        // Actualiza etiqueta MP en el árbol sin reconstruir
+        const tag = this.groupList?.querySelector(`.cp-row[data-id="${g.id}"] .cp-tag.mp`);
+        if (tag) tag.textContent = (g.offsetX|0) + "," + (g.offsetY|0) + "," + (g.offsetZ|0);
+        this.schedule(true);
+      };
       return slider({
-        label, min, max, step: 1, value: g[key] | 0,
-        onChange: (v) => set(() => { g[key] = Number(v); }),
+        label, min, max, step: 1, value: val,
+        onInput: (v) => apply(v),
+        onChange: (v) => { apply(v); this.#debouncedSave(); },
       }).el;
     }
 
@@ -2737,8 +2756,18 @@
           }
           ctx.strokeStyle = o.active
             ? "rgba(95, 211, 176, 0.95)"
-            : (o.multipart ? "rgba(127, 178, 255, 0.65)" : "rgba(255,255,255,0.3)");
-          ctx.lineWidth = o.active ? 2.5 : 1;
+            : (o.multipart ? "rgba(127, 178, 255, 0.9)" : "rgba(255,255,255,0.35)");
+          ctx.lineWidth = o.active ? 2.5 : (o.multipart ? 2 : 1);
+          if (o.multipart && !o.active) {
+            ctx.fillStyle = "rgba(127, 178, 255, 0.08)";
+            ctx.beginPath();
+            ctx.moveTo(x + hw, y);
+            ctx.lineTo(x + s, y + hh);
+            ctx.lineTo(x + hw, y + hh * 2);
+            ctx.lineTo(x, y + hh);
+            ctx.closePath();
+            ctx.fill();
+          }
           // Diamante superior (centro del tile en y = hh desde el top-left del sprite)
           ctx.beginPath();
           ctx.moveTo(x + hw, y);           // top
