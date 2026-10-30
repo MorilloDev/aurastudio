@@ -224,14 +224,23 @@
       return { ...b, ...l, color, normal, depth };
     });
     const children = (g.children || []).map((c, ci) => normalizeGroup(c, ci));
-    return {
+    const num = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.trunc(n) : 0; };
+    const folder = !!g.folder;
+    const multipart = !!g.multipart && !folder;
+    const out = {
       ...base, ...g,
-      folder: !!g.folder,
+      folder,
       locked: !!g.locked,
+      multipart,
+      offsetX: num(g.offsetX ?? base.offsetX),
+      offsetY: num(g.offsetY ?? base.offsetY),
+      offsetZ: num(g.offsetZ ?? base.offsetZ),
       view: ["front","back","inverted","horizontal"].includes(g.view) ? g.view : "front",
       children,
       layers,
     };
+    ensureEntries(out);
+    return out;
   }
 
   function migrateDoc(raw) {
@@ -1300,6 +1309,19 @@
               e.stopPropagation();
               if (g.locked) return;
               g.multipart = !g.multipart;
+              if (g.multipart) {
+                const used = new Set();
+                walkGroups(this.doc.groups, (x) => {
+                  if (x.multipart && x.id !== g.id)
+                    used.add((Number(x.offsetX)|0) + "," + (Number(x.offsetY)|0) + "," + (Number(x.offsetZ)|0));
+                });
+                let key = (Number(g.offsetX)|0) + "," + (Number(g.offsetY)|0) + "," + (Number(g.offsetZ)|0);
+                if (used.has(key)) {
+                  let x = 0;
+                  while (used.has(x + ",0,0")) x++;
+                  g.offsetX = x; g.offsetY = 0; g.offsetZ = 0;
+                }
+              }
               this.touch();
             },
           }, "MP") : null,
@@ -2143,20 +2165,24 @@
       const S = this.doc.size || 64;
       const map = new Map();
       const active = this.group();
-      // Carpetas no aportan celdas; solo grupos visibles con capas (multipart o ancla).
+      const offN = (g, axis) => {
+        const v = Number(g[axis]);
+        return Number.isFinite(v) ? Math.trunc(v) : 0;
+      };
+      // Multipart: una celda por offset (aunque sin capas visibles) para ver el conjunto.
       walkGroups(this.doc.groups, (g, ctx) => {
-        // Cascada: si un ancestro está oculto, no dibujar
         let anc = ctx.parent;
         while (anc) {
           if (anc.visible === false) return;
-          const pref = findGroup(this.doc.groups, anc.id);
-          anc = pref?.parent || null;
+          anc = findGroup(this.doc.groups, anc.id)?.parent || null;
         }
         if (g.folder || g.visible === false) return;
-        if (!(g.layers && g.layers.some((L) => L.visible !== false))) return;
-        const ox = g.multipart ? (g.offsetX | 0) : 0;
-        const oy = g.multipart ? (g.offsetY | 0) : 0;
-        const oz = g.multipart ? (g.offsetZ | 0) : 0;
+        const hasVisLayer = !!(g.layers && g.layers.some((L) => L.visible !== false));
+        if (!g.multipart && !hasVisLayer) return;
+        // multipart sin capas visibles: igual reserva la celda (preview de posición)
+        const ox = g.multipart ? offN(g, "offsetX") : 0;
+        const oy = g.multipart ? offN(g, "offsetY") : 0;
+        const oz = g.multipart ? offN(g, "offsetZ") : 0;
         const key = ox + "," + oy + "," + oz;
         if (!map.has(key)) {
           map.set(key, {
@@ -2164,12 +2190,16 @@
             groups: [],
             label: g.name,
             active: false,
+            multipart: !!g.multipart,
           });
         }
         const cell = map.get(key);
         cell.groups.push(g);
+        if (g.multipart) {
+          cell.multipart = true;
+          cell.label = g.name;
+        }
         if (active && isInSubtree(g, active)) cell.active = true;
-        if (g.multipart) cell.label = g.name;
       });
       const cells = [...map.values()].map((c) => {
         // Componer todos los grupos de esta celda → un 64×64 + depth combinado
@@ -2253,13 +2283,17 @@
         this.activeCell = { size: S, color: new Uint8ClampedArray(S * S * 4), normal: null };
       }
 
-      // Conjunto: colocar cada celda 64×64 en su sitio iso (sin reescalar ni cortar).
-      let minX = 0, minY = 0, maxX = S, maxY = S;
-      for (const c of cells) {
-        minX = Math.min(minX, c.px);
-        minY = Math.min(minY, c.py);
-        maxX = Math.max(maxX, c.px + S);
-        maxY = Math.max(maxY, c.py + S);
+      // Conjunto: bounds reales de TODAS las celdas (incl. offsets negativos)
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      if (!cells.length) {
+        minX = 0; minY = 0; maxX = S; maxY = S;
+      } else {
+        for (const c of cells) {
+          minX = Math.min(minX, c.px);
+          minY = Math.min(minY, c.py);
+          maxX = Math.max(maxX, c.px + S);
+          maxY = Math.max(maxY, c.py + S);
+        }
       }
       const pad = 4;
       minX -= pad; minY -= pad; maxX += pad; maxY += pad;
@@ -2306,7 +2340,7 @@
         outlines: cells.map((c) => ({
           x: c.px - minX, y: c.py - minY, w: S, h: S,
           active: c.active,
-          multipart: c.groups.some((g) => g.multipart),
+          multipart: !!(c.multipart || c.groups.some((g) => g.multipart)),
           name: c.label,
           ox: c.offsetX, oy: c.offsetY, oz: c.offsetZ,
         })),
