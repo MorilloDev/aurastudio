@@ -51,7 +51,7 @@
 
       // Bloque/Planta solo en la columna izquierda del Composer (evitar duplicados arriba).
       this.hubBar = h("div", { class: "cr-hub-bar" },
-        h("span", { class: "hint" }, "Composer · Bloque/Planta a la izquierda → Aplicar → capas"));
+        h("span", { class: "hint" }, ""));
 
       host.appendChild(h("div", { class: "cr cr-hub" },
         this.hubBar,

@@ -620,16 +620,6 @@
       this.statusBarInfo = h("span", null, "");
 
       host.appendChild(h("div", { class: "cp cp-3col" },
-        h("div", { class: "cp-workflow" },
-          h("span", { class: "cp-wf-step done" }, h("span", { class: "cp-wf-n" }, "1"), " Generar"),
-          h("span", { class: "cp-wf-arrow" }, "→"),
-          h("span", { class: "cp-wf-step active" }, h("span", { class: "cp-wf-n" }, "2"), " Componer"),
-          h("span", { class: "cp-wf-arrow" }, "→"),
-          h("span", { class: "cp-wf-step" }, h("span", { class: "cp-wf-n" }, "3"), " Atlas"),
-          h("span", { class: "cp-wf-arrow" }, "→"),
-          h("span", { class: "cp-wf-step" }, h("span", { class: "cp-wf-n" }, "4"), " JSON"),
-          h("span", { class: "cp-wf-grow" }),
-          h("span", { class: "cp-wf-hint" }, "multipart → Atlas en fila por orientación")),
         h("aside", { class: "cp-left" },
           h("div", { class: "cp-side-head" },
             h("b", null, "Jerarquía")),
@@ -674,7 +664,7 @@
           h("span", { class: "cp-st-sep" }),
           this.statusBarInfo,
           h("span", { class: "cp-st-right" },
-            h("span", { class: "cp-st-mono" }, "Ctrl+Z deshacer"),
+            h("span", { class: "cp-st-mono" }, "Ctrl+Z"),
             h("span", null, "Listo")))));
 
 
@@ -1939,11 +1929,11 @@
           type: "checkbox", checked: g.multipart || null,
           onchange: (e) => setTree(() => { g.multipart = e.target.checked; this.rebuildProps(); }),
         }),
-        h("span", null, "Multipart (esta carpeta = una celda del tile)")));
+        h("span", null, "Multipart")));
 
       const curView = VIEW_LIST.includes(g.view) ? g.view : "front";
       kids.push(h("div", { class: "field" },
-        h("label", null, "Vista (etiqueta de orientación)"),
+        h("label", null, "Vista"),
         h("select", {
           onchange: (e) => {
             g.view = e.target.value;
@@ -1956,48 +1946,25 @@
           ...VIEW_LIST.map((v) => h("option", {
             value: v,
             selected: v === curView || null,
-          }, v === "front" ? "Front (default)" : v.charAt(0).toUpperCase() + v.slice(1))),
+          }, v === "front" ? "Front" : v.charAt(0).toUpperCase() + v.slice(1))),
         ),
       ));
-      // Atajos de posición de celda (multipart)
-      if (g.multipart) {
-        const place = (ox, oy, oz, label) => h("button", {
-          type: "button", class: "cp-mini-btn",
-          title: label,
-          onclick: () => {
-            g.offsetX = ox; g.offsetY = oy; g.offsetZ = oz;
-            this.dirty = true;
-            this.schedule(true);
-            this.#debouncedSave();
-            this.rebuildGroupList();
-            this.rebuildProps();
-          },
-        }, label);
-        kids.push(h("div", { class: "field" },
-          h("label", null, "Posición rápida"),
-          h("div", { class: "cp-place-row" },
-            place(0, 0, 0, "Base"),
-            place(1, 0, 0, "→ X+"),
-            place(-1, 0, 0, "← X-"),
-            place(0, 0, 1, "Z+"),
-            place(0, 0, -1, "Z-"),
-            place(0, 1, 0, "↑ Y+"),
-            place(0, -1, 0, "↓ Y-"),
-          ),
-        ));
-      }
-      kids.push(h("p", { class: "note" },
-        "Vista del sprite como en bloques: front, back (espejo), inverted (arriba/abajo), horizontal (rotado)."));
+      kids.push(h("label", { class: "field check" },
+        h("input", {
+          type: "checkbox", checked: g.locked || null,
+          onchange: (e) => { g.locked = e.target.checked; this.touch(); },
+        }),
+        h("span", null, "Bloquear")));
 
       if (g.multipart) {
         kids.push(section({ id: "cp-cell", title: "Celda de esta parte" },
-          h("p", { class: "note" }, "Offset en el mundo del juego (TilePart). Otras partes con otro offset = m\u00e1s celdas."),
+          h("p", { class: "note" }, "Otro offset = otra celda en el conjunto / Atlas."),
           this.gNum(g, "offsetX", "Offset X", -4, 4, set),
           this.gNum(g, "offsetY", "Offset Y", -4, 4, set),
           this.gNum(g, "offsetZ", "Offset Z", -4, 4, set),
         ).el);
       } else {
-        kids.push(h("p", { class: "note" }, "Grupo normal: organiza capas. Se dibuja en la celda ancla (0,0,0) del conjunto si est\u00e1 visible."));
+        kids.push(h("p", { class: "note" }, "Sin multipart: se dibuja en ancla (0,0,0)."));
       }
 
       if (!L) {
@@ -2007,25 +1974,12 @@
             "Este grupo tiene " + g.layers.length + " capa(s). Selecciona una en el árbol para editarla."));
         } else {
           kids.push(h("p", { class: "note" },
-            "Este grupo no tiene capas — por eso su celda multipart se ve vacía en el Conjunto. Añade una forma o aplica un bloque/planta a ESTA parte."));
+            "Sin capas. Añade forma o aplica bloque/planta."));
           kids.push(h("button", { type: "button", class: "primary", onclick: () => this.addShapeLayer() }, "+ Forma"));
         }
-        kids.push(h("label", { class: "field check" },
-          h("input", {
-            type: "checkbox", checked: g.locked || null,
-            onchange: (e) => { g.locked = e.target.checked; this.touch(); },
-          }),
-          h("span", null, "Bloquear grupo")));
         this.propsHost.replaceChildren(...kids);
         return;
       }
-
-      kids.push(h("label", { class: "field check" },
-        h("input", {
-          type: "checkbox", checked: g.locked || null,
-          onchange: (e) => { g.locked = e.target.checked; this.touch(); },
-        }),
-        h("span", null, "Bloquear grupo")));
 
       kids.push(h("div", { class: "cp-sub" }, "Capa"));
       kids.push(h("label", { class: "field" }, h("span", null, "Nombre"),
