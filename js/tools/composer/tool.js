@@ -25,6 +25,14 @@
   const PREFS_KEY = "composer:doc";
   const QUEUE_KEY = "composer:queue";
 
+  const GROUP_ICONS = ["📦", "🧱", "🪑", "🌳", "🏠", "⚔️", "💎", "🔧", "⭐", "🎯", "🧩", "📐"];
+  const FOLDER_ICONS = ["📁", "📂", "🗂️", "🗃️", "📚", "🏷️"];
+  const LAYER_ICONS = ["◇", "▣", "●", "▲", "◆", "★", "✦", "⬡"];
+  const SWATCHES = [
+    "#6ecf9a", "#7fb2ff", "#f0c674", "#e06c75", "#c678dd",
+    "#56b6c2", "#d19a66", "#abb2bf", "#98c379", "#e5c07b",
+  ];
+
   const uid = () => "id" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   function defaultShapeLayer(i = 0) {
@@ -44,6 +52,9 @@
       color: null,
       normal: null,
       source: null,
+      icon: "◇",
+      badgeColor: "#abb2bf",
+      note: "",
     };
   }
 
@@ -67,6 +78,9 @@
       shape: null,
       params: {},
       rot3d: { x: 0, y: 0, z: 0 },
+      icon: meta.icon || "▣",
+      badgeColor: meta.badgeColor || "#d19a66",
+      note: meta.note || "",
     };
   }
 
@@ -84,8 +98,13 @@
       offsetZ: 0,
       layers: [],
       children: [],              // grupos anidados
-      entries: [],               // orden árbol: {type:"layer"|"group", id}
-      view: "front",             // front | back | inverted | horizontal
+      entries: [],
+      view: "front",
+      icon: folder ? "📁" : (multipart ? "🧱" : "📦"),
+      color: folder ? "#7fb2ff" : (multipart ? "#f0c674" : "#6ecf9a"),
+      note: "",
+      tags: [],
+      outline: false,
     };
   }
 
@@ -1670,10 +1689,10 @@
     // ── props ───────────────────────────────────────────────────────────────
 
     rebuildProps() {
+      try {
       const g = this.group();
       const L = this.layer();
       const set = (fn) => { fn(); this.savePrefsMeta(); this.schedule(); this.rebuildGroupList(); };
-      // Sin grupo seleccionado: inspector vacío (no error).
       if (!g) {
         this.propsHost.replaceChildren(
           h("p", { class: "note" }, "Ningún grupo seleccionado. Crea un grupo o parte, o elige uno en la lista."));
@@ -1737,7 +1756,7 @@
           },
           onchange: () => this.savePrefsMeta(),
         })));
-      const iconSet = g.folder ? FOLDER_ICONS : GROUP_ICONS;
+      const iconSet = g.folder ? (FOLDER_ICONS || ["📁"]) : (GROUP_ICONS || ["📦"]);
       kids.push(h("div", { class: "cp-sub" }, "Aspecto"));
       kids.push(h("div", { class: "cp-icon-grid" },
         ...iconSet.map((ic) => h("button", {
@@ -1937,6 +1956,11 @@
       ).el);
 
       this.propsHost.replaceChildren(...kids);
+      } catch (err) {
+        console.error("composer rebuildProps", err);
+        this.propsHost?.replaceChildren(
+          h("p", { class: "note" }, "Error en inspector: " + (err && err.message ? err.message : String(err))));
+      }
     }
 
     paramControls(L, set) {
