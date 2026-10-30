@@ -552,9 +552,26 @@
           },
         }, c, h("span", { class: "cp-view-card-label" }, mode));
       });
+      const mapCards = this.mapModes.map((mode) => {
+        const c = h("canvas", { class: "cp-view-thumb", width: 80, height: 80 });
+        this.mapCanvases[mode] = c;
+        const labels = { color: "Color", normal: "Normal", depth: "Depth", ao: "AO" };
+        return h("button", {
+          type: "button",
+          class: ["cp-view-card", mode === "color" && "on"],
+          title: "Vista " + labels[mode],
+          onclick: () => {
+            this.previewMap = mode;
+            this.paintViewStrip();
+            this.paintPart();
+          },
+        }, c, h("span", { class: "cp-view-card-label" }, labels[mode] || mode));
+      });
       this.viewStrip = h("div", { class: "cp-view-strip" },
-        h("div", { class: "cp-view-strip-label" }, "Vistas del grupo activo"),
+        h("div", { class: "cp-view-strip-label" }, "Orientación del grupo activo"),
         h("div", { class: "cp-view-strip-row" }, ...viewCards),
+        h("div", { class: "cp-view-strip-label" }, "Mapas (como en bloques)"),
+        h("div", { class: "cp-view-strip-row" }, ...mapCards),
       );
 
       this.ensView = h("div", { class: "cp-view" }, this.ensembleCanvas);
@@ -1903,7 +1920,7 @@
       if (L.kind !== "sprite") {
         kids.push(select({
           label: "Forma", value: L.shape || "cube",
-          options: Object.entries(Sh.SHAPES).map(([k, s]) => [k, s.label]),
+          options: Object.entries(Sh?.SHAPES || {}).map(([k, s]) => [k, s?.label || k]),
           onChange: (v) => set(() => { L.shape = v; this.rebuildProps(); }),
         }).el);
         for (const el of this.paramControls(L, set)) kids.push(el);
@@ -1990,8 +2007,13 @@
     }
 
     gNum(g, key, label, min, max, set) {
+      min = Number(min); max = Number(max);
+      if (!Number.isFinite(min)) min = 0;
+      if (!Number.isFinite(max)) max = min;
+      let val = Number(g[key]);
+      if (!Number.isFinite(val)) val = 0;
       return slider({
-        label, min, max, step: 1, value: g[key] | 0,
+        label, min, max, step: 1, value: val,
         onChange: (v) => set(() => { g[key] = Number(v); }),
       }).el;
     }
@@ -2349,48 +2371,128 @@
     paintViewStrip() {
       const g = this.group();
       const S = this.doc.size || 64;
+      // Orientaciones front/back/...
       for (const mode of this.viewModes || []) {
         const canvas = this.viewCanvases?.[mode];
         if (!canvas) continue;
         const ctx = canvas.getContext("2d");
         ctx.imageSmoothingEnabled = false;
-        // checker
-        const tw = 8;
-        for (let y = 0; y < canvas.height; y += tw) {
-          for (let x = 0; x < canvas.width; x += tw) {
-            ctx.fillStyle = ((x / tw + y / tw) & 1) ? "#2a2f35" : "#22262b";
-            ctx.fillRect(x, y, tw, tw);
-          }
-        }
+        this.#fillThumbChecker(ctx, canvas.width, canvas.height);
         if (!g || g.folder) continue;
         const saved = g.view;
         g.view = mode;
         const cell = this.renderGroup(g);
         g.view = saved;
         if (!cell?.color) continue;
-        const off = document.createElement("canvas");
-        off.width = S; off.height = S;
-        off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(cell.color), S, S), 0, 0);
-        const scale = Math.min(canvas.width / S, canvas.height / S);
-        const dw = S * scale, dh = S * scale;
-        const ox = (canvas.width - dw) / 2, oy = (canvas.height - dh) / 2;
-        ctx.drawImage(off, ox, oy, dw, dh);
-        // active ring
+        this.#drawThumb(ctx, canvas, cell.color, S);
         if ((g.view || "front") === mode) {
           ctx.strokeStyle = "rgba(110, 207, 154, 0.95)";
           ctx.lineWidth = 2;
           ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
         }
       }
-      // highlight selected card
       if (this.viewStrip) {
-        this.viewStrip.querySelectorAll(".cp-view-card").forEach((card, i) => {
+        this.viewStrip.querySelectorAll(".cp-view-strip-row")[0]?.querySelectorAll(".cp-view-card").forEach((card, i) => {
           const mode = this.viewModes[i];
           card.classList.toggle("on", (g && !g.folder && (g.view || "front") === mode));
         });
       }
+      // Mapas color / normal / depth / ao
+      if (g && !g.folder) {
+        const cell = this.renderGroup(g);
+        const maps = this.#cellMaps(cell, S);
+        for (const mode of this.mapModes || []) {
+          const canvas = this.mapCanvases?.[mode];
+          if (!canvas) continue;
+          const ctx = canvas.getContext("2d");
+          ctx.imageSmoothingEnabled = false;
+          this.#fillThumbChecker(ctx, canvas.width, canvas.height);
+          const buf = maps[mode];
+          if (buf) this.#drawThumb(ctx, canvas, buf, S);
+          if ((this.previewMap || "color") === mode) {
+            ctx.strokeStyle = "rgba(127, 178, 255, 0.95)";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+          }
+        }
+        if (this.viewStrip) {
+          this.viewStrip.querySelectorAll(".cp-view-strip-row")[1]?.querySelectorAll(".cp-view-card").forEach((card, i) => {
+            const mode = this.mapModes[i];
+            card.classList.toggle("on", (this.previewMap || "color") === mode);
+          });
+        }
+      } else {
+        for (const mode of this.mapModes || []) {
+          const canvas = this.mapCanvases?.[mode];
+          if (!canvas) continue;
+          const ctx = canvas.getContext("2d");
+          this.#fillThumbChecker(ctx, canvas.width, canvas.height);
+        }
+      }
     }
 
+    #fillThumbChecker(ctx, w, h) {
+      const tw = 8;
+      for (let y = 0; y < h; y += tw) {
+        for (let x = 0; x < w; x += tw) {
+          ctx.fillStyle = ((x / tw + y / tw) & 1) ? "#2a2f35" : "#22262b";
+          ctx.fillRect(x, y, tw, tw);
+        }
+      }
+    }
+
+    #drawThumb(ctx, canvas, rgba, S) {
+      const off = document.createElement("canvas");
+      off.width = S; off.height = S;
+      off.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(rgba), S, S), 0, 0);
+      const scale = Math.min(canvas.width / S, canvas.height / S);
+      const dw = S * scale, dh = S * scale;
+      const ox = (canvas.width - dw) / 2, oy = (canvas.height - dh) / 2;
+      ctx.drawImage(off, ox, oy, dw, dh);
+    }
+
+    /** Buffers visuales color/normal/depth/ao de una celda renderizada. */
+    #cellMaps(cell, S) {
+      if (!cell?.color) return {};
+      const color = cell.color;
+      let normal = cell.normal;
+      if (!normal) {
+        normal = ensureCellNormal(color, null, S);
+      }
+      // depth → gris
+      const depthRgba = new Uint8ClampedArray(S * S * 4);
+      if (cell.depth) {
+        let min = Infinity, max = -Infinity;
+        for (let i = 0; i < S * S; i++) {
+          const d = cell.depth[i];
+          if (d === -Infinity || !Number.isFinite(d)) continue;
+          if (d < min) min = d;
+          if (d > max) max = d;
+        }
+        if (!Number.isFinite(min)) { min = 0; max = 1; }
+        const span = Math.max(1e-6, max - min);
+        for (let i = 0; i < S * S; i++) {
+          const a = color[i * 4 + 3];
+          const pi = i * 4;
+          if (a < 1) { depthRgba[pi + 3] = 0; continue; }
+          const d = cell.depth[i];
+          const v = Number.isFinite(d) && d !== -Infinity ? Math.round(((d - min) / span) * 255) : 128;
+          depthRgba[pi] = depthRgba[pi + 1] = depthRgba[pi + 2] = v;
+          depthRgba[pi + 3] = 255;
+        }
+      }
+      // AO solo
+      const ao = this.doc.ao || {};
+      let aoRgba = color;
+      if (cell.depth && ao.enabled !== false) {
+        aoRgba = applyScreenAO(color, cell.depth, S, S, {
+          strength: ao.strength ?? 0.5,
+          radius: ao.radius ?? 3,
+          samples: ao.samples ?? 12,
+        });
+      }
+      return { color, normal, depth: depthRgba, ao: aoRgba };
+    }
 
     renderGroupLayer(g, layerIndex) {
       if (!g || !g.layers || !g.layers[layerIndex]) return null;
@@ -2414,17 +2516,25 @@
       if (!this.activeCell) return;
       const off = document.createElement("canvas");
       off.width = S; off.height = S;
-      off.getContext("2d").putImageData(
-        new ImageData(new Uint8ClampedArray(this.activeCell.color), S, S), 0, 0);
-      ctx.drawImage(off, 0, 0, c.width, c.height);
+      let show = this.activeCell.color;
+      const pm = this.previewMap || "color";
+      if (pm !== "color") {
+        const maps = this.#cellMaps(this.activeCell, S);
+        if (maps[pm]) show = maps[pm];
+      }
+      if (show) {
+        off.getContext("2d").putImageData(
+          new ImageData(new Uint8ClampedArray(show), S, S), 0, 0);
+        ctx.drawImage(off, 0, 0, c.width, c.height);
+      }
 
       const g = this.group();
       const li = this.doc.selectedLayer;
-      const outlineLayer = (layerIndex, color) => {
+      const outlineLayer = (layerIndex, stroke) => {
         const solo = this.renderGroupLayer(g, layerIndex);
         if (!solo?.color) return;
         const rgba = solo.color;
-        ctx.fillStyle = color;
+        ctx.fillStyle = stroke;
         for (let y = 0; y < S; y++) {
           for (let x = 0; x < S; x++) {
             const a = rgba[(y * S + x) * 4 + 3];
@@ -2441,11 +2551,10 @@
       };
       if (g && !g.folder) {
         if (g.outline) {
-          const col = g.color || "rgba(255,210,90,0.85)";
-          const stroke = col.startsWith("#") ? col : "rgba(255,210,90,0.85)";
+          const col = (g.color && String(g.color).startsWith("#")) ? g.color : "rgba(255,210,90,0.85)";
           (g.layers || []).forEach((L, i) => {
             if (L.visible === false) return;
-            outlineLayer(i, stroke);
+            outlineLayer(i, col);
           });
         } else if (li >= 0 && g.layers?.[li]) {
           outlineLayer(li, "rgba(255, 210, 90, 0.9)");

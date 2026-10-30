@@ -31,11 +31,20 @@
   }
 
   /** Range + editable number + ↺ (shown while the value is not the default) + "?" with the explanation. */
-  function slider({ label, min, max, step = 1, value, unit = "", title = "", onInput, onChange, defaultValue = value }) {
+  function slider({ label, min, max, step = 1, value, unit = "", title = "", onInput, onChange, defaultValue }) {
+    min = Number(min); max = Number(max); step = Number(step) || 1;
+    if (!Number.isFinite(min)) min = 0;
+    if (!Number.isFinite(max)) max = min + 1;
+    if (max < min) max = min;
+    value = Number(value);
+    if (!Number.isFinite(value)) value = min;
+    if (defaultValue === undefined) defaultValue = value;
+    defaultValue = Number(defaultValue);
+    if (!Number.isFinite(defaultValue)) defaultValue = value;
     const range = h("input", { type: "range", min, max, step, value, "aria-label": label });
     const number = h("input", { type: "number", min, max, step, value, "aria-label": label });
-    const clamp = (v) => Math.min(Number(max), Math.max(Number(min), v));
-    let committed = Number(value);
+    const clamp = (v) => Math.min(max, Math.max(min, Number(v)));
+    let committed = value;
     const reset = h("button", { class: "ctl-reset", tabIndex: -1, title: "Volver a " + defaultValue + unit, onclick: () => api.set(defaultValue, true) }, "↺");
     const syncReset = () => { reset.classList.toggle("off", Number(range.value) === Number(defaultValue)); };
 
@@ -88,8 +97,13 @@
   }
 
   function select({ label, options, value, title = "", onChange }) {
+    options = Array.isArray(options) ? options.filter(Boolean) : [];
     const sel = h("select", { title, "aria-label": label },
-      options.map(([v, text]) => h("option", { value: v, selected: v === value }, text)));
+      options.map((opt) => {
+        const v = Array.isArray(opt) ? opt[0] : opt?.value;
+        const text = Array.isArray(opt) ? opt[1] : (opt?.label ?? String(v ?? ""));
+        return h("option", { value: v ?? "", selected: v === value }, text);
+      }));
     sel.addEventListener("change", () => onChange?.(sel.value));
     const el = label ? h("div", { class: "field" }, h("label", null, label, help(title)), sel) : sel;
     return { el, input: sel, get: () => sel.value, set: (v) => { sel.value = v; } };
