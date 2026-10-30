@@ -512,7 +512,8 @@
           h("button", { title: "Grupo organización", onclick: () => this.addGroup(false) }, "+ Grupo"),
           h("button", { class: "primary", title: "Celda multipart", onclick: () => this.addGroup(true) }, "+ Parte"),
           h("button", { title: "Carpeta (anida grupos)", onclick: () => this.addFolder() }, "+ Carpeta"),
-          h("button", { title: "Deshacer", onclick: () => this.undo() }, "↶")),
+          h("button", { title: "Deshacer (Ctrl+Z)", onclick: () => this.undo() }, "↶"),
+          h("button", { title: "Rehacer (Ctrl+Y)", onclick: () => this.redo() }, "↷")),
         h("div", { class: "cp-tool-group" },
           h("button", { title: "Ctrl+C", onclick: () => this.copyLayer() }, "Copiar"),
           h("button", { title: "Ctrl+X", onclick: () => this.cutLayer() }, "Cortar"),
@@ -577,10 +578,16 @@
         }, c, h("span", { class: "cp-view-card-label" }, mapLabels[mode]));
       });
       this.viewStrip = h("div", { class: "cp-view-strip" },
-        h("div", { class: "cp-view-strip-label" }, "Vistas del grupo activo"),
-        h("div", { class: "cp-view-strip-row", "data-row": "orient" }, ...viewCards),
-        h("div", { class: "cp-view-strip-label" }, "Mapas"),
-        h("div", { class: "cp-view-strip-row", "data-row": "maps" }, ...mapCards),
+        h("div", { class: "cp-view-strip-inline" },
+          h("div", { class: "cp-view-strip-block" },
+            h("div", { class: "cp-view-strip-label" }, "Orientación"),
+            h("div", { class: "cp-view-strip-row", "data-row": "orient" }, ...viewCards),
+          ),
+          h("div", { class: "cp-view-strip-block" },
+            h("div", { class: "cp-view-strip-label" }, "Mapas"),
+            h("div", { class: "cp-view-strip-row", "data-row": "maps" }, ...mapCards),
+          ),
+        ),
       );
 
       this.ensView = h("div", { class: "cp-view" }, this.ensembleCanvas);
@@ -589,20 +596,7 @@
       host.appendChild(h("div", { class: "cp cp-3col" },
         h("aside", { class: "cp-left" },
           h("div", { class: "cp-side-head" },
-            h("b", null, "Grupos / Partes"),
-            h("span", { class: "grow" }),
-            h("button", {
-              type: "button", class: "cp-mini-btn", title: "Grupo de organización",
-              onclick: () => this.addGroup(false),
-            }, "+ Grupo"),
-            h("button", {
-              type: "button", class: "cp-mini-btn primary", title: "Nueva celda multipart",
-              onclick: () => this.addGroup(true),
-            }, "+ Parte"),
-            h("button", {
-              type: "button", class: "cp-mini-btn", title: "Carpeta contenedora",
-              onclick: () => this.addFolder(),
-            }, "+ Carpeta")),
+            h("b", null, "Grupos / Partes")),
           this.groupList,
           h("div", { class: "cp-gen-block" },
             h("div", { class: "cp-side-head" }, h("b", null, "Generar")),
@@ -664,7 +658,8 @@
         else if (mod && e.key === "v") { e.preventDefault(); this.pasteLayer(); }
         else if (mod && e.key === "d") { e.preventDefault(); this.duplicateLayer(); }
         else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); this.removeSelected(); }
-        else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); this.undo(); }
+        else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); this.undo(); }
+        else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase() === "z"))) { e.preventDefault(); this.redo(); }
       });
     }
 
@@ -902,15 +897,41 @@
       this.touch();
     }
 
+    #captureSnap() {
+      const snap = {
+        selectedGroupId: this.doc.selectedGroupId,
+        selectedLayer: this.doc.selectedLayer,
+        groups: JSON.parse(JSON.stringify(this.doc.groups, (k, v) => {
+          if (v instanceof Uint8ClampedArray || v instanceof Float32Array) return null;
+          return v;
+        })),
+        pixels: {},
+      };
+      walkGroups(this.doc.groups, (g) => {
+        for (const L of g.layers || []) {
+          if (L.color) snap.pixels[L.id] = {
+            color: Array.from(L.color),
+            normal: L.normal ? Array.from(L.normal) : null,
+          };
+        }
+      });
+      return snap;
+    }
+
     undo() {
       if (!this._undo?.length) return;
-      const cur = this._undo.pop();
       this._redo = this._redo || [];
-      // push current before restore
-      const before = cur; // already popped current tip is the state to restore TO... 
-      // Fix: undo stack stores past states; on mutation we push. So pop and restore.
-      this.restoreSnap(before);
+      this._redo.push(this.#captureSnap());
+      this.restoreSnap(this._undo.pop());
       this.studio?.toast("Deshacer", { kind: "ok" });
+    }
+
+    redo() {
+      if (!this._redo?.length) return;
+      this._undo = this._undo || [];
+      this._undo.push(this.#captureSnap());
+      this.restoreSnap(this._redo.pop());
+      this.studio?.toast("Rehacer", { kind: "ok" });
     }
 
     // ── mutations ───────────────────────────────────────────────────────────
@@ -1353,6 +1374,7 @@
           oninput: (e) => { this.doc.filter = e.target.value; this.rebuildGroupList(); },
         }),
         h("button", { type: "button", title: "Deshacer (Ctrl+Z)", onclick: () => this.undo() }, "↶"),
+        h("button", { type: "button", title: "Rehacer (Ctrl+Y)", onclick: () => this.redo() }, "↷"),
       ];
     }
 
@@ -2455,36 +2477,59 @@
           new ImageData(new Uint8ClampedArray(show), W, H), 0, 0);
         ctx.drawImage(off, 0, 0, c.width, c.height);
       }
-      // Outline que engloba todo el contenido opaco del grupo/subárbol
       const g = this.group();
-      if (g && show) {
-        let minX = W, minY = H, maxX = 0, maxY = 0, any = false;
-        for (let y = 0; y < H; y++) {
-          for (let x = 0; x < W; x++) {
-            if (show[(y * W + x) * 4 + 3] < 8) continue;
-            any = true;
-            if (x < minX) minX = x;
-            if (y < minY) minY = y;
-            if (x > maxX) maxX = x;
-            if (y > maxY) maxY = y;
+      // 1) Outline por pieza (borde de cada capa del subárbol / grupo)
+      if (g) {
+        const pieces = drawableInSubtree(g);
+        const list = pieces.length ? pieces : (!g.folder && g.layers?.length ? [g] : []);
+        for (const pg of list) {
+          for (let li = 0; li < (pg.layers || []).length; li++) {
+            if (pg.layers[li].visible === false) continue;
+            const solo = this.renderGroupLayer(pg, li);
+            if (!solo?.color) continue;
+            const rgba = solo.color;
+            const sS = solo.size || S;
+            // Si la vista es multi, las piezas están en offsets distintos: outline solo en celda simple
+            if (cell.multi) continue;
+            ctx.fillStyle = "rgba(255, 210, 90, 0.75)";
+            for (let y = 0; y < sS; y++) {
+              for (let x = 0; x < sS; x++) {
+                const a = rgba[(y * sS + x) * 4 + 3];
+                if (a < 8) continue;
+                const edge =
+                  x === 0 || y === 0 || x === sS - 1 || y === sS - 1 ||
+                  rgba[(y * sS + x - 1) * 4 + 3] < 8 ||
+                  rgba[(y * sS + x + 1) * 4 + 3] < 8 ||
+                  rgba[((y - 1) * sS + x) * 4 + 3] < 8 ||
+                  rgba[((y + 1) * sS + x) * 4 + 3] < 8;
+                if (edge) ctx.fillRect(x * scale, y * scale, Math.max(1, scale), Math.max(1, scale));
+              }
+            }
           }
         }
-        if (any) {
-          ctx.strokeStyle = "rgba(255, 210, 90, 0.9)";
-          ctx.lineWidth = Math.max(2, Math.round(scale));
-          ctx.strokeRect(
-            minX * scale - 1,
-            minY * scale - 1,
-            (maxX - minX + 1) * scale + 2,
-            (maxY - minY + 1) * scale + 2,
-          );
+      }
+      // 2) Outline grupal: contorno externo de TODAS las piezas juntas (alpha del buffer show)
+      if (g && show) {
+        const alpha = (x, y) => {
+          if (x < 0 || y < 0 || x >= W || y >= H) return 0;
+          return show[(y * W + x) * 4 + 3];
+        };
+        ctx.fillStyle = "rgba(110, 207, 154, 0.95)";
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            if (alpha(x, y) < 8) continue;
+            const outer =
+              alpha(x - 1, y) < 8 || alpha(x + 1, y) < 8 ||
+              alpha(x, y - 1) < 8 || alpha(x, y + 1) < 8;
+            if (outer) ctx.fillRect(x * scale, y * scale, Math.max(1, scale), Math.max(1, scale));
+          }
         }
       }
 
       // Diamante guía solo en celda simple
       if (!cell.multi) {
         const hw = c.width / 2, hh = c.height / 4;
-        ctx.strokeStyle = "rgba(95, 211, 176, 0.45)";
+        ctx.strokeStyle = "rgba(95, 211, 176, 0.35)";
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(hw, 0.5);

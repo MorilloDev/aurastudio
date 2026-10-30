@@ -535,3 +535,25 @@
   border-radius: 10px;
 }
 .cp-tree-empty { padding: 12px; }
+
+/* Orientación + mapas en una sola franja horizontal */
+.cp-view-strip-inline {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 16px 24px;
+}
+.cp-view-strip-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.cp-view-strip-block .cp-view-strip-row {
+  flex-wrap: nowrap;
+}
+.cp-view-thumb {
+  width: 64px;
+  height: 64px;
+}
