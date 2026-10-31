@@ -1,0 +1,252 @@
+/* ============================================================
+   Aura Studio — diseño unificado (Composer) + sin scrolls basura
+   Cargar al FINAL de index.html
+   ============================================================ */
+
+:root {
+  --control-h: 32px;
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+/* App shell: sin scroll de página */
+html, body, #app {
+  overflow: hidden !important;
+  max-width: 100vw;
+}
+#app {
+  grid-template-rows: 48px minmax(0, 1fr) 26px;
+  height: 100vh;
+  height: 100dvh;
+}
+
+.shell-head {
+  height: 48px;
+  padding: 0 12px;
+  gap: 10px;
+}
+.shell-tab {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+.shell-status {
+  height: 26px;
+  min-height: 26px;
+  font-size: 11px;
+  padding: 0 10px;
+  gap: 10px;
+}
+
+/* Cada herramienta llena el área sin doble scroll */
+.shell-body,
+.tool-host.active {
+  overflow: hidden !important;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Raíces típicas de herramientas */
+.at,
+.bk, .pl, .bm, .st, .rc, .pt, .cp,
+.at > *, .bk > *, .pl > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Paneles laterales: scroll vertical solo si hace falta; nunca horizontal */
+.panel,
+.at-panel, .bk-panel, .bm-panel, .st-panel, .rc-panel, .pt-panel,
+.cp-left, .cp-right, .cp-props,
+.scroll {
+  overflow-x: hidden !important;
+  overflow-y: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Campos: no empujan el ancho del inspector */
+.field {
+  grid-template-columns: 72px minmax(0, 1fr) !important;
+  gap: 6px !important;
+  min-width: 0;
+  margin-bottom: 6px;
+}
+.field.check {
+  grid-template-columns: 18px minmax(0, 1fr) !important;
+}
+.field.slider {
+  grid-template-columns: 72px minmax(0, 1fr) !important;
+}
+.field.slider > .ctl {
+  min-width: 0 !important;
+  grid-template-columns: minmax(0, 1fr) 40px 14px !important;
+  gap: 4px !important;
+}
+.field.slider input[type=range] {
+  min-width: 0 !important;
+  width: 100% !important;
+}
+.field input,
+.field select,
+.field textarea {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  width: 100%;
+}
+
+/* Secciones / cards */
+.section {
+  min-width: 0;
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+}
+.section-body {
+  padding: 8px 10px 10px;
+  min-width: 0;
+}
+
+/* Toolbars de una fila: sin altura extra ni scroll vertical */
+.toolbar,
+.cp-toolbar,
+.bk-toolbar,
+.at-toolbar,
+.bm-toolbar,
+.st-toolbar,
+.rc-toolbar,
+.pt-toolbar {
+  flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  max-height: 40px;
+  min-height: 0;
+  align-items: center;
+}
+.toolbar::-webkit-scrollbar,
+.cp-toolbar::-webkit-scrollbar {
+  height: 3px;
+}
+
+/* Botones más compactos en barra */
+.toolbar button,
+.cp-toolbar button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+/* Atlas */
+.at {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 300px;
+  overflow: hidden;
+}
+.at-panel .field {
+  grid-template-columns: 72px minmax(0, 1fr) !important;
+}
+
+/* Blocks / plants overlay panels */
+.bk, .pl {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  display: grid;
+  min-height: 0;
+}
+.bk-panel .field {
+  grid-template-columns: 80px minmax(0, 1fr) !important;
+}
+.bk-strip {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  max-height: 120px;
+}
+
+/* Biomes / structures */
+.bm, .st {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Recipes */
+.rc {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  min-height: 0;
+}
+.rc-panel, .rc-side {
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+/* Particles */
+.pt {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Composer grid (refuerzo) */
+.cp.cp-3col {
+  overflow: hidden;
+  min-height: 0;
+}
+.cp-workflow { display: none !important; }
+.cp-3col .cp-props {
+  overflow-x: hidden !important;
+}
+
+/* Listas: filas compactas */
+.list-item, .bm-item, .at-tile, .at-sheet, .rc-item, .pt-item {
+  min-width: 0;
+}
+.list-item .grow,
+.at-tile .grow,
+.at-sheet .path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Evitar que inputs number/select rompan el layout */
+input[type=number] {
+  min-width: 0;
+}
+select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Canvas hosts no generan scroll propio raro */
+.stage, .view, .cp-view, .bk-stage, .at-stage {
+  overflow: auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Responsive: paneles no fuerzan ancho */
+@media (max-width: 1100px) {
+  .at {
+    grid-template-columns: 200px minmax(0, 1fr) 260px;
+  }
+  .cp.cp-3col {
+    grid-template-columns: 200px minmax(0, 1fr) 250px;
+  }
+}
+@media (max-width: 900px) {
+  .at {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+}

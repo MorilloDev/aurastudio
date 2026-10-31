@@ -223,3 +223,13 @@ input[type="text"], input[type="search"], input[type="number"], input:not([type]
 input[type="text"]:focus, input[type="search"]:focus, input[type="number"]:focus, select:focus, textarea:focus {
   border-color: rgba(110, 207, 154, 0.45);
 }
+
+
+/* studio shell minmax — evita scroll fantasma del body */
+#app, .shell-body, .tool-host {
+  min-height: 0;
+  min-width: 0;
+}
+.tool-host.active > * {
+  max-height: 100%;
+}
