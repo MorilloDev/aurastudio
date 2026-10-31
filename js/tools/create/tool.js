@@ -44,7 +44,7 @@
           h("div", { class: "cr-overlay-foot" },
             h("span", { class: "hint cr-apply-hint" }, "El resultado se añade al Composer (grupo activo)."),
             h("button", { type: "button", onclick: () => this.closeOverlay() }, "Cancelar"),
-            h("button", {
+            this.applyBtn = h("button", {
               type: "button", class: "primary",
               onclick: () => this.applyGenerator(),
             }, "Aplicar al Composer"))));
@@ -74,29 +74,63 @@
 
     openGenerator(mode) {
       this.overlayMode = mode;
+      this.editMode = false;
       this.blocksHost.hidden = mode !== "blocks";
       this.plantsHost.hidden = mode !== "plants";
       if (mode === "blocks") {
         this.overlayTitle.textContent = "Bloque";
         this.overlayTag.textContent = "generador";
         this.overlayHint.textContent = "AO del motor sí · al aplicar = 1 capa";
+        this.blocks.clearEditTarget?.();
         this.blocks.activate?.();
       } else {
         this.overlayTitle.textContent = "Planta";
         this.overlayTag.textContent = "follaje";
         this.overlayHint.textContent = "Sin AO · multipart → una capa por celda";
+        this.plants.clearEditTarget?.();
         this.plants.activate?.();
       }
+      if (this.applyBtn) this.applyBtn.textContent = "Aplicar al Composer";
+      this.overlay.hidden = false;
+      this.overlay.classList.add("open");
+    }
+
+    /** Reeditar una capa del Composer: carga receta y al aplicar reemplaza esa capa. */
+    openGeneratorForEdit(mode, recipe, replaceTarget) {
+      this.overlayMode = mode;
+      this.editMode = true;
+      this.blocksHost.hidden = mode !== "blocks";
+      this.plantsHost.hidden = mode !== "plants";
+      if (mode === "blocks") {
+        this.overlayTitle.textContent = "Bloque · reeditar capa";
+        this.overlayTag.textContent = "receta";
+        this.overlayHint.textContent = "Al aplicar se actualiza la misma capa en el Composer";
+        this.blocks.editTarget = replaceTarget || null;
+        this.blocks.loadRecipe?.(recipe);
+        this.blocks.activate?.();
+      } else {
+        this.overlayTitle.textContent = "Planta · reeditar capa";
+        this.overlayTag.textContent = "receta";
+        this.overlayHint.textContent = "Al aplicar se actualiza la misma capa en el Composer";
+        this.plants.editTarget = replaceTarget || null;
+        this.plants.loadRecipe?.(recipe);
+        this.plants.activate?.();
+      }
+      if (this.applyBtn) this.applyBtn.textContent = "Aplicar cambios → Composer";
       this.overlay.hidden = false;
       this.overlay.classList.add("open");
     }
 
     closeOverlay() {
       this.overlayMode = null;
+      this.editMode = false;
       this.overlay.hidden = true;
       this.overlay.classList.remove("open");
+      this.blocks.clearEditTarget?.();
+      this.plants.clearEditTarget?.();
       this.blocks.deactivate?.();
       this.plants.deactivate?.();
+      if (this.applyBtn) this.applyBtn.textContent = "Aplicar al Composer";
       this.composer.activate?.();
     }
 

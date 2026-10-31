@@ -49,7 +49,7 @@
 
   function spriteLayerFromResult(result, meta = {}) {
     const size = result.size || result.w || 64;
-    return {
+    const layer = {
       id: uid(),
       kind: "sprite",
       name: meta.name || meta.source || "Sprite",
@@ -68,6 +68,8 @@
       params: {},
       rot3d: { x: 0, y: 0, z: 0 },
     };
+    if (meta.recipe) layer.recipe = meta.recipe;
+    return layer;
   }
 
   function defaultGroup(i = 0, multipart = false, folder = false) {
@@ -895,6 +897,27 @@
       return g.layers[i];
     }
 
+
+    /** Abre Bloque/Planta con la receta de la capa y marca reemplazo al aplicar. */
+    editSelectedInGenerator() {
+      const g = this.group();
+      const L = this.layer();
+      if (!L?.recipe) {
+        this.studio?.toast("Esta capa no tiene receta de generador", { kind: "warn" });
+        return;
+      }
+      const kind = L.recipe.kind || (L.source === "planta" ? "plants" : "blocks");
+      const create = this.studio?.tools?.find?.((x) => x.id === "create");
+      if (!create?.openGeneratorForEdit) {
+        this.studio?.toast("Hub Crear no disponible", { kind: "warn" });
+        return;
+      }
+      create.openGeneratorForEdit(kind === "plants" ? "plants" : "blocks", L.recipe, {
+        groupId: g.id,
+        layerId: L.id,
+      });
+    }
+
     selectGroup(id, layerIndex = -1) {
       this.doc.selectedGroupId = id;
       this.doc.selectedLayer = layerIndex;
@@ -1149,6 +1172,7 @@
           const layer = spriteLayerFromResult(part, {
             name: baseName + " p" + (k + 1),
             source: meta.source || "planta",
+            recipe: meta.recipe || null,
           });
           if (part.depth) layer.depth = new Uint8ClampedArray(part.depth);
           g.layers = [layer];
@@ -1187,7 +1211,7 @@
           g.offsetX = idx; g.offsetY = 0; g.offsetZ = 0;
           const layer = spriteLayerFromResult({
             color: o.color, normal: o.normal, depth: o.depth, size: o.size || size,
-          }, { name: g.name, source: meta.source });
+          }, { name: g.name, source: meta.source, recipe: meta.recipe || null });
           g.layers = [layer];
           this.doc.groups.push(g);
           idx++;
@@ -1213,19 +1237,48 @@
       if (single.size) this.doc.size = Math.max(this.doc.size || 64, single.size);
       if (meta.view && VIEW_LIST.includes(meta.view)) g.view = meta.view;
 
-      const L = this.layer();
-      if (L) {
-        L.kind = "sprite";
-        L.name = layer.name || L.name;
-        L.color = layer.color;
-        L.normal = layer.normal;
-        L.depth = layer.depth || null;
-        L.size = layer.size;
-        L.source = layer.source;
-        L.shape = null;
+      // Reemplazo explícito (reeditar) o capa seleccionada → actualiza in-place
+      let target = null;
+      let targetG = g;
+      const rt = meta.replaceTarget;
+      if (rt?.groupId && rt?.layerId) {
+        const find = (gs) => {
+          for (const x of gs || []) {
+            if (x.id === rt.groupId) {
+              const li = (x.layers || []).findIndex((L) => L.id === rt.layerId);
+              if (li >= 0) return { g: x, li };
+            }
+            const nested = find(x.children);
+            if (nested) return nested;
+          }
+          return null;
+        };
+        const hit = find(this.doc.groups);
+        if (hit) {
+          targetG = hit.g;
+          target = hit.g.layers[hit.li];
+          this.doc.selectedGroupId = hit.g.id;
+          this.doc.selectedLayer = hit.li;
+        }
+      }
+      if (!target) target = this.layer();
+
+      if (target) {
+        target.kind = "sprite";
+        if (layer.name) target.name = layer.name;
+        target.color = layer.color;
+        target.normal = layer.normal;
+        target.depth = layer.depth || null;
+        target.size = layer.size;
+        target.source = layer.source || target.source;
+        target.shape = null;
+        if (meta.recipe) target.recipe = meta.recipe;
+        else if (layer.recipe) target.recipe = layer.recipe;
       } else {
-        g.layers.push(layer);
-        this.doc.selectedLayer = g.layers.length - 1;
+        targetG.layers.push(layer);
+        ensureEntries(targetG);
+        this.doc.selectedGroupId = targetG.id;
+        this.doc.selectedLayer = targetG.layers.length - 1;
       }
       this.dirty = true;
       this.touch();
@@ -1288,6 +1341,7 @@
             shape: l.shape, params: l.params, rot3d: l.rot3d,
             size: l.size, source: l.source,
           };
+          if (l.recipe) row.recipe = l.recipe;
           // Persist pixel buffers so refresh keeps work (localStorage)
           if (l.color && l.color.length) row.color = Array.from(l.color);
           if (l.normal && l.normal.length) row.normal = Array.from(l.normal);
@@ -1975,6 +2029,16 @@
       }
 
       // ═══ SOLO CAPA (grupo no se mezcla) ═══
+      const editBtn = L.recipe
+        ? h("button", {
+            type: "button", class: "primary",
+            style: "width:100%;margin-top:6px",
+            title: "Reabre el generador con esta receta y al aplicar actualiza esta misma capa",
+            onclick: () => this.editSelectedInGenerator(),
+          }, L.recipe.kind === "plants" || L.source === "planta"
+            ? "✎ Editar en planta"
+            : "✎ Editar en bloque")
+        : null;
       kids.push(section({ id: "cp-sel-layer", title: "Capa" },
         h("label", { class: "field" }, h("span", null, "Nombre"),
           h("input", {
@@ -2001,8 +2065,10 @@
           h("span", null, "Visible")),
         h("p", { class: "note" },
           L.kind === "sprite"
-            ? ("Raster (" + (L.source || "sprite") + ", " + (L.size || this.doc.size) + "px)")
+            ? ("Raster (" + (L.source || "sprite") + ", " + (L.size || this.doc.size) + "px)"
+              + (L.recipe ? " · receta ✓" : ""))
             : "Forma procedural"),
+        editBtn,
       ).el);
 
       if (L.kind !== "sprite") {

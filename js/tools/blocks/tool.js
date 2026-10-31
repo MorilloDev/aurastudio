@@ -197,6 +197,37 @@
       prefs.set(PREFS_KEY, { o: this.o, piece: this.piece, cellSize: this.cellSize, exportScale: this.exportScale, tint: this.tint });
     }
 
+    /** Snapshot de opciones para guardar en la capa del Composer. */
+    getRecipe() {
+      return {
+        kind: "blocks",
+        o: structuredClone(this.o),
+        piece: structuredClone(this.piece),
+        cellSize: this.cellSize,
+        exportScale: this.exportScale,
+        tint: structuredClone(this.tint),
+      };
+    }
+
+    /** Carga una receta (desde Composer). */
+    loadRecipe(recipe) {
+      if (!recipe || recipe.kind === "plants") return;
+      try {
+        this.o = E.merge(recipe.o || {});
+        this.piece = mergePiece(recipe.piece || {});
+        if (recipe.cellSize != null) this.cellSize = recipe.cellSize;
+        if (recipe.exportScale != null) this.exportScale = recipe.exportScale;
+        if (recipe.tint) this.tint = Tint.merge(recipe.tint);
+        this.#save();
+        this.#rebuildPanel?.();
+        this.#schedule?.();
+      } catch (err) {
+        console.warn("loadRecipe blocks", err);
+      }
+    }
+
+    clearEditTarget() { this.editTarget = null; }
+
     // ---------------------------------------------------------------------------------------------------------------
     // Layout
 
@@ -1247,20 +1278,30 @@
       const payload = all.length > 1 && Object.keys(orientations).length
         ? { size: this.result.size, color: this.result.color, normal: this.result.normal, orientations }
         : this.result;
-      const ok = Aura.composerTool?.queueResult?.(payload, { name, source: "bloque" });
+      const meta = {
+        name,
+        source: "bloque",
+        recipe: this.getRecipe(),
+        replaceTarget: this.editTarget || null,
+      };
+      const ok = Aura.composerTool?.queueResult?.(payload, meta);
       if (!ok) {
         this.studio.toast("Composer no disponible", { kind: "warn" });
         return false;
       }
+      const wasEdit = !!this.editTarget;
+      this.editTarget = null;
       if (!fromHub) {
         try { Aura.storage.prefs.set("create:mode", "composer"); } catch {}
         this.studio.activate?.("create");
         this.studio.tools?.find?.((t) => t.id === "create")?.show?.("composer");
       }
       const n = Object.keys(orientations).length || 1;
-      this.studio.toast(n > 1
-        ? ("Bloque: " + n + " orientaciones en el Composer")
-        : "Bloque añadido al Composer", { kind: "ok" });
+      this.studio.toast(wasEdit
+        ? "Capa actualizada en el Composer"
+        : (n > 1
+          ? ("Bloque: " + n + " orientaciones en el Composer")
+          : "Bloque añadido al Composer"), { kind: "ok" });
       return true;
     }
 

@@ -124,6 +124,42 @@
       prefs.set(PREFS_KEY, { type: this.type, byType: this.byType, render: this.rDefault, renderByType: this.rByType, variants: this.variants, exportScale: this.exportScale, tint: this.tint });
     }
 
+    getRecipe() {
+      return {
+        kind: "plants",
+        type: this.type,
+        byType: structuredClone(this.byType),
+        render: structuredClone(this.rDefault),
+        renderByType: structuredClone(this.rByType),
+        variants: structuredClone(this.variants),
+        exportScale: this.exportScale,
+        tint: structuredClone(this.tint),
+      };
+    }
+
+    loadRecipe(recipe) {
+      if (!recipe || recipe.kind === "blocks") return;
+      try {
+        if (recipe.type) this.type = recipe.type;
+        if (recipe.byType) this.byType = recipe.byType;
+        if (recipe.render) this.rDefault = R.merge(recipe.render);
+        if (recipe.renderByType) {
+          this.rByType = {};
+          for (const [k, v] of Object.entries(recipe.renderByType)) this.rByType[k] = R.merge(v);
+        }
+        if (recipe.variants) this.variants = { ...this.variants, ...recipe.variants };
+        if (recipe.exportScale != null) this.exportScale = recipe.exportScale;
+        if (recipe.tint) this.tint = Tint.merge(recipe.tint);
+        this.#save();
+        this.#rebuildPanel?.();
+        this.#schedule?.();
+      } catch (err) {
+        console.warn("loadRecipe plants", err);
+      }
+    }
+
+    clearEditTarget() { this.editTarget = null; }
+
     // ---------------------------------------------------------------------------------------------------------------
     // Layout
 
@@ -872,20 +908,30 @@
         return false;
       }
       const name = this.type || "planta";
-      const ok = Aura.composerTool?.queueResult?.(this.result, { name, source: "planta" });
+      const meta = {
+        name,
+        source: "planta",
+        recipe: this.getRecipe(),
+        replaceTarget: this.editTarget || null,
+      };
+      const ok = Aura.composerTool?.queueResult?.(this.result, meta);
       if (!ok) {
         this.studio.toast("Composer no disponible", { kind: "warn" });
         return false;
       }
+      const wasEdit = !!this.editTarget;
+      this.editTarget = null;
       if (!fromHub) {
         try { Aura.storage.prefs.set("create:mode", "composer"); } catch {}
         this.studio.activate?.("create");
         this.studio.tools?.find?.((t) => t.id === "create")?.show?.("composer");
       }
       const n = this.result.parts?.length || 1;
-      this.studio.toast(n > 1
-        ? ("Planta multipart: " + n + " partes en el Composer")
-        : "Planta añadida al Composer", { kind: "ok" });
+      this.studio.toast(wasEdit
+        ? "Capa actualizada en el Composer"
+        : (n > 1
+          ? ("Planta multipart: " + n + " partes en el Composer")
+          : "Planta añadida al Composer"), { kind: "ok" });
       return true;
     }
 
