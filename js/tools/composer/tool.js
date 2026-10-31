@@ -1900,10 +1900,10 @@
         this.#debouncedSave();
         this.rebuildGroupList();
       };
-      // Sin grupo seleccionado: inspector vacío (no error).
+      // Sin selección: vacío
       if (!g) {
         this.propsHost.replaceChildren(
-          h("p", { class: "note" }, "Ningún grupo seleccionado. Crea un grupo o parte, o elige uno en la lista."));
+          h("p", { class: "note" }, "Nada seleccionado. Elige un grupo o una capa en la jerarquía."));
         return;
       }
 
@@ -1911,92 +1911,99 @@
       const ao = this.doc.ao || (this.doc.ao = { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true });
       const setAo = (fn) => { fn(); this.schedule(true); this.#debouncedSave(); };
 
-      // ── Esenciales del grupo (arriba del todo, sección propia) ──
-      const curView = VIEW_LIST.includes(g.view) ? g.view : "front";
-      kids.push(section({ id: "cp-group-essentials", title: "Grupo" },
+      // ═══ SOLO GRUPO (sin capa seleccionada) — como Unity: un objeto = un inspector ═══
+      if (!L) {
+        const curView = VIEW_LIST.includes(g.view) ? g.view : "front";
+        kids.push(section({ id: "cp-sel-group", title: "Grupo" },
+          h("label", { class: "field" }, h("span", null, "Nombre"),
+            h("input", {
+              value: g.name || "",
+              oninput: (e) => {
+                g.name = e.target.value;
+                const head = this.groupList?.querySelector(".cp-group-head.active .cp-group-name");
+                if (head) head.textContent = g.name;
+                this.#debouncedSave();
+              },
+              onchange: () => this.#debouncedSave(),
+            })),
+          h("label", { class: "field check" },
+            h("input", {
+              type: "checkbox", checked: g.multipart || null,
+              onchange: (e) => setTree(() => { g.multipart = e.target.checked; this.rebuildProps(); }),
+            }),
+            h("span", null, "Multipart")),
+          h("div", { class: "field" },
+            h("label", null, "Vista"),
+            h("select", {
+              onchange: (e) => {
+                g.view = e.target.value;
+                this.dirty = true;
+                this.schedule(true);
+                this.#debouncedSave();
+                this.rebuildGroupList();
+              },
+            },
+              ...VIEW_LIST.map((v) => h("option", {
+                value: v,
+                selected: v === curView || null,
+              }, v === "front" ? "Front" : v.charAt(0).toUpperCase() + v.slice(1))),
+            )),
+          h("label", { class: "field check" },
+            h("input", {
+              type: "checkbox", checked: g.locked || null,
+              onchange: (e) => { g.locked = e.target.checked; this.touch(); },
+            }),
+            h("span", null, "Bloquear")),
+        ).el);
+
+        if (g.multipart) {
+          kids.push(section({ id: "cp-cell", title: "Celda" },
+            this.gNum(g, "offsetX", "Offset X", -4, 4, setTree),
+            this.gNum(g, "offsetY", "Offset Y", -4, 4, setTree),
+            this.gNum(g, "offsetZ", "Offset Z", -4, 4, setTree),
+          ).el);
+        }
+
+        if (!(g.layers && g.layers.length)) {
+          kids.push(h("p", { class: "note" }, "Sin capas. Añade forma o aplica bloque/planta."));
+          kids.push(h("button", { type: "button", class: "primary", onclick: () => this.addShapeLayer() }, "+ Forma"));
+        }
+
+        this.#pushDocSections(kids, setAo, ao);
+        this.propsHost.replaceChildren(...kids);
+        return;
+      }
+
+      // ═══ SOLO CAPA (grupo no se mezcla) ═══
+      kids.push(section({ id: "cp-sel-layer", title: "Capa" },
         h("label", { class: "field" }, h("span", null, "Nombre"),
           h("input", {
-            value: g.name || "",
+            value: L.name || "",
             oninput: (e) => {
-              g.name = e.target.value;
-              const head = this.groupList?.querySelector(".cp-group-head.active .cp-group-name");
-              if (head) head.textContent = g.name;
+              L.name = e.target.value;
+              const row = this.groupList?.querySelector(".cp-layer.active .cp-row-name, .cp-layer.active .cp-layer-name");
+              if (row) row.textContent = L.name;
               this.#debouncedSave();
             },
             onchange: () => this.#debouncedSave(),
           })),
         h("label", { class: "field check" },
           h("input", {
-            type: "checkbox", checked: g.multipart || null,
-            onchange: (e) => setTree(() => { g.multipart = e.target.checked; this.rebuildProps(); }),
-          }),
-          h("span", null, "Multipart")),
-        h("div", { class: "field" },
-          h("label", null, "Vista"),
-          h("select", {
-            onchange: (e) => {
-              g.view = e.target.value;
-              this.dirty = true;
-              this.schedule(true);
-              this.#debouncedSave();
-              this.rebuildGroupList();
-            },
-          },
-            ...VIEW_LIST.map((v) => h("option", {
-              value: v,
-              selected: v === curView || null,
-            }, v === "front" ? "Front" : v.charAt(0).toUpperCase() + v.slice(1))),
-          )),
-        h("label", { class: "field check" },
-          h("input", {
-            type: "checkbox", checked: g.locked || null,
-            onchange: (e) => { g.locked = e.target.checked; this.touch(); },
+            type: "checkbox", checked: L.locked || null,
+            onchange: (e) => { L.locked = e.target.checked; this.touch(); },
           }),
           h("span", null, "Bloquear")),
+        h("label", { class: "field check" },
+          h("input", {
+            type: "checkbox", checked: L.visible !== false || null,
+            onchange: (e) => { L.visible = e.target.checked; this.touch(); this.schedule(true); },
+          }),
+          h("span", null, "Visible")),
+        h("p", { class: "note" },
+          L.kind === "sprite"
+            ? ("Raster (" + (L.source || "sprite") + ", " + (L.size || this.doc.size) + "px)")
+            : "Forma procedural"),
       ).el);
-
-      if (g.multipart) {
-        kids.push(section({ id: "cp-cell", title: "Celda de esta parte" },
-          h("p", { class: "note" }, "Otro offset = otra celda en el conjunto / Atlas."),
-          this.gNum(g, "offsetX", "Offset X", -4, 4, set),
-          this.gNum(g, "offsetY", "Offset Y", -4, 4, set),
-          this.gNum(g, "offsetZ", "Offset Z", -4, 4, set),
-        ).el);
-      } else {
-        kids.push(h("p", { class: "note" }, "Sin multipart: se dibuja en ancla (0,0,0)."));
-      }
-
-      if (!L) {
-        kids.push(h("div", { class: "cp-sub" }, "Capa"));
-        if (g.layers && g.layers.length) {
-          kids.push(h("p", { class: "note" },
-            "Este grupo tiene " + g.layers.length + " capa(s). Selecciona una en el árbol para editarla."));
-        } else {
-          kids.push(h("p", { class: "note" },
-            "Sin capas. Añade forma o aplica bloque/planta."));
-          kids.push(h("button", { type: "button", class: "primary", onclick: () => this.addShapeLayer() }, "+ Forma"));
-        }
-        this.#pushDocSections(kids, setAo, ao);
-        this.propsHost.replaceChildren(...kids);
-        return;
-      }
-
-      kids.push(h("div", { class: "cp-sub" }, "Capa"));
-      kids.push(h("label", { class: "field" }, h("span", null, "Nombre"),
-        h("input", {
-          value: L.name,
-          oninput: (e) => {
-            L.name = e.target.value;
-            const row = this.groupList?.querySelector(".cp-layer.active .cp-layer-name");
-            if (row) row.textContent = L.name;
-            this.savePrefsMeta();
-          },
-          onchange: () => this.savePrefsMeta(),
-        })));
-      kids.push(h("p", { class: "note" },
-        L.kind === "sprite"
-          ? ("Raster (" + (L.source || "sprite") + ", " + (L.size || this.doc.size) + "px).")
-          : "Forma procedural."));
 
       if (L.kind !== "sprite") {
         kids.push(select({
@@ -2005,10 +2012,10 @@
           onChange: (v) => set(() => { L.shape = v; this.rebuildProps(); }),
         }).el);
         for (const el of this.paramControls(L, set)) kids.push(el);
-        kids.push(section({ id: "cp-rot", title: "Rotaci\u00f3n 3D" },
-          this.lNum(L, "rot3d.x", "Rot X\u00b0", -180, 180, set),
-          this.lNum(L, "rot3d.y", "Rot Y\u00b0", -180, 180, set),
-          this.lNum(L, "rot3d.z", "Rot Z\u00b0", -180, 180, set),
+        kids.push(section({ id: "cp-rot", title: "Rotación 3D" },
+          this.lNum(L, "rot3d.x", "Rot X°", -180, 180, set),
+          this.lNum(L, "rot3d.y", "Rot Y°", -180, 180, set),
+          this.lNum(L, "rot3d.z", "Rot Z°", -180, 180, set),
         ).el);
       }
 
@@ -2020,11 +2027,7 @@
         lim = c; L.shiftX = c.x; L.shiftY = c.y;
       }
 
-      kids.push(section({ id: "cp-shift", title: "Mover dentro de la celda del grupo" },
-        h("p", { class: "note" },
-          "L\u00edmite X " + lim.minSx + "\u2026" + lim.maxSx + ", Y " + lim.minSy + "\u2026" + lim.maxSy +
-          (lim.minSx === 0 && lim.maxSx === 0 && lim.minSy === 0 && lim.maxSy === 0
-            ? " (arte a celda completa)." : ".")),
+      kids.push(section({ id: "cp-shift", title: "Posición en celda" },
         this.lNum(L, "shiftX", "Shift X", lim.minSx, lim.maxSx, (fn) => {
           fn();
           if (src?.color) { const c = clampShift(src.color, size, L.shiftX, L.shiftY); L.shiftX = c.x; L.shiftY = c.y; }
@@ -2035,12 +2038,12 @@
           if (src?.color) { const c = clampShift(src.color, size, L.shiftX, L.shiftY); L.shiftX = c.x; L.shiftY = c.y; }
           this.savePrefsMeta(); this.schedule();
         }, null, 1),
-        h("button", { onclick: () => set(() => { L.shiftX = 0; L.shiftY = 0; this.rebuildProps(); }) }, "Centrar"),
+        h("button", { type: "button", onclick: () => set(() => { L.shiftX = 0; L.shiftY = 0; this.rebuildProps(); }) }, "Centrar"),
       ).el);
 
-      kids.push(section({ id: "cp-blend", title: "Fusi\u00f3n y tint" },
+      kids.push(section({ id: "cp-blend", title: "Fusión y tint" },
         select({
-          label: "Modo fusi\u00f3n", value: L.blend || "normal",
+          label: "Modo fusión", value: L.blend || "normal",
           options: BLENDS,
           onChange: (v) => set(() => { L.blend = v; }),
         }).el,
@@ -2050,7 +2053,7 @@
             type: "color", value: L.tint || "#ffffff",
             oninput: (e) => set(() => { L.tint = e.target.value; }),
           }),
-          h("button", { onclick: () => set(() => { L.tint = null; this.rebuildProps(); }) }, "Sin tint")),
+          h("button", { type: "button", onclick: () => set(() => { L.tint = null; this.rebuildProps(); }) }, "Sin tint")),
       ).el);
 
       this.#pushDocSections(kids, setAo, ao);
