@@ -76,6 +76,7 @@
 .bm-panel { background: #1e232c; }
 .bm-view {
   background: var(--bg-deep, #0c0e12);
+  border-radius: 0 !important;
 }
 
 /* ── organic biomes v2 ── */
@@ -121,9 +122,8 @@
   border-left: 1px solid var(--line);
 }
 .bm-view, .bm-canvas-wrap, .bm-stage {
-  background:
-    radial-gradient(ellipse at 50% 40%, rgba(110, 207, 154, 0.04), transparent 55%),
-    var(--bg-deep, #0c0e12) !important;
+  background: var(--bg-deep, #0c0e12) !important;
+  border-radius: 0 !important;
 }
 .bm-search, .bm-side input[type="search"] {
   border-radius: 999px !important;

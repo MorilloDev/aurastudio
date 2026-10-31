@@ -32,6 +32,7 @@
 }
 .st-view, .st-stage {
   background: var(--bg-deep, #0c0e12);
+  border-radius: 0 !important;
 }
 
 /* ── organic structures v2 ── */
@@ -57,9 +58,8 @@
   font-weight: 700;
 }
 .st-view, .st-stage, .st-canvas-wrap {
-  background:
-    radial-gradient(ellipse at 50% 45%, rgba(110, 207, 154, 0.05), transparent 50%),
-    var(--bg-deep, #0c0e12) !important;
+  background: var(--bg-deep, #0c0e12) !important;
+  border-radius: 0 !important;
 }
 .st-panel, .st-insp {
   background: #1e232c !important;
