@@ -247,7 +247,7 @@
       offsetX: num(g.offsetX ?? base.offsetX),
       offsetY: num(g.offsetY ?? base.offsetY),
       offsetZ: num(g.offsetZ ?? base.offsetZ),
-      view: ["front","back","inverted","horizontal"].includes(g.view) ? g.view : "front",
+      view: ["front","back","inverted","horizontal"].includes(g.view) ? g.view : "front", // default front
       children,
       layers,
     };
@@ -1401,6 +1401,16 @@
         const isSel = g.id === this.doc.selectedGroupId;
         const depthCls = "cp-depth-" + Math.min(depth, 4);
 
+        const viewTag = (VIEW_LIST.includes(g.view) ? g.view : "front");
+        const tags = [];
+        if (g.folder) tags.push(h("span", { class: "cp-tag muted" }, "carpeta"));
+        else if (g.multipart) {
+          tags.push(h("span", { class: "cp-tag mp" },
+            "MP " + (g.offsetX | 0) + "," + (g.offsetY | 0) + "," + (g.offsetZ | 0)));
+        } else tags.push(h("span", { class: "cp-tag muted" }, "grupo"));
+        if (viewTag && viewTag !== "front") tags.push(h("span", { class: "cp-tag view" }, viewTag));
+        if (g.locked) tags.push(h("span", { class: "cp-tag muted" }, "🔒"));
+
         const head = h("div", {
           class: ["cp-row", "cp-group-head", isSel && this.doc.selectedLayer < 0 && "active",
             g.multipart && "multipart", g.folder && "folder", g.locked && "locked", depthCls],
@@ -1428,14 +1438,10 @@
             type: "button", class: "cp-collapse",
             onclick: (e) => { e.stopPropagation(); g.collapsed = !g.collapsed; this.rebuildGroupList(); },
           }, g.collapsed ? "▸" : "▾"),
-          h("span", { class: "cp-row-name" }, g.folder ? "📁 " + g.name : g.name),
-          g.locked ? h("span", { class: "cp-tag muted" }, "🔒") : null,
-          g.folder
-            ? h("span", { class: "cp-tag muted" }, "carpeta")
-            : g.multipart
-              ? h("span", { class: "cp-tag mp" }, (g.offsetX | 0) + "," + (g.offsetY | 0) + "," + (g.offsetZ | 0))
-              : h("span", { class: "cp-tag muted" }, "grupo"),
-          g.view && g.view !== "front" ? h("span", { class: "cp-tag view" }, g.view) : null,
+          h("div", { class: "cp-row-main" },
+            h("span", { class: "cp-row-name" }, g.folder ? "📁 " + g.name : g.name),
+            tags.length ? h("div", { class: "cp-row-tags" }, ...tags) : null,
+          ),
           !g.folder ? h("button", {
             type: "button",
             class: ["cp-mp-btn", g.multipart && "on"],
@@ -1451,7 +1457,7 @@
                     used.add((Number(x.offsetX)|0) + "," + (Number(x.offsetY)|0) + "," + (Number(x.offsetZ)|0));
                 });
                 let key = (Number(g.offsetX)|0) + "," + (Number(g.offsetY)|0) + "," + (Number(g.offsetZ)|0);
-                if (used.has(key)) {
+                if (used.has(key) || (key === "0,0,0" && used.size)) {
                   let x = 0;
                   while (used.has(x + ",0,0")) x++;
                   g.offsetX = x; g.offsetY = 0; g.offsetZ = 0;
@@ -1471,6 +1477,13 @@
               if (li < 0) continue;
               const L = g.layers[li];
               if (filter && !(L.name || "").toLowerCase().includes(filter) && !(g.name || "").toLowerCase().includes(filter)) continue;
+              const lTags = [
+                h("span", { class: "cp-tag muted" },
+                  L.kind === "sprite"
+                    ? ((L.source || "sprite") + (L.recipe ? " · receta" : ""))
+                    : (L.shape || "shape")),
+              ];
+              if (L.locked) lTags.push(h("span", { class: "cp-tag muted" }, "🔒"));
               const row = h("div", {
                 class: ["cp-row", "cp-layer", isSel && li === this.doc.selectedLayer && "active", L.locked && "locked", depthCls],
                 style: { "--d": depth + 1 },
@@ -1497,8 +1510,11 @@
                     this.rebuildGroupList();
                   },
                 }),
-                h("span", { class: "cp-row-name" }, L.name || "Capa"),
-                h("span", { class: "cp-tag muted" }, L.kind === "sprite" ? (L.source || "sprite") : (L.shape || "shape")),
+                h("span", { class: "cp-collapse-spacer" }),
+                h("div", { class: "cp-row-main" },
+                  h("span", { class: "cp-row-name" }, L.name || "Capa"),
+                  h("div", { class: "cp-row-tags" }, ...lTags),
+                ),
               );
               frag.push(row);
             } else if (ent.type === "group") {

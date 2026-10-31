@@ -1204,3 +1204,63 @@
 .cp-depth-1 { margin-left: 8px !important; padding-left: 6px !important; }
 .cp-depth-2 { margin-left: 8px !important; padding-left: 6px !important; }
 .cp-depth-3 { margin-left: 8px !important; padding-left: 6px !important; }
+
+
+/* Etiquetas bajo el título (jerarquía) */
+.cp-row, .cp-group-head {
+  display: grid !important;
+  grid-template-columns: 14px 14px minmax(0, 1fr) auto !important;
+  align-items: start !important;
+  gap: 2px 5px !important;
+  padding: 3px 6px !important;
+  min-height: 0 !important;
+}
+.cp-row.cp-layer {
+  grid-template-columns: 14px 14px minmax(0, 1fr) !important;
+}
+.cp-row-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: 1px;
+}
+.cp-row-name {
+  font-size: 12px !important;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cp-row-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 1px;
+}
+.cp-tag {
+  font-size: 8.5px !important;
+  line-height: 1.25 !important;
+  padding: 0 4px !important;
+  border-radius: 3px !important;
+  font-weight: 500;
+}
+.cp-tag.mp {
+  font-size: 8.5px !important;
+}
+.cp-tag.view {
+  font-size: 8.5px !important;
+  background: rgba(127,178,255,0.15);
+  color: #9ec5ff;
+}
+.cp-collapse-spacer {
+  width: 14px;
+  height: 14px;
+}
+.cp-mp-btn {
+  font-size: 8px !important;
+  min-height: 16px !important;
+  padding: 0 4px !important;
+  margin-top: 1px;
+  line-height: 16px;
+}
