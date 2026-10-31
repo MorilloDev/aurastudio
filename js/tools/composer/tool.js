@@ -1156,8 +1156,61 @@
 
 
     pushResult(result, meta = {}) {
-      // Planta multipart: result.parts = [abajo…arriba]
       const parts = (result?.parts && result.parts.length) ? result.parts : null;
+      const color = result?.color || (parts && parts[0]?.color);
+
+      // ── Reedición: actualizar UNA capa concreta (nunca crear copia) ──
+      const rt = meta.replaceTarget;
+      if (rt?.groupId && rt?.layerId) {
+        const find = (gs) => {
+          for (const x of gs || []) {
+            if (x.id === rt.groupId) {
+              const li = (x.layers || []).findIndex((L) => L.id === rt.layerId);
+              if (li >= 0) return { g: x, li };
+            }
+            const nested = find(x.children);
+            if (nested) return nested;
+          }
+          return null;
+        };
+        const hit = find(this.doc.groups);
+        if (!hit) {
+          this.studio?.toast("No se encontró la capa a actualizar", { kind: "warn" });
+          return;
+        }
+        // Preferir el raster principal (front / result.color)
+        let src = result;
+        if (!src?.color && parts?.length) src = parts[0];
+        if (!src?.color && result?.orientations) {
+          const o = result.orientations.front || Object.values(result.orientations).find((v) => v?.color);
+          if (o) src = o;
+        }
+        if (!src?.color) {
+          this.studio?.toast("No hay preview para actualizar", { kind: "warn" });
+          return;
+        }
+        const target = hit.g.layers[hit.li];
+        const size = src.size || result.size || target.size || 64;
+        target.kind = "sprite";
+        target.color = new Uint8ClampedArray(src.color);
+        target.normal = src.normal ? new Uint8ClampedArray(src.normal) : null;
+        target.depth = src.depth
+          ? (src.depth instanceof Float32Array ? src.depth : new Float32Array(src.depth))
+          : null;
+        target.size = size;
+        target.source = meta.source || target.source || "sprite";
+        target.shape = null;
+        if (meta.recipe) target.recipe = meta.recipe;
+        if (meta.name) target.name = meta.name;
+        this.doc.size = Math.max(this.doc.size || 64, size);
+        this.doc.selectedGroupId = hit.g.id;
+        this.doc.selectedLayer = hit.li;
+        this.dirty = true;
+        this.touch();
+        return;
+      }
+
+      // Planta multipart: result.parts = [abajo…arriba]
       if (parts && parts.length > 1) {
         const baseName = meta.name || meta.source || "planta";
         const size = result.size || parts[0].size || 64;
@@ -1185,7 +1238,6 @@
         return;
       }
 
-      const color = result?.color || (parts && parts[0]?.color);
       if (!color) {
         this.studio?.toast("No hay preview para añadir", { kind: "warn" });
         return;
@@ -1194,7 +1246,7 @@
         ? { ...result, color: parts[0].color, normal: parts[0].normal, depth: parts[0].depth, size: parts[0].size || result.size }
         : result;
 
-      // Varias orientaciones: cada una = grupo con etiqueta view
+      // Varias orientaciones: cada una = grupo con etiqueta view (solo al CREAR, no al reeditar)
       const orients = result?.orientations || meta?.orientations || null;
       if (orients && typeof orients === "object") {
         const baseName = meta.name || meta.source || "bloque";
@@ -1237,53 +1289,14 @@
       if (single.size) this.doc.size = Math.max(this.doc.size || 64, single.size);
       if (meta.view && VIEW_LIST.includes(meta.view)) g.view = meta.view;
 
-      // Reemplazo explícito (reeditar) o capa seleccionada → actualiza in-place
-      let target = null;
-      let targetG = g;
-      const rt = meta.replaceTarget;
-      if (rt?.groupId && rt?.layerId) {
-        const find = (gs) => {
-          for (const x of gs || []) {
-            if (x.id === rt.groupId) {
-              const li = (x.layers || []).findIndex((L) => L.id === rt.layerId);
-              if (li >= 0) return { g: x, li };
-            }
-            const nested = find(x.children);
-            if (nested) return nested;
-          }
-          return null;
-        };
-        const hit = find(this.doc.groups);
-        if (hit) {
-          targetG = hit.g;
-          target = hit.g.layers[hit.li];
-          this.doc.selectedGroupId = hit.g.id;
-          this.doc.selectedLayer = hit.li;
-        }
-      }
-      if (!target) target = this.layer();
-
-      if (target) {
-        target.kind = "sprite";
-        if (layer.name) target.name = layer.name;
-        target.color = layer.color;
-        target.normal = layer.normal;
-        target.depth = layer.depth || null;
-        target.size = layer.size;
-        target.source = layer.source || target.source;
-        target.shape = null;
-        if (meta.recipe) target.recipe = meta.recipe;
-        else if (layer.recipe) target.recipe = layer.recipe;
-      } else {
-        targetG.layers.push(layer);
-        ensureEntries(targetG);
-        this.doc.selectedGroupId = targetG.id;
-        this.doc.selectedLayer = targetG.layers.length - 1;
-      }
+      // Sin replaceTarget: añadir capa nueva (no sustituir la seleccionada)
+      g.layers.push(layer);
+      ensureEntries(g);
+      this.doc.selectedGroupId = g.id;
+      this.doc.selectedLayer = g.layers.length - 1;
       this.dirty = true;
       this.touch();
     }
-
 
     drainQueue() {
       try {
