@@ -573,7 +573,7 @@
         return h("button", {
           type: "button",
           class: ["cp-view-card", mode === "front" && "is-default"],
-          title: "Preview de grupos con vista «" + mode + "». Clic = asignar al grupo activo",
+          title: "Etiqueta de orientación «" + mode + "» (no rota el arte). Clic = asignar al grupo",
           onclick: () => {
             const g = this.group();
             if (!g || g.folder) {
@@ -1397,22 +1397,6 @@
           onclick: () => this.selectGroup(g.id, -1),
           oncontextmenu: (e) => { e.preventDefault(); this.selectGroup(g.id, -1); this.#openCtx(e, { type: "group", id: g.id }); },
         },
-          h("span", {
-            class: "cp-grip",
-            title: "Arrastrar",
-            draggable: !g.locked,
-            ondragstart: (e) => {
-              e.stopPropagation();
-              e.dataTransfer.setData("application/x-cp-group", g.id);
-              e.dataTransfer.setData("text/plain", "group:" + g.id);
-              e.dataTransfer.effectAllowed = "move";
-              e.currentTarget.closest(".cp-row")?.classList.add("cp-dragging");
-            },
-            ondragend: (e) => {
-              e.currentTarget.closest(".cp-row")?.classList.remove("cp-dragging");
-              this.groupList.querySelectorAll(".cp-drop").forEach((el) => el.classList.remove("cp-drop"));
-            },
-          }, "⠿"),
           h("input", {
             type: "checkbox", class: "cp-vis",
             checked: g.visible !== false,
@@ -1488,22 +1472,6 @@
                   this.#openCtx(e, { type: "layer", id: L.id, groupId: g.id, index: li });
                 },
               },
-                h("span", {
-                  class: "cp-grip",
-                  title: "Arrastrar capa",
-                  draggable: !L.locked && !g.locked,
-                  ondragstart: (e) => {
-                    e.stopPropagation();
-                    e.dataTransfer.setData("application/x-cp-layer", L.id);
-                    e.dataTransfer.setData("text/plain", "layer:" + L.id);
-                    e.dataTransfer.effectAllowed = "move";
-                    e.currentTarget.closest(".cp-row")?.classList.add("cp-dragging");
-                  },
-                  ondragend: (e) => {
-                    e.currentTarget.closest(".cp-row")?.classList.remove("cp-dragging");
-                    this.groupList.querySelectorAll(".cp-drop").forEach((el) => el.classList.remove("cp-drop"));
-                  },
-                }, "⠿"),
                 h("input", {
                   type: "checkbox", class: "cp-vis",
                   checked: L.visible !== false,
@@ -1530,7 +1498,6 @@
 
       this.doc.groups.forEach((g) => renderGroup(g, 0));
       this.groupList.replaceChildren(...frag);
-      this.#bindTreeDnD();
     }
 
     #treeTools() {
@@ -1545,48 +1512,7 @@
       ];
     }
 
-    #bindTreeDnD() {
-      if (this._dndBound) return;
-      this._dndBound = true;
-      const root = this.groupList;
-      root.addEventListener("dragover", (e) => {
-        const row = e.target.closest?.(".cp-row");
-        if (!row || !root.contains(row)) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        root.querySelectorAll(".cp-drop").forEach((el) => { if (el !== row) el.classList.remove("cp-drop"); });
-        row.classList.add("cp-drop");
-      });
-      root.addEventListener("dragleave", (e) => {
-        if (!root.contains(e.relatedTarget)) {
-          root.querySelectorAll(".cp-drop").forEach((el) => el.classList.remove("cp-drop"));
-        }
-      });
-      root.addEventListener("drop", (e) => {
-        e.preventDefault();
-        const row = e.target.closest?.(".cp-row");
-        root.querySelectorAll(".cp-drop").forEach((el) => el.classList.remove("cp-drop"));
-        if (!row) return;
-        const layerId = e.dataTransfer.getData("application/x-cp-layer") ||
-          (e.dataTransfer.getData("text/plain") || "").replace(/^layer:/, "");
-        const groupId = e.dataTransfer.getData("application/x-cp-group") ||
-          ((e.dataTransfer.getData("text/plain") || "").startsWith("group:")
-            ? e.dataTransfer.getData("text/plain").slice(6) : "");
-        const dropType = row.getAttribute("data-drop");
-        const dropId = row.getAttribute("data-id");
-        const dropGid = row.getAttribute("data-gid");
-        const dropLi = Number(row.getAttribute("data-li") || 0);
-
-        if (layerId && layerId !== "layer:") {
-          if (dropType === "group") this.moveLayerToGroup(layerId, dropId);
-          else if (dropType === "layer") this.moveLayerBefore(layerId, dropGid, dropLi);
-          return;
-        }
-        if (groupId && groupId !== "group:") {
-          if (dropType === "group") this.moveGroupTo(groupId, dropId);
-        }
-      });
-    }
+    #bindTreeDnD() { /* drag-and-drop desactivado */ }
 
     #closeCtx() {
       this._ctx?.remove();
@@ -2252,23 +2178,9 @@
     }
 
     
+    /** Vista = solo etiqueta (Atlas / strip). No rota ni espeja el arte. */
     applyViewTransform(color, depth, S, view) {
-      if (!view || view === "front") return { color, depth };
-      const outC = new Uint8ClampedArray(S * S * 4);
-      const outD = depth ? new Float32Array(S * S).fill(-Infinity) : null;
-      for (let y = 0; y < S; y++) {
-        for (let x = 0; x < S; x++) {
-          let nx = x, ny = y;
-          if (view === "back") nx = S - 1 - x;
-          else if (view === "inverted") ny = S - 1 - y;
-          else if (view === "horizontal") { nx = y; ny = S - 1 - x; }
-          const si = (y * S + x) * 4;
-          const di = (ny * S + nx) * 4;
-          outC[di] = color[si]; outC[di+1] = color[si+1]; outC[di+2] = color[si+2]; outC[di+3] = color[si+3];
-          if (outD && depth) outD[ny * S + nx] = depth[y * S + x];
-        }
-      }
-      return { color: outC, depth: outD || depth };
+      return { color, depth };
     }
 
     /** Compone las capas visibles de un grupo en un buffer size×size, con depth y AO entre capas. */
