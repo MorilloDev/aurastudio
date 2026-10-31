@@ -1833,6 +1833,57 @@
 
     // ── props ───────────────────────────────────────────────────────────────
 
+
+    #pushDocSections(kids, setAo, ao) {
+      kids.push(section({ id: "cp-snap", title: "Snap y outline", collapsed: true },
+        slider({
+          label: "Snap al mover capa (px)", min: 1, max: 8, step: 1,
+          value: this.doc.snapGrid ?? 1,
+          onChange: (v) => { this.doc.snapGrid = Number(v); this.savePrefsMeta(); },
+        }).el,
+        h("label", { class: "field check" },
+          h("input", {
+            type: "checkbox",
+            checked: this.doc.showOutline !== false || null,
+            onchange: (e) => {
+              this.doc.showOutline = e.target.checked;
+              this.savePrefsMeta();
+              this.paintPart();
+            },
+          }),
+          h("span", null, "Mostrar outline de selección")),
+      ).el);
+      kids.push(section({ id: "cp-ao", title: "Ambient occlusion", collapsed: true },
+        h("label", { class: "field check" },
+          h("input", {
+            type: "checkbox", checked: ao.enabled !== false || null,
+            onchange: (e) => setAo(() => { ao.enabled = e.target.checked; }),
+          }),
+          h("span", null, "Activar AO")),
+        h("label", { class: "field check" },
+          h("input", {
+            type: "checkbox", checked: ao.crossCell !== false || null,
+            onchange: (e) => setAo(() => { ao.crossCell = e.target.checked; }),
+          }),
+          h("span", null, "AO entre celdas")),
+        slider({
+          label: "Intensidad", min: 0, max: 1, step: 0.05,
+          value: ao.strength ?? 0.5,
+          onChange: (v) => setAo(() => { ao.strength = Number(v); }),
+        }).el,
+        slider({
+          label: "Radio (px)", min: 1, max: 12, step: 1,
+          value: ao.radius ?? 3,
+          onChange: (v) => setAo(() => { ao.radius = Number(v); }),
+        }).el,
+        slider({
+          label: "Muestras", min: 4, max: 24, step: 2,
+          value: ao.samples ?? 12,
+          onChange: (v) => setAo(() => { ao.samples = Number(v); }),
+        }).el,
+      ).el);
+    }
+
     rebuildProps() {
       const g = this.group();
       const L = this.layer();
@@ -1860,101 +1911,49 @@
       const ao = this.doc.ao || (this.doc.ao = { enabled: true, strength: 0.5, radius: 3, samples: 12, crossCell: true });
       const setAo = (fn) => { fn(); this.schedule(true); this.#debouncedSave(); };
 
-      kids.push(section({ id: "cp-snap", title: "Snap y outline" },
-        slider({
-          label: "Snap al mover capa (px)", min: 1, max: 8, step: 1,
-          value: this.doc.snapGrid ?? 1,
-          onChange: (v) => { this.doc.snapGrid = Number(v); this.savePrefsMeta(); },
-        }).el,
-        h("label", { class: "field check" },
-          h("input", {
-            type: "checkbox",
-            checked: this.doc.showOutline !== false || null,
-            onchange: (e) => {
-              this.doc.showOutline = e.target.checked;
-              this.savePrefsMeta();
-              this.paintPart();
-            },
-          }),
-          h("span", null, "Mostrar outline de selección")),
-      ).el);
-
-      kids.push(section({ id: "cp-ao", title: "Ambient occlusion" },
-        h("p", { class: "note" }, "Oscurece contactos entre capas de la misma celda y entre celdas vecinas."),
-        h("label", { class: "field check" },
-          h("input", {
-            type: "checkbox", checked: ao.enabled !== false || null,
-            onchange: (e) => setAo(() => { ao.enabled = e.target.checked; }),
-          }),
-          h("span", null, "Activar AO")),
-        h("label", { class: "field check" },
-          h("input", {
-            type: "checkbox", checked: ao.crossCell !== false || null,
-            onchange: (e) => setAo(() => { ao.crossCell = e.target.checked; }),
-          }),
-          h("span", null, "AO entre celdas (conjunto)")),
-        slider({
-          label: "Intensidad", min: 0, max: 1, step: 0.05,
-          value: ao.strength ?? 0.5,
-          onChange: (v) => setAo(() => { ao.strength = Number(v); }),
-        }).el,
-        slider({
-          label: "Radio (px)", min: 1, max: 12, step: 1,
-          value: ao.radius ?? 3,
-          onChange: (v) => setAo(() => { ao.radius = Number(v); }),
-        }).el,
-        slider({
-          label: "Muestras", min: 4, max: 24, step: 2,
-          value: ao.samples ?? 12,
-          onChange: (v) => setAo(() => { ao.samples = Number(v); }),
-        }).el,
-      ).el);
-
-      // Group props
-      kids.push(h("div", { class: "cp-sub" }, "Grupo / carpeta"));
-      kids.push(h("label", { class: "field" }, h("span", null, "Nombre"),
-        h("input", {
-          value: g.name,
-          oninput: (e) => {
-            g.name = e.target.value;
-            // Actualiza solo el texto de la lista, sin reconstruir el panel (mantiene el foco).
-            const head = this.groupList?.querySelector(".cp-group-head.active .cp-group-name");
-            if (head) head.textContent = g.name;
-            this.savePrefsMeta();
-          },
-          onchange: () => this.savePrefsMeta(),
-        })));
-      kids.push(h("label", { class: "field check" },
-        h("input", {
-          type: "checkbox", checked: g.multipart || null,
-          onchange: (e) => setTree(() => { g.multipart = e.target.checked; this.rebuildProps(); }),
-        }),
-        h("span", null, "Multipart")));
-
+      // ── Esenciales del grupo (arriba del todo, sección propia) ──
       const curView = VIEW_LIST.includes(g.view) ? g.view : "front";
-      kids.push(h("div", { class: "field" },
-        h("label", null, "Vista"),
-        h("select", {
-          onchange: (e) => {
-            g.view = e.target.value;
-            this.dirty = true;
-            this.schedule(true);
-            this.#debouncedSave();
-            this.rebuildGroupList();
+      kids.push(section({ id: "cp-group-essentials", title: "Grupo" },
+        h("label", { class: "field" }, h("span", null, "Nombre"),
+          h("input", {
+            value: g.name || "",
+            oninput: (e) => {
+              g.name = e.target.value;
+              const head = this.groupList?.querySelector(".cp-group-head.active .cp-group-name");
+              if (head) head.textContent = g.name;
+              this.#debouncedSave();
+            },
+            onchange: () => this.#debouncedSave(),
+          })),
+        h("label", { class: "field check" },
+          h("input", {
+            type: "checkbox", checked: g.multipart || null,
+            onchange: (e) => setTree(() => { g.multipart = e.target.checked; this.rebuildProps(); }),
+          }),
+          h("span", null, "Multipart")),
+        h("div", { class: "field" },
+          h("label", null, "Vista"),
+          h("select", {
+            onchange: (e) => {
+              g.view = e.target.value;
+              this.dirty = true;
+              this.schedule(true);
+              this.#debouncedSave();
+              this.rebuildGroupList();
+            },
           },
-        },
-          ...VIEW_LIST.map((v) => h("option", {
-            value: v,
-            selected: v === curView || null,
-          }, v === "front" ? "Front" : v.charAt(0).toUpperCase() + v.slice(1))),
-        ),
-      ));
-      kids.push(h("label", { class: "field check" },
-        h("input", {
-          type: "checkbox", checked: g.locked || null,
-          onchange: (e) => { g.locked = e.target.checked; this.touch(); },
-        }),
-        h("span", null, "Bloquear")));
+            ...VIEW_LIST.map((v) => h("option", {
+              value: v,
+              selected: v === curView || null,
+            }, v === "front" ? "Front" : v.charAt(0).toUpperCase() + v.slice(1))),
+          )),
+        h("label", { class: "field check" },
+          h("input", {
+            type: "checkbox", checked: g.locked || null,
+            onchange: (e) => { g.locked = e.target.checked; this.touch(); },
+          }),
+          h("span", null, "Bloquear")),
+      ).el);
 
       if (g.multipart) {
         kids.push(section({ id: "cp-cell", title: "Celda de esta parte" },
@@ -1977,6 +1976,7 @@
             "Sin capas. Añade forma o aplica bloque/planta."));
           kids.push(h("button", { type: "button", class: "primary", onclick: () => this.addShapeLayer() }, "+ Forma"));
         }
+        this.#pushDocSections(kids, setAo, ao);
         this.propsHost.replaceChildren(...kids);
         return;
       }
@@ -2053,6 +2053,7 @@
           h("button", { onclick: () => set(() => { L.tint = null; this.rebuildProps(); }) }, "Sin tint")),
       ).el);
 
+      this.#pushDocSections(kids, setAo, ao);
       this.propsHost.replaceChildren(...kids);
     }
 

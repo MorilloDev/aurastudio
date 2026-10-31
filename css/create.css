@@ -1115,3 +1115,48 @@
 .cp-props .note { font-size: 11px; }
 
 .cr-bar .hint:empty { display: none; }
+
+
+/* Inspector: sin scroll horizontal, campos caben */
+.cp-3col .cp-props,
+.cp-props {
+  overflow-x: hidden !important;
+  overflow-y: auto;
+  max-width: 100%;
+  min-width: 0;
+}
+.cp-props .field {
+  grid-template-columns: 64px minmax(0, 1fr) !important;
+  gap: 6px;
+  min-width: 0;
+}
+.cp-props .field.slider {
+  grid-template-columns: 64px minmax(0, 1fr) !important;
+}
+.cp-props .field.slider > .ctl {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 40px 16px !important;
+}
+.cp-props .field.slider input[type=range] {
+  min-width: 0 !important;
+  width: 100% !important;
+}
+.cp-props .field input,
+.cp-props .field select {
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+}
+.cp-props .section {
+  min-width: 0;
+  max-width: 100%;
+}
+.cp-right {
+  min-width: 0;
+  overflow: hidden;
+}
+/* Grupo essentials first section looks primary */
+.cp-props #cp-group-essentials,
+.cp-props .section:first-child {
+  border-color: rgba(78, 201, 160, 0.25);
+}
