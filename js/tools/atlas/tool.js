@@ -936,6 +936,13 @@
         this.#draw();
       });
       c.addEventListener("pointerleave", () => { this.#hover = null; this.studio.slot("cell", ""); this.#draw(); });
+      c.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        if (!this.img) return;
+        const cell = this.#cellAt(e);
+        this.#openAtlasCtx(e, cell);
+      });
+
       c.addEventListener("pointerup", (e) => {
         const d = this.#drag;
         this.#drag = null;
@@ -1301,6 +1308,128 @@
         "ok",
       );
       this.studio.toast(`Movido a ${destSheetEntry.id}`, { kind: "ok" });
+    }
+
+
+    #closeAtlasCtx() {
+      this._atlasCtx?.remove();
+      this._atlasCtx = null;
+    }
+
+    #openAtlasCtx(e, cell) {
+      this.#closeAtlasCtx();
+      if (!this.img || !this.sheet) return;
+
+      if (this.#inside(cell)) {
+        const k = ck(...cell);
+        if (!this.selection.has(k)) {
+          this.selection = new Set([k]);
+          if (typeof this.#selectionChanged === "function") this.#selectionChanged();
+          this.#renderPanel();
+          this.#draw();
+        }
+      }
+
+      const cells = this.#selectedCells();
+      const hasSel = cells.length > 0;
+      const refs = hasSel
+        ? [...new Set(cells.flatMap((c) => this.#cellRefs.get(ck(...c)) ?? []))]
+        : [];
+      const tiles = [...new Set(refs.map((r) => r.tile))];
+      const hasArt = hasSel && cells.some((c) => this.#artCells.has(ck(...c)));
+      const otherAtlases = (this.sheets || []).filter((s) => s.key !== this.sheet.key && s.atlas);
+
+      const items = [];
+      items.push({
+        label: hasSel ? (`Selección · ${cells.length} celda` + (cells.length === 1 ? "" : "s")) : "Sin selección",
+        disabled: true,
+      });
+      items.push({ sep: true });
+      items.push({
+        label: "Vaciar celdas (arte)",
+        danger: true,
+        disabled: !hasSel || !hasArt,
+        action: () => this.#emptySelection(),
+      });
+      items.push({
+        label: "Mover a otro atlas…",
+        disabled: !hasSel || !otherAtlases.length,
+        action: () => this.#promptMoveToOtherAtlas(),
+      });
+
+      if (tiles.length === 1) {
+        const tile = tiles[0];
+        items.push({ sep: true });
+        items.push({
+          label: "Abrir «" + T.tileLabel(tile) + "»",
+          action: () => this.#openTile(tile, true),
+        });
+        items.push({
+          label: "Seleccionar todas sus celdas",
+          action: () => {
+            const all = this.#sheetRefs.filter((r) => r.tile === tile).flatMap((r) => this.#cellsOf(r));
+            this.#select(all);
+          },
+        });
+        items.push({
+          label: "Quitar tile del JSON",
+          danger: true,
+          action: () => this.#deleteTile(tile),
+        });
+      } else if (tiles.length > 1) {
+        items.push({ sep: true });
+        for (const tile of tiles.slice(0, 6)) {
+          items.push({
+            label: "Abrir «" + T.tileLabel(tile) + "»",
+            action: () => this.#openTile(tile, true),
+          });
+        }
+        items.push({
+          label: "Quitar " + tiles.length + " tiles del JSON",
+          danger: true,
+          action: async () => { for (const tile of tiles) await this.#deleteTile(tile); },
+        });
+      }
+
+      items.push({ sep: true });
+      items.push({ label: "Añadir fila", action: () => this.#growSheet(0, 1) });
+      items.push({ label: "Añadir columna", action: () => this.#growSheet(1, 0) });
+      items.push({ label: "Ordenar JSON por Y", action: () => this.#sortDocsByY() });
+      items.push({ sep: true });
+      items.push({ label: "Ajustar vista", action: () => this.#fit() });
+
+      const menu = h("div", { class: "cp-ctx at-ctx" },
+        ...items.map((it) => {
+          if (it.sep) return h("div", { class: "cp-ctx-sep" });
+          return h("button", {
+            type: "button",
+            class: ["cp-ctx-item", it.danger && "danger", it.disabled && "disabled"],
+            disabled: it.disabled || null,
+            onclick: () => { this.#closeAtlasCtx(); if (!it.disabled) it.action(); },
+          }, it.label);
+        }));
+      menu.style.position = "fixed";
+      menu.style.left = "0px";
+      menu.style.top = "0px";
+      menu.style.visibility = "hidden";
+      document.body.appendChild(menu);
+      const mw = menu.offsetWidth || 220;
+      const mh = menu.offsetHeight || 200;
+      let left = e.clientX, top = e.clientY;
+      if (left + mw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - mw - 8);
+      if (top + mh > window.innerHeight - 8) top = Math.max(8, window.innerHeight - mh - 8);
+      if (left < 8) left = 8;
+      if (top < 8) top = 8;
+      menu.style.left = left + "px";
+      menu.style.top = top + "px";
+      menu.style.visibility = "visible";
+      this._atlasCtx = menu;
+      const closer = (ev) => {
+        if (menu.contains(ev.target)) return;
+        this.#closeAtlasCtx();
+        document.removeEventListener("pointerdown", closer, true);
+      };
+      setTimeout(() => document.addEventListener("pointerdown", closer, true), 0);
     }
 
     async #emptySelection() {
