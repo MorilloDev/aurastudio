@@ -42,7 +42,7 @@
     current = null;
     view = prefs.get("biomes:view", "climate");
     slice = prefs.get("biomes:slice", { continentalness: 0.8, erosion: 0.5, pv: 0.5 });
-    sample = { seed: 1, density: 1, size: prefs.get("biomes:sampleSize", 16), relief: prefs.get("biomes:relief", true), water: prefs.get("biomes:water", true) };
+    sample = { seed: 1, density: 1, size: prefs.get("biomes:sampleSize", 32), relief: prefs.get("biomes:relief", true), water: prefs.get("biomes:water", true), structures: prefs.get("biomes:structures", true) };
     view3d = { seed: 1, density: 1, size: prefs.get("biomes:3dSize", 48), relief: prefs.get("biomes:3dRelief", true), water: prefs.get("biomes:3dWater", true),
       structures: prefs.get("biomes:3dStructures", true) };
     structs = { structures: new Map(), templates: new Map(), errors: [] };
@@ -236,7 +236,9 @@
         const densOut = h("span", { class: "mono faint" }, "×" + this.sample.density);
         const dens = h("input", { type: "range", min: 0.5, max: 10, step: 0.5, value: this.sample.density,
           oninput: () => { this.sample.density = Number(dens.value); densOut.textContent = "×" + this.sample.density; this.#draw(); } });
-        const size = select({ value: String(this.sample.size), options: [["9", "9×9"], ["16", "16×16"], ["24", "24×24"], ["32", "32×32"]], title: "Tamaño de la muestra",
+        const size = select({ value: String(this.sample.size), options: [
+          ["16", "16×16"], ["24", "24×24"], ["32", "32×32"], ["48", "48×48"], ["64", "64×64"], ["96", "96×96"],
+        ], title: "Tamaño de la muestra (más grande = más terreno y más estructuras)",
           onChange: (v) => { this.sample.size = Number(v); prefs.set("biomes:sampleSize", this.sample.size); this.#draw(); } });
         const flag = (label, key, title) => {
           const c = h("input", { type: "checkbox", checked: this.sample[key], onchange: () => { this.sample[key] = c.checked; prefs.set("biomes:" + key, c.checked); this.#draw(); } });
@@ -246,6 +248,7 @@
           size.input ?? size.el,
           flag("Relieve", "relief", "Lomas suaves de 1–3 bloques, como el terreno real"),
           flag("Agua", "water", "Un estanque en lo más bajo, con las plantas de agua del bioma"),
+          flag("Estructuras", "structures", "Árboles, casas y demás del bioma, con los sprites del atlas (como en 3D)"),
           h("label", { class: "bm-slice", title: "×1 = las probabilidades reales; más para ver también lo raro" }, "Densidad", dens, densOut),
           h("button", { title: "Otra muestra", onclick: () => { this.sample.seed++; this.#draw(); } }, "⟳ Otra"));
       }
@@ -873,7 +876,16 @@
       const shallow = this.#tileInfo(r.materials?.shallow ?? "dirt") ?? surface;
       const waterTile = this.#tileInfo("water");
       const decoInfos = (r.decoration ?? []).map((d) => this.#tileInfo(d.tile));
-      const need = new Set([surface, shallow, waterTile, ...(r.materials?.surfaceVariants ?? []).map((v) => this.#tileInfo(v.tile)), ...decoInfos].filter(Boolean).map((i) => i.sheet));
+      const structIds = new Set();
+      if (this.sample.structures) {
+        for (const e of Array.isArray(r.structures) ? r.structures : []) {
+          for (const id of Scene.structureTiles(this.structs.structures.get(Scene.short(e?.structure)), this.structs.templates)) {
+            structIds.add(id);
+          }
+        }
+      }
+      const structInfos = [...structIds].map((id) => this.#tileInfo(id)).filter(Boolean);
+      const need = new Set([surface, shallow, waterTile, ...(r.materials?.surfaceVariants ?? []).map((v) => this.#tileInfo(v.tile)), ...decoInfos, ...structInfos].filter(Boolean).map((i) => i.sheet));
       const pending = [...need].filter((k) => !this.#sheets.has(k) || this.#sheets.get(k).value === undefined);
       if (pending.length) {
         for (const k of pending) this.#sheetCanvas(k).then(() => this.#draw());
@@ -953,6 +965,53 @@
           if (water) pieces.push({ water: true, i, j, l: 0, sub: 2 });
         }
       }
+
+      // Estructuras: misma colocación que la vista 3D, dibujadas con sprites iso (como el resto de la muestra).
+      let structCounts = new Map(), structMissing = new Set();
+      if (this.sample.structures && this.structs?.structures?.size) {
+        const infoFn = (id) => {
+          const ti = this.#tileInfo(id);
+          if (!ti) return null;
+          const tags = (ti.tile.tags ?? []).map((x) => String(x).toLowerCase());
+          const category = String(ti.doc?.root?.category ?? "").toLowerCase();
+          const leafy = tags.includes("leaf") || /leaves|leaf/.test(id);
+          return {
+            liquid: tags.includes("liquid") || String(ti.tile.type ?? "").toLowerCase() === "liquid",
+            plant: category === "foliage" || tags.includes("no_collision") || tags.includes("tiny"),
+            slab: tags.includes("slab"),
+            glass: !leafy && (tags.includes("transparent") || /glass/.test(id)),
+            habitat: ti.habitat,
+          };
+        };
+        try {
+          const built = Scene.buildScene(r, this.structs.structures, this.structs.templates, infoFn, {
+            size: N, seed, relief: this.sample.relief, water: this.sample.water, density: dens, structures: true,
+          });
+          structCounts = built.counts;
+          structMissing = built.missing;
+          const sc = built.scene;
+          const BASE = 4;
+          for (let y = 0; y < sc.height; y++) {
+            for (let z = 0; z < sc.size; z++) {
+              for (let x = 0; x < sc.size; x++) {
+                const pi = sc.at(x, y, z);
+                if (!pi) continue;
+                const pal = sc.palette[pi];
+                if (!pal || !structIds.has(pal.id)) continue;
+                const ti = this.#tileInfo(pal.id);
+                if (!ti) continue;
+                // y en escena: suelo ~BASE; en la muestra 2D l=0 es el agua/suelo base → l ≈ y - BASE
+                const l = y - BASE;
+                const shift = (hash(x, z, 99) * 2 - 1) * 10;
+                put(ti, x, z, l, 4, shift);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn("biomes sample structures", err);
+        }
+      }
+
       // Painter's order: +i comes toward the camera and +j goes away from it, so nearer is larger i − j; then upward.
       pieces.sort((a, b) => a.i - a.j - (b.i - b.j) || a.l - b.l || a.sub - b.sub);
       const pos = pieces.map((p) => at(p.i, p.j, p.l));
@@ -986,8 +1045,15 @@
       }
       // Grey art without biome_tinted: the game draws it grey too, which is almost always a missing tag.
       const grey = [surface, ...decoInfos].filter((info, k, all) => info && !info.tinted && all.indexOf(info) === k && this.#looksGrey(info)).map((i) => i.tile.id ?? i.tile.name);
+            const decoN = [...counts.values()].reduce((a, b) => a + b, 0);
+      const structN = [...structCounts.values()].reduce((a, b) => a + b, 0);
+      const structTxt = this.sample.structures
+        ? (structN ? ` · estructuras: ${[...structCounts.entries()].map(([id, n]) => id + "×" + n).join(", ")}` : " · sin estructuras en esta muestra")
+        : " · estructuras ocultas";
       this.legend.append(h("span", { class: "faint" },
-        `${N}×${N} columnas · densidad ×${dens} · ${[...counts.values()].reduce((a, b) => a + b, 0)} decoraciones` + (waterTile ? "" : this.sample.water ? " · agua dibujada (no hay tile «water»)" : "")));
+        `${N}×${N} columnas · densidad ×${dens} · ${decoN} decoraciones` + structTxt
+        + (waterTile ? "" : this.sample.water ? " · agua dibujada (no hay tile «water»)" : "")));
+
       if (grey.length) this.legend.append(h("span", { class: "bad-text", title: "Se ven grises porque su arte es gris y no tienen el tag biome_tinted: el juego tampoco los tiñe." },
         ` · grises sin biome_tinted: ${grey.slice(0, 6).join(", ")}${grey.length > 6 ? "…" : ""}`));
     }

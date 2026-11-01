@@ -389,7 +389,7 @@
       this.sizeSel = select({ label: "Tamaño sprite", value: String(this.r.size),
         options: [["32", "32 px"], ["48", "48 px"], ["64", "64 px"], ["96", "96 px"], ["128", "128 px"]],
         onChange: (v) => this.#rSet("size", Number(v)) });
-      // Atlas solo desde Composer. Aquí: mapas del generador y descarga local.
+      // Atlas y Composer desde aquí; mapas del generador y descarga local.
       this.scaleSel = select({ label: "Escala descarga", value: String(this.exportScale),
         options: [["1", "×1"], ["2", "×2"], ["4", "×4"]],
         onChange: (v) => { this.exportScale = Number(v); this.#save(); } });
@@ -402,6 +402,8 @@
         h("div", { class: "bk-maps" }, this.mapChecks.map((c) => c.el)),
         this.scaleSel.el,
         h("button", { class: "primary", onclick: () => this.applyToComposer() }, "Aplicar al Composer"),
+        h("button", { onclick: () => this.#sendCurrentToAtlas() }, "Atlas (actual) →"),
+        h("button", { onclick: () => this.#sendVariantsToAtlas() }, "Atlas (variantes) →"),
         h("button", { onclick: () => this.#download() }, "Descargar vista previa"),
         h("button", { onclick: () => this.#downloadVariants() }, "Descargar tira de variantes"));
 
@@ -902,6 +904,134 @@
      * Hands every variant to the Atlas tab (one cell per part, bottom first). One plant becomes one tile there — a tall
      * one as "parts" stacked upward; stages and seeds are several tiles, so they go over as their cells only.
      */
+
+
+    /** Vista previa actual → Atlas (multipart = una celda por parte, de abajo a arriba). */
+    #sendCurrentToAtlas() {
+      if (!this.result) {
+        this.studio.toast("Genera una planta primero", { kind: "warn" });
+        return;
+      }
+      const S = this.result.size || 64;
+      const parts = (this.result.parts?.length ? this.result.parts : [this.result]);
+      const items = parts.map((part, i) => ({
+        color: new Uint8ClampedArray(part.color || this.result.color),
+        normal: part.normal ? new Uint8ClampedArray(part.normal)
+          : (this.result.normal ? new Uint8ClampedArray(this.result.normal) : null),
+        label: parts.length > 1 ? ("p" + (i + 1)) : (this.type || "planta"),
+      }));
+      const name = this.type || "planta";
+      this.studio.pendingPlacement = {
+        label: "Planta",
+        name: "",
+        kind: "plant",
+        size: S,
+        sheetKey: (this.targetSel && this.targetSel.get && this.targetSel.get()) || null,
+        items,
+        buildTile: (coords) => {
+          if (!coords?.length) return null;
+          if (coords.length === 1) return { art: { default: { front: coords[0] } } };
+          return {
+            parts: coords.map((c, k) => ({
+              offsetY: k,
+              art: { default: { front: c } },
+            })),
+          };
+        },
+        snippet: (coords) => {
+          if (!coords?.length) return "";
+          if (coords.length === 1) {
+            return '"art": { "default": { "front": [' + coords[0][0] + ", " + coords[0][1] + "] } }";
+          }
+          const lines = coords.map((c, k) =>
+            '    { "offsetY": ' + k + ', "art": { "default": { "front": [' + c[0] + ", " + c[1] + "] } } }");
+          return '"parts": [\n' + lines.join(",\n") + "\n  ]";
+        },
+      };
+      this.studio.toast(
+        items.length > 1
+          ? ("Atlas: planta multipart (" + items.length + " celdas). Haz clic donde colocar.")
+          : "Elige una celda en el Atlas",
+        { kind: "ok" },
+      );
+      this.studio.activate("atlas");
+    }
+
+    /** Todas las variantes visibles (semillas/etapas) → Atlas en fila. */
+    #sendVariantsToAtlas() {
+      if (!this.result) {
+        this.studio.toast("Genera una planta primero", { kind: "warn" });
+        return;
+      }
+      let all = [];
+      try {
+        // Asegura resultados de variantes
+        for (const v of this.variantList || []) {
+          if (!this.variantResults.has(v.id)) this.variantResults.set(v.id, this.#renderOne(v));
+        }
+        all = (this.variantList || [])
+          .map((v) => ({ variant: v, result: this.variantResults.get(v.id) }))
+          .filter((x) => x.result);
+      } catch { all = []; }
+      if (!all.length) {
+        this.#sendCurrentToAtlas();
+        return;
+      }
+      // Aplanar: cada parte de cada variante = item (orden: variante, luego parte de abajo a arriba)
+      const flat = [];
+      const meta = [];
+      for (const { variant: v, result: r } of all) {
+        const parts = r.parts?.length ? r.parts : [r];
+        parts.forEach((part, pi) => {
+          flat.push({
+            color: new Uint8ClampedArray(part.color || r.color),
+            normal: part.normal ? new Uint8ClampedArray(part.normal) : null,
+            label: (v.label || v.id || "var") + (parts.length > 1 ? (" p" + (pi + 1)) : ""),
+          });
+          meta.push({ variant: v, part: pi, parts: parts.length, result: r });
+        });
+      }
+      const S = all[0].result.size || 64;
+      this.studio.pendingPlacement = {
+        label: "Planta variantes",
+        name: "",
+        kind: "plant",
+        size: S,
+        sheetKey: (this.targetSel && this.targetSel.get && this.targetSel.get()) || null,
+        items: flat,
+        buildTiles: (coords, { id, name }) => {
+          // Agrupar por variante
+          const byVar = new Map();
+          meta.forEach((m, i) => {
+            const key = m.variant.id;
+            if (!byVar.has(key)) byVar.set(key, { variant: m.variant, result: m.result, coords: [], parts: m.parts });
+            byVar.get(key).coords[m.part] = coords[i];
+          });
+          return [...byVar.values()].map(({ variant: v, coords: cs, parts: nParts }) => {
+            const cells = cs.filter(Boolean);
+            const base = {
+              id: id ? (id + "_" + (v.id || "v")) : undefined,
+              name: name ? (name + " · " + (v.label || v.id)) : (v.label || v.id),
+            };
+            if (cells.length <= 1) {
+              return { ...base, art: { default: { front: cells[0] || coords[0] } } };
+            }
+            return {
+              ...base,
+              parts: cells.map((c, k) => ({ offsetY: k, art: { default: { front: c } } })),
+            };
+          });
+        },
+        snippet: (coords) => {
+          if (!coords?.length) return "";
+          return coords.map((c, i) =>
+            "  // " + (flat[i]?.label || i) + "\n  [" + c[0] + ", " + c[1] + "]"
+          ).join("\n");
+        },
+      };
+      this.studio.toast("Atlas: " + flat.length + " celda(s) de variantes. Haz clic donde colocar.", { kind: "ok" });
+      this.studio.activate("atlas");
+    }
 
     /** Público: usado por el hub Crear (overlay). Devuelve true si se aplicó. */
     applyToComposer() {
