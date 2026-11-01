@@ -268,6 +268,7 @@
     #sheetRefs = [];
     #cellRefs = new Map();
     #artCells = new Set();
+    #pendingDestWrites = []; // hojas destino pendientes de guardar tras mover celdas
 
     // -----------------------------------------------------------------------------------------------------------------
     // Setup
@@ -319,7 +320,7 @@
       this.picking = null;
     }
 
-    isDirty() { return this.history.dirty || Aura.lang.dirty; }
+    isDirty() { return this.history.dirty || Aura.lang.dirty || !!(this.#pendingDestWrites && this.#pendingDestWrites.length); }
     dirtyLabel() { return "El atlas"; }
 
     async onProject(project) {
@@ -1041,6 +1042,202 @@
       layers.forEach((l, li) => cells.forEach(([x, y], i) => this.img.write(l, x * w, y * h, w, h, blocksPerLayer[li][i])));
     }
 
+
+    /** Mueve de verdad: píxeles (color + _n + mapas) a otra hoja y reescribe JSON (coords + sheetId). */
+    async #promptMoveToOtherAtlas() {
+      const srcCells = this.#selectedCells();
+      if (!srcCells.length) {
+        this.studio.toast("Selecciona al menos una celda.", { kind: "warn" });
+        return;
+      }
+      if (!this.sheet || !this.img) return;
+      const others = (this.sheets || []).filter((s) => s.key !== this.sheet.key && s.atlas);
+      if (!others.length) {
+        this.studio.toast("No hay otro atlas en el proyecto.", { kind: "warn" });
+        return;
+      }
+      const touched = [...new Set(srcCells.flatMap((c) => this.#cellRefs.get(ck(...c)) ?? []))];
+      for (const ref of touched) {
+        const need = this.#cellsOf(ref);
+        if (need.some((c) => !this.selection.has(ck(...c)))) {
+          this.studio.toast("Selecciona todas las celdas del tile multipart.", {
+            kind: "bad",
+            detail: `${T.tileLabel(ref.tile)} (${T.refLabel(ref)}) ocupa más celdas.`,
+          });
+          return;
+        }
+      }
+      const pick = await this.#pickTargetSheet(others);
+      if (!pick) return;
+      await this.#moveCellsToSheet(srcCells, pick.sheet, pick.origin, touched);
+    }
+
+    #pickTargetSheet(others) {
+      return new Promise((resolve) => {
+        const cells = this.#selectedCells();
+        const minX = Math.min(...cells.map((c) => c[0]));
+        const minY = Math.min(...cells.map((c) => c[1]));
+        const maxX = Math.max(...cells.map((c) => c[0]));
+        const maxY = Math.max(...cells.map((c) => c[1]));
+        const bw = maxX - minX + 1, bh = maxY - minY + 1;
+        const host = h("div", {
+          style: {
+            position: "fixed", inset: "0", zIndex: "80", background: "rgba(0,0,0,.55)",
+            display: "flex", alignItems: "center", justifyContent: "center", padding: "16px",
+          },
+        });
+        const box = h("div", { class: "dialog", style: { maxWidth: "420px", width: "100%" } });
+        const sel = h("select", { style: { width: "100%" } },
+          ...others.map((s) => h("option", { value: s.key }, s.id || s.path || s.key)));
+        const ox = h("input", { type: "number", min: 0, value: 0, style: { width: "72px" } });
+        const oy = h("input", { type: "number", min: 0, value: 0, style: { width: "72px" } });
+        const close = (v) => { host.remove(); resolve(v); };
+        box.append(
+          h("h2", null, "Mover a otro atlas"),
+          h("p", null, `Bloque ${bw}×${bh} celdas: color, _n y mapas. Actualiza coords y sheetId en el JSON.`),
+          h("label", null, "Atlas destino"),
+          sel,
+          h("div", { class: "row", style: { gap: "8px", alignItems: "center", marginTop: "8px" } },
+            h("span", null, "Celda destino"),
+            ox, h("span", null, ","), oy),
+          h("div", { class: "actions" },
+            h("button", { onclick: () => close(null) }, "Cancelar"),
+            h("button", { class: "primary", onclick: () => {
+              const sheet = others.find((s) => s.key === sel.value);
+              if (!sheet) return close(null);
+              close({ sheet, origin: [Math.max(0, ox.value | 0), Math.max(0, oy.value | 0)] });
+            } }, "Mover")),
+        );
+        host.append(box);
+        host.addEventListener("click", (e) => { if (e.target === host) close(null); });
+        document.body.append(host);
+      });
+    }
+
+    async #moveCellsToSheet(srcCells, destSheetEntry, destOrigin, touchedRefs) {
+      const srcImg = this.img;
+      const { w, h } = this.grid;
+      const minX = Math.min(...srcCells.map((c) => c[0]));
+      const minY = Math.min(...srcCells.map((c) => c[1]));
+
+      let destImg;
+      try {
+        destImg = await this.studio.busy(new SheetImage(destSheetEntry).load(this.project));
+      } catch (err) {
+        this.studio.toast("No pude abrir el atlas destino", { kind: "bad", detail: String(err?.message || err) });
+        return;
+      }
+      const destGrid = this.#gridFor(destSheetEntry);
+      if (destGrid.w !== w || destGrid.h !== h) {
+        this.studio.toast("La cuadrícula del destino no coincide.", {
+          kind: "bad",
+          detail: `Origen ${w}×${h}, destino ${destGrid.w}×${destGrid.h}.`,
+        });
+        return;
+      }
+
+      const destCells = srcCells.map(([x, y]) => [destOrigin[0] + (x - minX), destOrigin[1] + (y - minY)]);
+      if (destCells.some(([x, y]) =>
+        x < 0 || y < 0 || (x + 1) * destGrid.w > destImg.w || (y + 1) * destGrid.h > destImg.h)) {
+        this.studio.toast("El destino se sale de la hoja.", { kind: "warn" });
+        return;
+      }
+
+      const hits = destCells.filter(([x, y]) =>
+        destImg.hasArt(x * destGrid.w, y * destGrid.h, destGrid.w, destGrid.h));
+      if (hits.length && !(await this.studio.confirm({
+        title: "Sobrescribir en destino", danger: true, confirm: "Mover",
+        message: `${hits.length} celda(s) del destino ya tienen arte y se perderán al guardar.`,
+      }))) return;
+
+      for (const suffix of srcImg.layers.keys()) {
+        if (suffix && !destImg.has(suffix)) destImg.ensure(suffix);
+      }
+
+      const srcLayers = [...srcImg.layers.values()];
+      const srcBefore = srcLayers.map((l) => srcCells.map(([x, y]) => srcImg.read(l, x * w, y * h, w, h)));
+      const payload = srcLayers.map((l) => srcCells.map(([x, y]) => srcImg.read(l, x * w, y * h, w, h)));
+      const destBefore = srcLayers.map((l) => {
+        const dl = destImg.layers.get(l.suffix);
+        return destCells.map(([x, y]) => dl
+          ? destImg.read(dl, x * destGrid.w, y * destGrid.h, destGrid.w, destGrid.h)
+          : new Uint8ClampedArray(w * h * 4));
+      });
+      const empty = new Uint8ClampedArray(w * h * 4);
+
+      const coordMoves = [];
+      const sheetIdMoves = [];
+      const tilesSeen = new Set();
+      for (const ref of touchedRefs) {
+        const to = [ref.coord[0] - minX + destOrigin[0], ref.coord[1] - minY + destOrigin[1]];
+        coordMoves.push({ coord: ref.coord, from: [ref.coord[0], ref.coord[1]], to });
+        if (!tilesSeen.has(ref.tile)) {
+          tilesSeen.add(ref.tile);
+          sheetIdMoves.push({
+            tile: ref.tile,
+            prev: ref.tile.sheetId,
+            had: Object.prototype.hasOwnProperty.call(ref.tile, "sheetId"),
+            next: destSheetEntry.id,
+          });
+        }
+      }
+
+      const applyPixels = (toDest) => {
+        srcLayers.forEach((l, li) => {
+          const dl = destImg.layers.get(l.suffix);
+          destCells.forEach(([x, y], i) => {
+            if (!dl) return;
+            destImg.write(dl, x * destGrid.w, y * destGrid.h, destGrid.w, destGrid.h,
+              toDest ? payload[li][i] : destBefore[li][i]);
+          });
+          srcCells.forEach(([x, y], i) => {
+            srcImg.write(l, x * w, y * h, w, h, toDest ? empty : srcBefore[li][i]);
+          });
+        });
+      };
+      const applyJson = (toDest) => {
+        for (const m of coordMoves) {
+          m.coord[0] = toDest ? m.to[0] : m.from[0];
+          m.coord[1] = toDest ? m.to[1] : m.from[1];
+        }
+        for (const m of sheetIdMoves) {
+          if (toDest) m.tile.sheetId = m.next;
+          else if (m.had) m.tile.sheetId = m.prev;
+          else delete m.tile.sheetId;
+        }
+      };
+
+      applyPixels(true);
+      applyJson(true);
+      this.#pendingDestWrites = this.#pendingDestWrites.filter((x) => x.sheet.key !== destSheetEntry.key);
+      this.#pendingDestWrites.push({ img: destImg, sheet: destSheetEntry });
+
+      this.#run(
+        `Mover ${srcCells.length} celda(s) → ${destSheetEntry.id}`,
+        () => {
+          applyPixels(true); applyJson(true);
+          this.#pendingDestWrites = this.#pendingDestWrites.filter((x) => x.sheet.key !== destSheetEntry.key);
+          this.#pendingDestWrites.push({ img: destImg, sheet: destSheetEntry });
+          this.#index(); this.#draw(); this.#renderPanel();
+        },
+        () => {
+          applyPixels(false); applyJson(false);
+          this.#pendingDestWrites = this.#pendingDestWrites.filter((x) => x.sheet.key !== destSheetEntry.key);
+          this.#index(); this.#draw(); this.#renderPanel();
+        },
+      );
+
+      this.selection.clear();
+      this.#index();
+      this.#draw();
+      this.#renderPanel();
+      this.studio.setStatus(
+        `Movido a «${destSheetEntry.id}» [${destOrigin.join(", ")}]. Ctrl+S guarda origen y destino.`,
+        "ok",
+      );
+      this.studio.toast(`Movido a ${destSheetEntry.id}`, { kind: "ok" });
+    }
+
     async #emptySelection() {
       const cells = this.#selectedCells();
       if (!cells.length) return;
@@ -1355,6 +1552,7 @@
         list,
         single ? this.#newTileForm(cells, null) : null,
         this.#importControls(cells),
+        h("button", { onclick: () => this.#promptMoveToOtherAtlas() }, "Mover a otro atlas…"),
         h("button", { class: "danger", onclick: () => this.#emptySelection() }, "Vaciar celdas (Supr)"));
     }
 
@@ -2431,6 +2629,14 @@
 
     async #write(backups) {
       const { written, created } = await this.img.save(this.project, backups);
+      if (this.#pendingDestWrites?.length) {
+        for (const { img } of this.#pendingDestWrites) {
+          const r = await img.save(this.project, backups);
+          written.push(...(r.written || []));
+          created.push(...(r.created || []));
+        }
+        this.#pendingDestWrites = [];
+      }
       // A map the sheet did not have must also be built by the content pipeline, with the sheet's own settings.
       for (const suffix of created) {
         const s = this.sheet;

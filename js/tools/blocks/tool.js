@@ -717,6 +717,7 @@
         this.#check("Quitar pixeles sueltos", "cleanup"),
         this.#check("Grises con el brillo de la textura", "grayFromTexture"));
 
+
       this.sizeSel = select({ label: "Tamaño sprite", value: String(this.o.size),
         options: [["32", "32 px"], ["48", "48 px"], ["64", "64 px"], ["96", "96 px"], ["128", "128 px"]],
         onChange: (v) => this.#set("size", Number(v)) });

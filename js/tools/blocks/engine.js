@@ -173,6 +173,7 @@
   // keeps it so it is saved with the rest).
   const BASE_DEFAULTS = { mode: "texture", color: "#5d5d5a", color2: "#8a8984", grain: 0.6, seed: 3 };
 
+
   const DEFAULTS = {
     size: 64,                   // sprite width and height, px; a full block always fills it
     res: 32,                    // voxels per block edge: 32 = one voxel per 2 px of a 64 px sprite, 64 = one per pixel
@@ -909,6 +910,7 @@
     }
     return { size: S, color, normal, depth, ao: aoMap, gray, mask, voxels: V, options: o };
   }
+
 
   // ── Pixel-art passes ─────────────────────────────────────────────────────────────────────────────────────────────
 
