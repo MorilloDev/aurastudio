@@ -164,3 +164,36 @@
   white-space: nowrap;
 }
 .bm-left { min-width: 0; overflow: hidden; }
+
+/* Structures create buttons — even 2×2 grid under the title */
+.bm-left .st-head {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px 10px 8px;
+}
+.bm-left .st-head-title {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+.bm-left .st-create-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  width: 100%;
+}
+.bm-left .st-create-btn {
+  width: 100%;
+  margin: 0;
+  padding: 7px 8px;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+.bm-left .st-create-btn.primary {
+  /* keep primary look but same size as siblings */
+}

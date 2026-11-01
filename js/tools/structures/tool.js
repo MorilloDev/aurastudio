@@ -246,13 +246,18 @@
 
     #buildLayout() {
       this.listEl = h("div", { class: "bm-list scroll" });
+            const mkBtn = (label, title, fn, primary = false) =>
+        h("button", { class: ["st-create-btn", primary && "primary"], title, onclick: fn }, label);
       const left = h("div", { class: "bm-left" },
-        h("div", { class: "bm-head" }, h("strong", null, "Estructuras"), h("span", { class: "grow" }),
-          h("button", { class: "primary", title: "Estructura nueva desde cero: un lienzo vacío donde pones los tiles uno a uno (crea la plantilla y la estructura que la usa)", onclick: () => this.#createByHand() }, "+ A mano"),
-          h("button", { title: "Árbol o arbusto nuevo", onclick: () => this.#create("tree") }, "+ Árbol"),
-          h("button", { title: "Estructura nueva hecha de plantillas (casas, ruinas)", onclick: () => this.#create("template") }, "+ Casa"),
-          h("button", { title: "Plantilla nueva, vacía, para construir bloque a bloque", onclick: () => this.#createTemplate() }, "+ Plantilla")),
+        h("div", { class: "bm-head st-head" },
+          h("strong", { class: "st-head-title" }, "Estructuras"),
+          h("div", { class: "st-create-grid" },
+            mkBtn("+ A mano", "Lienzo vacío: tiles uno a uno (plantilla + estructura)", () => this.#createByHand(), true),
+            mkBtn("+ Árbol", "Árbol o arbusto nuevo", () => this.#create("tree")),
+            mkBtn("+ Casa", "Estructura de plantillas (casas, ruinas)", () => this.#create("template")),
+            mkBtn("+ Plantilla", "Plantilla vacía, bloque a bloque", () => this.#createTemplate()))),
         this.listEl);
+
 
       this.toolbarEl = h("div", { class: "bm-toolbar" });
       this.isoCanvas = h("canvas", { class: "bm-canvas st-iso", tabindex: 0,
@@ -1339,8 +1344,23 @@
       const c = r.config ?? {};
       const crown = c.crown ?? {};
       const shape = crown.shape ?? "blob";
-      const width = segmented({ label: "Ancho", value: String(c.trunkWidth ?? 1), onChange: (v) => this.#set("Ancho", "config.trunkWidth", v === "2" ? 2 : undefined),
-        options: [["1", "1×1"], ["2", "2×2", "Tronco de cuatro columnas"]] });
+      const tw = Math.min(5, Math.max(1, Number(c.trunkWidth) || 1));
+      const width = segmented({
+        label: "Ancho",
+        value: String(tw),
+        title: "Grosor del tronco (sección horizontal)",
+        onChange: (v) => {
+          const n = Math.min(5, Math.max(1, Number(v) || 1));
+          this.#set("Ancho", "config.trunkWidth", n <= 1 ? undefined : n);
+        },
+        options: [
+          ["1", "1×1"],
+          ["2", "2×2"],
+          ["3", "3×3"],
+          ["4", "4×4"],
+          ["5", "5×5"],
+        ],
+      });
       const trunk = section({ id: "st-trunk", title: "Tronco" },
         this.#tileField("Tile", "config.trunk", "Sin tronco: un arbusto (solo copa)"),
         this.#pair("Altura", "config.trunkHeight", [0, 0], { max: 40, title: "Bloques de tronco, entre estos dos" }),
