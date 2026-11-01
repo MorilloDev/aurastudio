@@ -7,7 +7,7 @@
 // picker, the previews and saving.
 (function (Aura) {
   const { h } = Aura.dom;
-  const { section, slider, select, checkbox, segmented, numberPair, detailSwitch } = Aura.controls;
+  const { section, slider, select, checkbox, segmented, numberPair, detailSwitch, colorPicker } = Aura.controls;
   const { decodePng, encodePng } = Aura.png;
   const { downloadBlob, stripExt } = Aura.fs;
   const { prefs } = Aura.storage;
@@ -506,9 +506,12 @@
 
 
     #colorField(label, path, title = "") {
-      const input = h("input", { type: "color", value: this.#get(path), title,
-        oninput: (e) => this.#set(path, e.target.value) });
-      return h("div", { class: "field" }, h("label", null, label), input);
+      const cp = colorPicker({
+        label, value: this.#get(path) || "#FFFFFF", title,
+        onInput: (v) => this.#set(path, v),
+        onChange: (v) => this.#set(path, v),
+      });
+      return cp.el;
     }
 
     /** Piedra y mineral: what the stone is made of (atlas textures or two colours) and the mineral in it, from a colour or

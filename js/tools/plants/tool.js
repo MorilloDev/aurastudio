@@ -5,7 +5,7 @@
 // variants saved into consecutive atlas cells. The heavy parts are mesh.js, generators.js and raster.js.
 (function (Aura) {
   const { h } = Aura.dom;
-  const { section, slider, select, checkbox, segmented, numberPair, detailSwitch } = Aura.controls;
+  const { section, slider, select, checkbox, segmented, numberPair, detailSwitch, colorPicker } = Aura.controls;
   const { decodePng, encodePng } = Aura.png;
   const { downloadBlob } = Aura.fs;
   const { prefs } = Aura.storage;
@@ -229,8 +229,12 @@
       };
       const def = G.defaults(this.type)[key];
       if (kind === "color") {
-        const input = h("input", { type: "color", value: o[key], title: title ?? "", oninput: (e) => set(e.target.value) });
-        return h("div", { class: "field", ondblclick: () => { input.value = def; set(def); } }, h("label", { title: "Doble clic: por defecto" }, label), input);
+        const cp = colorPicker({ label, value: o[key], title: title ?? "", onInput: set, onChange: set });
+        cp.el.title = "Doble clic en la etiqueta: por defecto";
+        cp.el.addEventListener("dblclick", (e) => {
+          if (e.target.closest("label")) { cp.set(def); set(def); }
+        });
+        return cp.el;
       }
       if (kind === "bool") return checkbox({ label, value: o[key], title: title ?? "", onChange: set }).el;
       if (Array.isArray(kind)) return select({ label, value: o[key], options: kind, title: title ?? "", onChange: set }).el;
@@ -279,9 +283,15 @@
       return checkbox({ label, value: this.r[key], title, onChange: (v) => this.#rSet(key, v) }).el;
     }
     #rColor(label, key, title = "") {
-      const input = h("input", { type: "color", value: this.r[key], title, oninput: (e) => this.#rSet(key, e.target.value) });
-      return h("div", { class: "field", ondblclick: () => { input.value = R.DEFAULTS[key]; this.#rSet(key, R.DEFAULTS[key]); } },
-        h("label", { title: "Doble clic: por defecto" }, label), input);
+      const def = R.DEFAULTS[key];
+      const cp = colorPicker({
+        label, value: this.r[key], title: title || "Doble clic en etiqueta: por defecto",
+        onInput: (v) => this.#rSet(key, v), onChange: (v) => this.#rSet(key, v),
+      });
+      cp.el.addEventListener("dblclick", (e) => {
+        if (e.target.closest("label")) { cp.set(def); this.#rSet(key, def); }
+      });
+      return cp.el;
     }
     #rSet(path, v) {
       const keys = path.split(".");

@@ -7,7 +7,7 @@
 // Enviar al Atlas: N items = N grupos multipart visibles (o 1 si ninguno es multipart).
 (function (Aura) {
   const { h } = Aura.dom;
-  const { section, slider, select } = Aura.controls;
+  const { section, slider, select, colorPicker } = Aura.controls;
   const { encodePng } = Aura.png;
   const { downloadBlob } = Aura.fs;
   const { prefs } = Aura.storage;
@@ -2069,12 +2069,16 @@
           onChange: (v) => set(() => { L.blend = v; }),
         }).el,
         this.lNum(L, "opacity", "Opacidad", 0, 1, set, null, 0.05),
-        h("label", { class: "field" }, h("span", null, "Tint"),
-          h("input", {
-            type: "color", value: L.tint || "#ffffff",
-            oninput: (e) => set(() => { L.tint = e.target.value; }),
-          }),
-          h("button", { type: "button", onclick: () => set(() => { L.tint = null; this.rebuildProps(); }) }, "Sin tint")),
+        (() => {
+          const cp = colorPicker({
+            label: "Tint",
+            value: L.tint || "#ffffff",
+            onInput: (v) => set(() => { L.tint = v; }),
+            onChange: (v) => set(() => { L.tint = v; }),
+          });
+          return h("div", { class: "field" }, cp.el,
+            h("button", { type: "button", onclick: () => set(() => { L.tint = null; this.rebuildProps(); }) }, "Sin tint"));
+        })(),
       ).el);
 
       this.#pushDocSections(kids, setAo, ao);

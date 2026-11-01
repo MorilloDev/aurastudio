@@ -122,3 +122,21 @@
 .welcome .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .welcome .actions button { min-height: 36px; }
 .welcome .tip { margin-top: 18px; font-size: 12px; color: var(--faint); }
+
+/* Color picker: nativo + hex */
+.field-color .color-row {
+  display: flex; align-items: center; gap: 8px;
+}
+.field-color input[type="color"] {
+  width: 36px; height: 28px; padding: 0; border: 1px solid var(--line, #2a303c);
+  border-radius: 6px; background: transparent; cursor: pointer;
+}
+.field-color .ctl-hex {
+  flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px; letter-spacing: 0.02em; text-transform: uppercase;
+  padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--line, #2a303c); background: var(--bg, #0c0e12); color: var(--text, #e8eaef);
+}
+.field-color .ctl-hex:focus {
+  outline: none; border-color: var(--accent, #4ec9a0);
+}

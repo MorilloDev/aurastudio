@@ -1708,12 +1708,7 @@
         h("div", { class: "note" }, `${img.w}×${img.h} px · ${this.cols}×${this.rows} celdas · `, maps.length ? maps : "sin mapas"),
         ase ? h("p", { class: "note warn" }, "Tiene ", h("b", null, ase.name), ": si vuelves a exportar desde Aseprite, se pisa lo de aquí.") : null,
         h("div", { class: "field" }, h("label", null, "Cuadrícula"), h("div", { class: "pair" }, gw, gh)),
-        h("div", { class: "row" },
-          h("button", { class: "grow", onclick: () => this.#growSheet(0, 1) }, "Añadir fila"),
-          h("button", { class: "grow", onclick: () => this.#growSheet(1, 0) }, "Añadir columna")),
-        h("button", { onclick: () => this.#sortDocsByY(),
-          title: "Reordena los JSON que usan esta hoja por la Y de su arte (la más pequeña primero, luego la X). Cambia el orden de los ids en tiempo de ejecución; los mundos guardados no se ven afectados (se guardan por id)." },
-          "Ordenar JSON por Y"));
+        h("p", { class: "note" }, "Clic derecho en el lienzo: añadir fila/columna, ordenar JSON, vaciar, mover a otro atlas…"));
     }
 
     // One undo step for every file that has art on this sheet. Entries with no art keep their order, at the end.
@@ -1747,8 +1742,7 @@
         list,
         single ? this.#newTileForm(cells, null) : null,
         this.#importControls(cells),
-        h("button", { onclick: () => this.#promptMoveToOtherAtlas() }, "Mover a otro atlas…"),
-        h("button", { class: "danger", onclick: () => this.#emptySelection() }, "Vaciar celdas (Supr)"));
+        h("p", { class: "note" }, "Clic derecho: vaciar arte, mover a otro atlas, quitar tile… · ", h("b", null, "Supr"), " también vacía."));
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -2282,10 +2276,12 @@
           return field(this.#effectsEditor(current, commit), "wide");
         case "color": {
           const hex = typeof current === "string" ? current : "";
-          const picker = h("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(hex) ? hex : "#ffffff",
-            onchange: (e) => commit(e.target.value.toUpperCase()) });
+          const cp = Aura.controls.colorPicker({
+            value: hex || "#FFFFFF",
+            onChange: (v) => commit(v),
+          });
           const clearBtn = h("button", { class: "icon", title: "Sin color (luz blanca)", onclick: () => commit(undefined) }, "✕");
-          return field(h("div", { class: "at-pair" }, picker, h("span", { class: "faint mono" }, hex || "—"), clearBtn));
+          return field(h("div", { class: "at-pair" }, cp.el, clearBtn));
         }
         case "range": {
           const pair = Array.isArray(current) ? current : [];

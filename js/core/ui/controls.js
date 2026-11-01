@@ -153,6 +153,84 @@
     return h("span", { class: "kbd" }, text);
   }
 
+  /** Normaliza a #RRGGBB o null. Acepta #rgb, #rrggbb, rgb sin #. */
+  function normalizeHex(raw) {
+    if (raw == null) return null;
+    let s = String(raw).trim();
+    if (!s) return null;
+    if (s[0] !== "#") s = "#" + s;
+    const m3 = /^#([0-9a-f]{3})$/i.exec(s);
+    if (m3) {
+      const [r, g, b] = m3[1].split("");
+      s = "#" + r + r + g + g + b + b;
+    }
+    if (!/^#[0-9a-f]{6}$/i.test(s)) return null;
+    return s.toUpperCase();
+  }
+
+  /**
+   * Color nativo + campo hex editable (#84966A).
+   * onInput / onChange reciben siempre #RRGGBB en mayúsculas.
+   */
+  function colorPicker({ label, value = "#FFFFFF", title = "", onInput, onChange }) {
+    let hex = normalizeHex(value) || "#FFFFFF";
+    const picker = h("input", {
+      type: "color", value: hex, title: title || label || "Color", "aria-label": label || "Color",
+    });
+    const text = h("input", {
+      type: "text", class: "ctl-hex", value: hex, spellcheck: "false",
+      maxlength: 7, title: "Código hex (#RRGGBB)", "aria-label": (label || "Color") + " hex",
+      placeholder: "#RRGGBB",
+    });
+    const commit = (v, settle) => {
+      const n = normalizeHex(v);
+      if (!n) {
+        text.value = hex;
+        return;
+      }
+      hex = n;
+      picker.value = n;
+      text.value = n;
+      onInput?.(n);
+      if (settle) onChange?.(n);
+    };
+    picker.addEventListener("input", () => {
+      hex = picker.value.toUpperCase();
+      text.value = hex;
+      onInput?.(hex);
+    });
+    picker.addEventListener("change", () => {
+      hex = picker.value.toUpperCase();
+      text.value = hex;
+      onChange?.(hex);
+    });
+    text.addEventListener("input", () => {
+      const n = normalizeHex(text.value);
+      if (n) {
+        hex = n;
+        picker.value = n;
+        onInput?.(n);
+      }
+    });
+    text.addEventListener("change", () => commit(text.value, true));
+    text.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); text.blur(); }
+    });
+    const el = h("div", { class: "field field-color" },
+      label ? h("label", null, label, title ? help(title) : null) : null,
+      h("div", { class: "color-row" }, picker, text));
+    return {
+      el, picker, text,
+      get: () => hex,
+      set: (v) => {
+        const n = normalizeHex(v) || "#FFFFFF";
+        hex = n;
+        picker.value = n;
+        text.value = n;
+      },
+    };
+  }
+
   /**
    * Básico / Avanzado for a panel: in Básico the sections marked "adv" are hidden, so a first look shows only what
    * changes how the thing looks. The choice is shared by every panel that uses the same key.
@@ -165,5 +243,5 @@
     return seg.el;
   }
 
-  Aura.controls = { section, slider, select, checkbox, segmented, numberPair, kbd, help, detailSwitch };
+  Aura.controls = { section, slider, select, checkbox, segmented, numberPair, kbd, help, detailSwitch, colorPicker, normalizeHex };
 })(window.Aura ??= {});

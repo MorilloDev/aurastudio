@@ -12,7 +12,7 @@
   const { History } = Aura.history;
   const { prefs } = Aura.storage;
   const { writeHandle, joinPath, dirName, baseName } = Aura.fs;
-  const { section, slider, select, checkbox, segmented, help } = Aura.controls;
+  const { section, slider, select, checkbox, segmented, help, colorPicker } = Aura.controls;
   const { decodePng } = Aura.png;
   const B = Aura.biomeModel;
   const T = Aura.atlasTiles;
@@ -599,10 +599,14 @@
     #colorsSection(r) {
       const color = (label, key, title) => {
         const v = r.colors?.[key];
-        const input = h("input", { type: "color", value: Tint.hexToRgb(v) ? v : "#5ce365",
-          onchange: () => this.#edit(label, (x) => { (x.colors ??= {})[key] = input.value; }) });
+        const cp = colorPicker({
+          value: Tint.hexToRgb(v) ? v : "#5ce365",
+          title: title || label,
+          onChange: (hex) => this.#edit(label, (x) => { (x.colors ??= {})[key] = hex; }),
+        });
+        if (v) cp.set(v);
         const off = h("button", { class: "icon ghost", title: "Quitar (sin color: el juego usa el suyo por defecto)", onclick: () => this.#edit(label, (x) => { if (x.colors) delete x.colors[key]; }) }, "×");
-        return h("div", { class: "field" }, h("label", null, label, help(title)), h("div", { class: "row" }, input, h("span", { class: "mono faint" }, v ?? "—"), off));
+        return h("div", { class: "field" }, h("label", null, label, help(title)), h("div", { class: "row" }, cp.el, off));
       };
       return section({ id: "bm-colors", title: "Colores" },
         color("Follaje", "foliage", "Tiñe los tiles biome_tinted (hierba, hojas)"),
