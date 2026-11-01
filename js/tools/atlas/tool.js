@@ -741,6 +741,7 @@
         g.strokeRect(...rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1));
         g.setLineDash([]);
       }
+      if (this.crossMove && this.#hover) this.#drawCrossMoveGhost(g, rect);
       if (this.pending && this.#hover) this.#drawPlacementGhost(g, rect);
 
       if (this.#hover && !this.pending && !d) {
@@ -814,6 +815,35 @@
       g.setLineDash([]);
     }
 
+
+    #drawCrossMoveGhost(g, rect) {
+      const tr = this.crossMove;
+      if (!tr?.stamps?.length || !this.#hover) return;
+      const { w, h } = this.grid;
+      const [hx, hy] = this.#hover;
+      g.save();
+      g.globalAlpha = 0.75;
+      for (const s of tr.stamps) {
+        if (!s.color) continue;
+        const c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(s.color), w, h), 0, 0);
+        const r = rect(hx + s.dx, hy + s.dy);
+        g.drawImage(c, ...r);
+      }
+      g.globalAlpha = 1;
+      g.lineWidth = 2;
+      for (const s of tr.stamps) {
+        const x = hx + s.dx, y = hy + s.dy;
+        const r = rect(x, y);
+        const out = x < 0 || y < 0 || x >= this.cols || y >= this.rows;
+        const busy = this.#artCells.has(ck(x, y));
+        g.strokeStyle = out ? "rgba(240,180,90,.95)" : busy ? "rgba(239,111,108,.95)" : "rgba(95,211,176,.95)";
+        g.strokeRect(r[0] + 1, r[1] + 1, r[2] - 2, r[3] - 2);
+      }
+      g.restore();
+    }
+
     #drawPlacementGhost(g, rect) {
       const cells = this.#placementCells(this.#hover);
       for (let i = 0; i < cells.length; i++) {
@@ -870,6 +900,7 @@
         if (!this.img || e.button !== 0 || this.vp.wantsPan(e)) return;
         c.focus();
         const cell = this.#cellAt(e);
+        if (this.crossMove) { this.#commitCrossMove(cell); return; }
         if (this.pending) { this.#placeAt(cell); return; }
         if (this.picking) {
           if (this.#inside(cell)) { const p = this.picking; this.picking = null; p.apply(cell); }
@@ -1043,7 +1074,7 @@
     }
 
 
-    /** Mueve de verdad: píxeles (color + _n + mapas) a otra hoja y reescribe JSON (coords + sheetId). */
+    /** Mueve de verdad: elige atlas → clic en celdas destino (como Enviar al Atlas). */
     async #promptMoveToOtherAtlas() {
       const srcCells = this.#selectedCells();
       if (!srcCells.length) {
@@ -1067,46 +1098,88 @@
           return;
         }
       }
-      const pick = await this.#pickTargetSheet(others);
-      if (!pick) return;
-      await this.#moveCellsToSheet(srcCells, pick.sheet, pick.origin, touched);
+
+      const destSheet = await this.#pickTargetSheetOnly(others);
+      if (!destSheet) return;
+
+      // Congelar píxeles y plan JSON en el origen antes de cambiar de hoja
+      const { w, h } = this.grid;
+      const minX = Math.min(...srcCells.map((c) => c[0]));
+      const minY = Math.min(...srcCells.map((c) => c[1]));
+      const srcImg = this.img;
+      const srcSheet = this.sheet;
+      const srcLayers = [...srcImg.layers.values()];
+      const payload = srcLayers.map((l) => srcCells.map(([x, y]) => srcImg.read(l, x * w, y * h, w, h)));
+      const srcBefore = srcLayers.map((l) => srcCells.map(([x, y]) => srcImg.read(l, x * w, y * h, w, h)));
+      const colorLayer = srcImg.layers.get("");
+      const stamps = srcCells.map(([x, y], i) => ({
+        dx: x - minX,
+        dy: y - minY,
+        color: colorLayer ? srcImg.read(colorLayer, x * w, y * h, w, h) : null,
+      }));
+
+      const transfer = {
+        srcSheet, srcImg, srcCells, srcLayers, payload, srcBefore,
+        touchedRefs: touched, minX, minY, w, h, stamps,
+      };
+
+      if (!(await this.#settleUnsaved())) return;
+      await this.#loadSheet(destSheet, true);
+      if (!this.img) {
+        this.studio.toast("No se pudo abrir el atlas destino.", { kind: "bad" });
+        return;
+      }
+      const dg = this.grid;
+      if (dg.w !== w || dg.h !== h) {
+        this.studio.toast("La cuadrícula del destino no coincide.", {
+          kind: "bad",
+          detail: `Origen ${w}×${h}, destino ${dg.w}×${dg.h}.`,
+        });
+        // volver al origen si se puede
+        await this.#loadSheet(srcSheet, true);
+        return;
+      }
+
+      this.crossMove = transfer;
+      this.pending = null;
+      this.picking = null;
+      this.selection.clear();
+      this.#renderBanner();
+      this.#renderPanel();
+      this.#draw();
+      this.canvas?.focus?.();
+      this.studio.setStatus(
+        `Mover ${srcCells.length} celda(s) → «${destSheet.id}»: haz clic donde quieras colocar el bloque. Esc cancela.`,
+        "ok",
+      );
+      this.studio.toast("Clic en el atlas destino para colocar", { kind: "ok" });
     }
 
-    #pickTargetSheet(others) {
+    /** Solo lista de atlas (sin coordenadas): el destino se elige con clic. */
+    #pickTargetSheetOnly(others) {
       return new Promise((resolve) => {
-        const cells = this.#selectedCells();
-        const minX = Math.min(...cells.map((c) => c[0]));
-        const minY = Math.min(...cells.map((c) => c[1]));
-        const maxX = Math.max(...cells.map((c) => c[0]));
-        const maxY = Math.max(...cells.map((c) => c[1]));
-        const bw = maxX - minX + 1, bh = maxY - minY + 1;
         const host = h("div", {
           style: {
             position: "fixed", inset: "0", zIndex: "80", background: "rgba(0,0,0,.55)",
             display: "flex", alignItems: "center", justifyContent: "center", padding: "16px",
           },
         });
-        const box = h("div", { class: "dialog", style: { maxWidth: "420px", width: "100%" } });
-        const sel = h("select", { style: { width: "100%" } },
-          ...others.map((s) => h("option", { value: s.key }, s.id || s.path || s.key)));
-        const ox = h("input", { type: "number", min: 0, value: 0, style: { width: "72px" } });
-        const oy = h("input", { type: "number", min: 0, value: 0, style: { width: "72px" } });
+        const box = h("div", { class: "dialog", style: { maxWidth: "400px", width: "100%" } });
         const close = (v) => { host.remove(); resolve(v); };
+        const list = h("div", { class: "col", style: { gap: "6px", maxHeight: "50vh", overflow: "auto" } },
+          ...others.map((s) => h("button", {
+            style: { textAlign: "left", width: "100%" },
+            onclick: () => close(s),
+          }, s.id || s.path || s.key,
+            s.has?.n ? h("span", { class: "badge plain", style: { marginLeft: "8px" } }, "_n") : null,
+          )),
+        );
         box.append(
-          h("h2", null, "Mover a otro atlas"),
-          h("p", null, `Bloque ${bw}×${bh} celdas: color, _n y mapas. Actualiza coords y sheetId en el JSON.`),
-          h("label", null, "Atlas destino"),
-          sel,
-          h("div", { class: "row", style: { gap: "8px", alignItems: "center", marginTop: "8px" } },
-            h("span", null, "Celda destino"),
-            ox, h("span", null, ","), oy),
+          h("h2", null, "¿A qué atlas?"),
+          h("p", null, "Elige el atlas destino. Luego haz clic en las celdas donde quieras poner el bloque."),
+          list,
           h("div", { class: "actions" },
-            h("button", { onclick: () => close(null) }, "Cancelar"),
-            h("button", { class: "primary", onclick: () => {
-              const sheet = others.find((s) => s.key === sel.value);
-              if (!sheet) return close(null);
-              close({ sheet, origin: [Math.max(0, ox.value | 0), Math.max(0, oy.value | 0)] });
-            } }, "Mover")),
+            h("button", { onclick: () => close(null) }, "Cancelar")),
         );
         host.append(box);
         host.addEventListener("click", (e) => { if (e.target === host) close(null); });
@@ -1114,32 +1187,18 @@
       });
     }
 
-    async #moveCellsToSheet(srcCells, destSheetEntry, destOrigin, touchedRefs) {
-      const srcImg = this.img;
-      const { w, h } = this.grid;
-      const minX = Math.min(...srcCells.map((c) => c[0]));
-      const minY = Math.min(...srcCells.map((c) => c[1]));
-
-      let destImg;
-      try {
-        destImg = await this.studio.busy(new SheetImage(destSheetEntry).load(this.project));
-      } catch (err) {
-        this.studio.toast("No pude abrir el atlas destino", { kind: "bad", detail: String(err?.message || err) });
-        return;
-      }
-      const destGrid = this.#gridFor(destSheetEntry);
-      if (destGrid.w !== w || destGrid.h !== h) {
-        this.studio.toast("La cuadrícula del destino no coincide.", {
-          kind: "bad",
-          detail: `Origen ${w}×${h}, destino ${destGrid.w}×${destGrid.h}.`,
-        });
-        return;
-      }
+    async #commitCrossMove(destOrigin) {
+      const tr = this.crossMove;
+      if (!tr || !this.img) return;
+      const { srcImg, srcCells, srcLayers, payload, srcBefore, touchedRefs, minX, minY, w, h } = tr;
+      const destImg = this.img;
+      const destSheetEntry = this.sheet;
+      const destGrid = this.grid;
 
       const destCells = srcCells.map(([x, y]) => [destOrigin[0] + (x - minX), destOrigin[1] + (y - minY)]);
       if (destCells.some(([x, y]) =>
         x < 0 || y < 0 || (x + 1) * destGrid.w > destImg.w || (y + 1) * destGrid.h > destImg.h)) {
-        this.studio.toast("El destino se sale de la hoja.", { kind: "warn" });
+        this.studio.toast("Se sale de la hoja.", { kind: "warn", detail: "Elige otra celda o agranda el atlas." });
         return;
       }
 
@@ -1150,13 +1209,10 @@
         message: `${hits.length} celda(s) del destino ya tienen arte y se perderán al guardar.`,
       }))) return;
 
-      for (const suffix of srcImg.layers.keys()) {
-        if (suffix && !destImg.has(suffix)) destImg.ensure(suffix);
+      for (const l of srcLayers) {
+        if (l.suffix && !destImg.has(l.suffix)) destImg.ensure(l.suffix);
       }
 
-      const srcLayers = [...srcImg.layers.values()];
-      const srcBefore = srcLayers.map((l) => srcCells.map(([x, y]) => srcImg.read(l, x * w, y * h, w, h)));
-      const payload = srcLayers.map((l) => srcCells.map(([x, y]) => srcImg.read(l, x * w, y * h, w, h)));
       const destBefore = srcLayers.map((l) => {
         const dl = destImg.layers.get(l.suffix);
         return destCells.map(([x, y]) => dl
@@ -1169,8 +1225,11 @@
       const sheetIdMoves = [];
       const tilesSeen = new Set();
       for (const ref of touchedRefs) {
-        const to = [ref.coord[0] - minX + destOrigin[0], ref.coord[1] - minY + destOrigin[1]];
-        coordMoves.push({ coord: ref.coord, from: [ref.coord[0], ref.coord[1]], to });
+        coordMoves.push({
+          coord: ref.coord,
+          from: [ref.coord[0], ref.coord[1]],
+          to: [ref.coord[0] - minX + destOrigin[0], ref.coord[1] - minY + destOrigin[1]],
+        });
         if (!tilesSeen.has(ref.tile)) {
           tilesSeen.add(ref.tile);
           sheetIdMoves.push({
@@ -1209,27 +1268,33 @@
 
       applyPixels(true);
       applyJson(true);
-      this.#pendingDestWrites = this.#pendingDestWrites.filter((x) => x.sheet.key !== destSheetEntry.key);
-      this.#pendingDestWrites.push({ img: destImg, sheet: destSheetEntry });
 
+      // Origen (otra hoja) + destino actual deben guardarse
+      this.#pendingDestWrites = this.#pendingDestWrites.filter(
+        (x) => x.sheet.key !== tr.srcSheet.key && x.sheet.key !== destSheetEntry.key);
+      this.#pendingDestWrites.push({ img: srcImg, sheet: tr.srcSheet });
+      // destino es this.img — history/dirty lo cubre
+
+      this.crossMove = null;
       this.#run(
         `Mover ${srcCells.length} celda(s) → ${destSheetEntry.id}`,
         () => {
           applyPixels(true); applyJson(true);
-          this.#pendingDestWrites = this.#pendingDestWrites.filter((x) => x.sheet.key !== destSheetEntry.key);
-          this.#pendingDestWrites.push({ img: destImg, sheet: destSheetEntry });
-          this.#index(); this.#draw(); this.#renderPanel();
+          this.#pendingDestWrites = this.#pendingDestWrites.filter(
+            (x) => x.sheet.key !== tr.srcSheet.key);
+          this.#pendingDestWrites.push({ img: srcImg, sheet: tr.srcSheet });
+          this.#index(); this.#draw(); this.#renderPanel(); this.#renderBanner();
         },
         () => {
           applyPixels(false); applyJson(false);
-          this.#pendingDestWrites = this.#pendingDestWrites.filter((x) => x.sheet.key !== destSheetEntry.key);
-          this.#index(); this.#draw(); this.#renderPanel();
+          this.#pendingDestWrites = this.#pendingDestWrites.filter(
+            (x) => x.sheet.key !== tr.srcSheet.key);
+          this.#index(); this.#draw(); this.#renderPanel(); this.#renderBanner();
         },
       );
 
-      this.selection.clear();
-      this.#index();
-      this.#draw();
+      this.#select(destCells);
+      this.#renderBanner();
       this.#renderPanel();
       this.studio.setStatus(
         `Movido a «${destSheetEntry.id}» [${destOrigin.join(", ")}]. Ctrl+S guarda origen y destino.`,
@@ -1452,6 +1517,7 @@
     }
 
     #cancel() {
+      if (this.crossMove) { this.crossMove = null; this.#renderBanner(); this.#draw(); this.studio.setStatus("Movimiento cancelado.", "ok"); return; }
       if (this.pending) { this.pending = null; this.#renderBanner(); this.#draw(); return; }
       if (this.picking) { this.picking = null; this.#renderPanel(); this.#draw(); return; }
       if (this.selection.size) { this.selection.clear(); this.#renderPanel(); this.#draw(); }
