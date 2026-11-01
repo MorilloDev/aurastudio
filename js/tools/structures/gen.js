@@ -172,7 +172,9 @@
       const crown = config.crown && typeof config.crown === "object" ? config.crown : {};
       this.trunkTile = config.trunk != null ? short(config.trunk) : "";
       [this.trunkMin, this.trunkMax] = readIntRange(config.trunkHeight, 0, 0);
-      this.trunkWidth = config.trunkWidth === 2 ? 2 : 1;
+      const tw = Math.round(Number(config.trunkWidth) || 1);
+      this.trunkWidth = Math.min(5, Math.max(1, tw));
+      this.trunkNoise = f32(Math.min(1, Math.max(0, config.trunkNoise ?? 0)));
       this.crownTile = crown.tile != null ? short(crown.tile) : "";
       this.warp = f32(crown.warp ?? 0.3);
       this.shape = crown.shape === "layers" ? "layers" : crown.shape === "none" ? "none" : "blob";
@@ -280,8 +282,9 @@
 
     #limb(dirX, dirZ, level, length, rise, sink, minLevel, rng) {
       const limb = { cells: [] };
-      let x = this.trunkWidth === 2 && dirX > 0 ? 1 : 0;
-      let z = this.trunkWidth === 2 && dirZ > 0 ? 1 : 0;
+      const w = this.trunkWidth;
+      let x = dirX > 0 ? w - 1 : dirX < 0 ? 0 : Math.floor((w - 1) / 2);
+      let z = dirZ > 0 ? w - 1 : dirZ < 0 ? 0 : Math.floor((w - 1) / 2);
       for (let step = 0; step < length; step++) {
         const alongX = dirX !== 0 && (dirZ === 0 || step % 2 === 0);
         if (alongX) x += dirX; else z += dirZ;
@@ -295,11 +298,31 @@
     /** set(col, level, row, tile, dir, shape, rule): rule "plants" (air and plants only) or "soil" (and the ground). */
     write(tree, col, ground, row, set) {
       const w = this.trunkWidth;
+      const noise = this.trunkNoise;
+      const trunkCell = (dx, dz, level) => {
+        if (!(noise > 0) || w <= 1) return true;
+        const cx = (w - 1) * 0.5, cz = (w - 1) * 0.5;
+        const dist = Math.hypot(dx - cx, dz - cz);
+        const maxR = Math.max(0.5, w * 0.5);
+        // Bordes más irregulares: ruido por celda y por altura
+        const n = ((Math.sin((dx * 12.9898 + dz * 78.233 + level * 37.719) * 43758.5453) % 1) + 1) % 1;
+        const edge = dist > maxR - 0.85;
+        if (edge && n < noise * 0.85) return false;
+        // A veces falta un bloque interior cerca del borde
+        if (dist > maxR * 0.35 && n > 1 - noise * 0.25) return false;
+        return true;
+      };
       for (let i = 1; i <= tree.trunk; i++)
-        for (let dx = 0; dx < w; dx++) for (let dz = 0; dz < w; dz++) set(col + dx, ground + i, row + dz, this.trunkTile, 0, 0, "plants");
+        for (let dx = 0; dx < w; dx++) for (let dz = 0; dz < w; dz++) {
+          if (!trunkCell(dx, dz, i)) continue;
+          set(col + dx, ground + i, row + dz, this.trunkTile, 0, 0, "plants");
+        }
       const core = this.#coreLevels(tree);
       for (let i = 1; i <= core; i++)
-        for (let dx = 0; dx < w; dx++) for (let dz = 0; dz < w; dz++) set(col + dx, ground + tree.trunk + i, row + dz, this.trunkTile, 0, 0, "plants");
+        for (let dx = 0; dx < w; dx++) for (let dz = 0; dz < w; dz++) {
+          if (!trunkCell(dx, dz, tree.trunk + i)) continue;
+          set(col + dx, ground + tree.trunk + i, row + dz, this.trunkTile, 0, 0, "plants");
+        }
 
       if (tree.roots) this.#limbs(tree.roots, this.rootTile, "soil", col, ground, row, set);
       if (tree.branches) this.#limbs(tree.branches, this.branchTile, "plants", col, ground, row, set);

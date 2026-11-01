@@ -138,3 +138,29 @@
 .bm-thumb-cell { position: relative; width: 32px; height: 32px; }
 .bm-hab { position: absolute; left: 0; right: 0; bottom: -2px; font-size: 8px; line-height: 10px; text-align: center; color: var(--accent, #7fd1b9);
   background: rgba(0, 0, 0, 0.55); border-radius: 0 0 4px 4px; overflow: hidden; white-space: nowrap; }
+
+/* Structures list header: keep create buttons inside the panel */
+.bm-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+.bm-head > strong { flex: 0 0 auto; }
+.bm-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.bm-head-actions button {
+  font-size: 12px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+.bm-left { min-width: 0; overflow: hidden; }

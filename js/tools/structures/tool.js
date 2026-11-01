@@ -1344,7 +1344,9 @@
       const trunk = section({ id: "st-trunk", title: "Tronco" },
         this.#tileField("Tile", "config.trunk", "Sin tronco: un arbusto (solo copa)"),
         this.#pair("Altura", "config.trunkHeight", [0, 0], { max: 40, title: "Bloques de tronco, entre estos dos" }),
-        h("div", { class: "field" }, h("label", null, "Ancho"), width.el));
+        width.el,
+        this.#slide("Ruido tronco", "config.trunkNoise", 0, 0, 1, 0.05,
+          "Irregularidad del tronco: 0 = sección uniforme; más alto = bordes más rotos (mejor con 3×3 o más)"));
 
       const shapeSeg = segmented({ label: "Forma", value: shape, onChange: (v) => this.#edit("Forma de la copa", (x) => {
         const cr = (x.config ??= {}).crown ??= {};
