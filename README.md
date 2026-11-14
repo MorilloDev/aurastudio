@@ -48,6 +48,27 @@ tira la decoración como el juego.
 **Partículas.** El tamaño sigue la fórmula del juego (frame × escala × 16 px); vista isométrica o lateral, zoom y
 referencias (un bloque de 64 px y el jugador, 2,75 bloques).
 
+## Desde la línea de comandos (`tools/`)
+
+Los generadores de plantas, el constructor de malla y el rasterizador no tienen nada de DOM a propósito, así que el
+mismo código que dibuja la vista previa en la página puede dibujar sprites fuera del navegador. `tools/plant-lib.js`
+los carga bajo Node y añade lo justo para trabajar con las hojas: un lector y un escritor de PNG sin dependencias que
+nada hay que instalar, y una clase `Sheet` que pega celdas y hace crecer la hoja hacia abajo si hace falta.
+
+```
+node tools/make-flowers.js <carpeta del proyecto Aura>          dibuja las flores y los iconos de pétalos
+node tools/make-flowers.js <carpeta del proyecto Aura> --dry    dice qué dibujaría y en qué celda, sin tocar nada
+```
+
+`make-flowers.js` tiene la lista de flores y de iconos con su celda; cada una se describe con la variedad del
+generador (`PRESETS.FLOWER`) y lo poco que cambia. Las formas comunes —el matojo pequeño y derecho que cabe en la
+celda, y los pétalos sueltos vistos desde arriba— están una sola vez arriba del archivo, así que una flor nueva se
+añade con tres líneas y sale colocada como las demás. Volver a ejecutarlo después de retocar una variedad **redibuja
+todas** las que la usan, que es lo que la pestaña Plantas no puede hacer porque va de una en una.
+
+El icono de los pétalos se saca de la propia flor —sin tallo, la cabeza tumbada y repartida—, así que un icono
+siempre tiene el color de la planta de la que cae, también después de retocar esa variedad.
+
 ## Estructura
 
 ```
