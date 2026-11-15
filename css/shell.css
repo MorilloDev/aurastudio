@@ -1,6 +1,23 @@
 /* The studio frame: header with tool tabs and the project, the tool area, the status bar, and the overlays every tool
    shares (toasts, command palette, dialogs, shortcut help). */
-#app { display: grid; grid-template-rows: 52px 1fr 30px; height: 100vh; }
+#app { display: grid; grid-template-rows: 52px auto 1fr 30px; height: 100vh; }
+
+/* Rows are named one by one: the unsaved-work bar is hidden most of the time, and a hidden child leaves the grid
+   flow, which would move everything under it up a row. */
+.shell-head { grid-row: 1; }
+.shell-dirty { grid-row: 2; }
+.shell-body { grid-row: 3; }
+.shell-status { grid-row: 4; }
+
+/* Unsaved work in a tab nobody is looking at: named here instead of only in the browser's warning on the way out. */
+.shell-dirty {
+  display: flex; align-items: center; gap: 12px; padding: 6px 14px;
+  background: rgba(230, 180, 90, 0.10); border-bottom: 1px solid rgba(230, 180, 90, 0.28);
+  font-size: 12px; color: var(--text);
+}
+.shell-dirty[hidden] { display: none; }
+.shell-dirty-what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shell-dirty button { min-height: 26px; padding: 0 12px; font-size: 12px; }
 
 .shell-head {
   display: flex; align-items: center; gap: 12px; padding: 0 14px;

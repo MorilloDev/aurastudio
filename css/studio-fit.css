@@ -12,7 +12,7 @@ html, body {
   min-height: 0;
   min-width: 0;
   overflow: hidden;
-  grid-template-rows: 48px minmax(0, 1fr) 26px;
+  grid-template-rows: 48px auto minmax(0, 1fr) 26px;
 }
 
 .shell-head {

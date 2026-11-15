@@ -1,0 +1,39 @@
+/* Revisión: a long list to scan quickly, so rows are dense and the kind is a colour you read before the text. */
+
+/* The tab's own frame: a toolbar that stays put and a body that scrolls under it. */
+.tool-bar {
+  display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+  border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.tool-main { position: absolute; inset: 53px 0 0; display: flex; flex-direction: column; padding: 10px 16px 0; min-height: 0; }
+.tool-main > .row { gap: 6px; flex: none; }
+.doc-body { flex: 1; min-height: 0; overflow: auto; padding: 10px 0 16px; }
+.doc-list { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+.doc-row {
+  display: grid;
+  grid-template-columns: 62px minmax(120px, 2fr) 3fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+.doc-row:nth-child(odd) { background: var(--panel-2); }
+.doc-kind { font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: .04em; }
+.doc-kind.error { color: var(--bad, #e06c6c); }
+.doc-kind.aviso { color: var(--warn, #d9a441); }
+.doc-kind.nota { color: var(--muted, #8b8b96); }
+.doc-where { color: var(--muted, #8b8b96); overflow-wrap: anywhere; }
+.doc-what { overflow-wrap: anywhere; }
+
+.doc-uses { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.doc-use { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
+.doc-use-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+.doc-use-line { font-size: 12px; color: var(--text-2, inherit); padding: 1px 0; overflow-wrap: anywhere; }
+
+.doc-stations { display: flex; flex-direction: column; gap: 14px; margin-top: 8px; }
+.doc-station { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+.doc-sub { font-weight: 600; margin-bottom: 6px; }
+.doc-tier { flex: 1; min-width: 0; }
+.doc-tier-head { display: flex; gap: 6px; align-items: baseline; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted, #8b8b96); margin-bottom: 4px; }
+.doc-recipe { font-size: 12px; padding: 2px 6px; border-radius: 4px; background: var(--panel-2); margin-bottom: 2px; overflow-wrap: anywhere; }

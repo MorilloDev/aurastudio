@@ -17,6 +17,7 @@
   const { COMPANIONS, SheetImage } = Aura.atlasLayers;
   const T = Aura.atlasTiles;
   const PV = Aura.atlasPreview;
+  const IC = Aura.atlasIcons;
   const Tint = Aura.tint;
   const TP = Aura.tintPanel;
 
@@ -373,11 +374,12 @@
         });
       }
 
-      // Readable, but guardar would rewrite the file whole and take its comments with it, so they are left alone.
+      // A comment at the head of a file is put back on save; one in the middle of an entry has nowhere to go once the
+      // file is written again from the parsed tree, so that file stays read-only.
       const commented = this.docs.filter((d) => d.commented);
       if (commented.length) {
-        this.studio.toast(`${commented.length} archivo(s) tienen comentarios: los leo pero no los guardo.`, {
-          kind: "warn", detail: `${commented.map((d) => d.name).join(", ")} — quita el comentario del archivo para poder editarlo aquí.`,
+        this.studio.toast(`${commented.length} archivo(s) tienen comentarios por el medio: los leo pero no los guardo.`, {
+          kind: "warn", detail: `${commented.map((d) => d.name).join(", ")} — mueve el comentario a la cabecera del archivo para poder editarlo aquí.`,
         });
       }
     }
@@ -1747,7 +1749,11 @@
       if (this.placed) this.panel.append(this.#placedSection().el);
       this.panel.append(this.#selectionSection().el);
       // Item icons are never tinted by the biome: the grey workflow only belongs on tile sheets.
-      if (!this.#isItemSheet()) this.panel.append(this.#tintSection().el);
+      if (this.#isItemSheet()) {
+        this.panel.append(this.#iconSection().el);
+        this.panel.append(this.#batchIconsSection().el);
+      }
+      else this.panel.append(this.#tintSection().el);
       if (this.tile && this.#docOf(this.tile)) this.panel.append(this.#tileSection(this.tile).el);
       else this.tile = null;
       this.panel.append(this.#reviewSection().el);
@@ -2893,6 +2899,123 @@
       ].filter(Boolean);
       return section({ id: "at-review", title: "Revisión", extra: list.length ? String(list.length) : "todo bien" },
         list.length ? list : h("p", { class: "note" }, "Cada tile de esta hoja apunta a arte, y no hay ids repetidos."));
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Item icons
+
+    /**
+     * Draws an icon straight into the selected cell. Forge parts, ingots, plates and arrows are the same few shapes in
+     * a different metal, and drawing each one by hand in an external editor is how they ended up missing: here the
+     * shape and the metal are picked and the pixels land in the sheet, inside the same undo as everything else.
+     */
+    #iconSection() {
+      const cells = this.#selectedCells();
+      const canvas = h("canvas", { width: 64, height: 64, class: "at-icon-preview" });
+      const state = this.iconState ??= { shape: IC.SHAPES[0].id, material: IC.MATERIALS[0].id, shine: null };
+
+      const pixels = () => IC.makeIcon({ shape: state.shape, material: state.material, shine: state.shine ?? undefined });
+      const paint = () => canvas.getContext("2d").putImageData(new ImageData(pixels(), 64, 64), 0, 0);
+
+      const shape = select({
+        label: "Forma", value: state.shape, options: IC.SHAPES.map((x) => [x.id, x.label]),
+        onChange: (v) => { state.shape = v; state.shine = null; shine.input.value = String(IC.SHAPES.find((x) => x.id === v).shine); paint(); },
+      });
+      const material = select({
+        label: "Material", value: state.material, options: IC.MATERIALS.map((x) => [x.id, x.label]),
+        onChange: (v) => { state.material = v; paint(); },
+      });
+      const shine = { input: h("input", { type: "range", min: 0, max: 0.8, step: 0.05,
+        value: state.shine ?? IC.SHAPES.find((x) => x.id === state.shape).shine,
+        oninput: (e) => { state.shine = Number(e.target.value); paint(); } }) };
+
+      const write = h("button", {
+        class: "primary", disabled: cells.length !== 1,
+        title: cells.length === 1 ? "Escribe el icono en la celda seleccionada" : "Selecciona una sola celda",
+        onclick: () => this.#writeIcon(cells[0], pixels()),
+      }, "Pintar en la celda");
+
+      paint();
+      return section({ id: "at-icon", title: "Icono", extra: cells.length === 1 ? `[${cells[0].join(", ")}]` : "—", collapsed: true },
+        h("div", { class: "at-icon-row" }, canvas, h("div", { class: "grow" }, shape.el, material.el,
+          h("div", { class: "field" }, h("label", null, "Brillo"), shine.input))),
+        write,
+        h("p", { class: "note" }, "Pinta solo la capa de color. Queda en el historial: Ctrl+Z lo deshace."));
+    }
+
+    // The id says what most of these are: forge_iron_blade is a blade in iron, and guessing it saves picking both for
+    // thirty items in a row. Wrong guesses are changed in the row itself.
+    #guessIcon(id) {
+      const material = IC.MATERIALS.find((m) => id.includes(m.id))?.id
+        ?? (/bone|antler/.test(id) ? "bone" : /hide|leather/.test(id) ? "leather" : /wood|plank|log/.test(id) ? "wood" : "iron");
+      const shape = /_blade$|sword|dagger|spear/.test(id) ? "blade"
+        : /_head$|axe|pick|hammer/.test(id) ? "head"
+        : /_plate$|armor|chest|helmet/.test(id) ? "plate"
+        : /ingot|bar$/.test(id) ? "ingot"
+        : /arrow|bolt/.test(id) ? "arrow"
+        : /rod|stick|handle|shaft/.test(id) ? "rod"
+        : /gem|crystal|coin/.test(id) ? "disc"
+        : "sheet";
+      return { shape, material };
+    }
+
+    /**
+     * Every item of this sheet whose icon points at an empty cell, with a guess at what it should look like. Drawing
+     * them one by one is why so many of them are still blank; here the whole list is drawn in one step.
+     */
+    #batchIconsSection() {
+      const blanks = this.#sheetRefs.filter((r) => !this.#refHasArt(r) && T.isItemDoc(r.doc));
+      if (!blanks.length) {
+        return section({ id: "at-batch", title: "Iconos en lote", extra: "nada" , collapsed: true },
+          h("p", { class: "note" }, "Ningún item de esta hoja apunta a una celda vacía."));
+      }
+      const plan = blanks.map((r) => ({ ref: r, id: T.tileId(r.tile), ...this.#guessIcon(T.tileId(r.tile)), on: true }));
+      const rows = plan.map((p) => {
+        const box = h("input", { type: "checkbox", checked: true, onchange: (e) => { p.on = e.target.checked; } });
+        const shape = select({ value: p.shape, options: IC.SHAPES.map((x) => [x.id, x.label]), onChange: (v) => { p.shape = v; } });
+        const material = select({ value: p.material, options: IC.MATERIALS.map((x) => [x.id, x.label]), onChange: (v) => { p.material = v; } });
+        return h("label", { class: "field check at-batch-row", title: `${p.id} → [${p.ref.coord.join(", ")}]` },
+          box, h("span", { class: "grow" }, p.id), shape.el, material.el);
+      });
+      const run = h("button", { class: "primary", onclick: () => this.#writeIconBatch(plan.filter((p) => p.on)) }, `Dibujar los marcados`);
+      return section({ id: "at-batch", title: "Iconos en lote", extra: String(plan.length), collapsed: true },
+        h("p", { class: "note" }, "La forma y el metal salen del id; cámbialos en la fila que se equivoque."),
+        h("div", { class: "at-batch-list scroll" }, rows), run);
+    }
+
+    #writeIconBatch(plan) {
+      if (!plan.length) return;
+      const { w, h: ch } = this.grid;
+      if (w !== 64 || ch !== 64) {
+        this.studio.toast("El generador dibuja celdas de 64×64.", { kind: "warn", detail: `Esta hoja usa ${w}×${ch}.` });
+        return;
+      }
+      const color = this.img.color;
+      const cells = plan.map((p) => [p.ref.coord[0], p.ref.coord[1]]);
+      const before = cells.map(([x, y]) => this.img.read(color, x * w, y * ch, w, ch));
+      const after = plan.map((p) => IC.makeIcon({ shape: p.shape, material: p.material }));
+      this.#run(`Dibujar ${plan.length} icono(s)`,
+        () => this.#writeBlocks([color], cells, [after]),
+        () => this.#writeBlocks([color], cells, [before]));
+      this.#draw();
+      this.#renderPanel();
+      this.studio.setStatus(`${plan.length} icono(s) dibujados. Ctrl+S los guarda.`, "ok");
+    }
+
+    #writeIcon(cell, rgba) {
+      const { w, h } = this.grid;
+      if (w !== 64 || h !== 64) {
+        this.studio.toast("El generador dibuja celdas de 64×64.", { kind: "warn", detail: `Esta hoja usa ${w}×${h}.` });
+        return;
+      }
+      const color = this.img.color;
+      const [x, y] = cell;
+      const before = this.img.read(color, x * w, y * h, w, h);
+      this.#run(`Icono en [${cell.join(", ")}]`,
+        () => this.#writeBlocks([color], [cell], [[rgba]]),
+        () => this.#writeBlocks([color], [cell], [[before]]));
+      this.#draw();
+      this.studio.setStatus(`Icono pintado en [${cell.join(", ")}]. Ctrl+S lo guarda.`, "ok");
     }
 
     // -----------------------------------------------------------------------------------------------------------------

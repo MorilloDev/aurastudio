@@ -55,6 +55,10 @@
       this.openButton = h("button", { onclick: () => this.pickProject(), title: "Abrir la carpeta del proyecto (Ctrl+O)" }, "Abrir carpeta");
       this.reopenButton = h("button", { class: "primary", hidden: true, onclick: () => this.reopenProject() });
       this.rescanButton = h("button", { class: "icon ghost", hidden: true, title: "Volver a leer la carpeta (archivos nuevos o cambiados fuera)", onclick: () => this.rescan() }, "⟳");
+      this.dirtyList = h("span", { class: "shell-dirty-what" });
+      this.dirtyBar = h("div", { class: "shell-dirty", hidden: true },
+        this.dirtyList,
+        h("button", { class: "primary", onclick: () => this.saveAll() }, "Guardar todo"));
       this.body = h("main", { class: "shell-body" });
       this.message = h("span", { class: "msg" }, "Listo.");
       this.slotsEl = h("span", { class: "row", style: "gap: 14px" });
@@ -71,6 +75,7 @@
           this.tabs,
           h("span", { class: "shell-spacer" }),
           h("div", { class: "shell-project" }, this.projectName, this.rescanButton, this.reopenButton, this.openButton)),
+        this.dirtyBar,
         this.body,
         this.statusBar);
     }
@@ -102,6 +107,7 @@
       }
       this.active = tool;
       this.commands.setScope(tool.id);
+      this.refreshDirty();
       this.#clearSlots();
       tool.activate?.();
       prefs.set("tool", tool.id);
@@ -121,7 +127,50 @@
 
     /** Tools call this when their unsaved state may have changed. */
     refreshDirty() {
-      for (const t of this.tools) t.tab.classList.toggle("dirty", !!(t.mounted && t.isDirty?.()));
+      const dirty = [];
+      for (const t of this.tools) {
+        const is = !!(t.mounted && t.isDirty?.());
+        t.tab.classList.toggle("dirty", is);
+        if (is) dirty.push(t);
+      }
+      // Work is saved per tool, so unsaved changes in a tab nobody is looking at used to be invisible until the
+      // browser asked about them on the way out. The bar names them and saves the lot.
+      const names = dirty.map((t) => t.dirtyLabel?.() ?? t.title);
+      if (Aura.lang?.dirty) names.push("Textos");
+      this.dirtyBar.hidden = !names.length;
+      this.dirtyList.textContent = names.length
+        ? `Sin guardar: ${names.join(" · ")}`
+        : "";
+      this.#dirtyTools = dirty;
+    }
+
+    #dirtyTools = [];
+
+    /** Saves every tool with unsaved work, one after another: two tools may write the same file. */
+    async saveAll() {
+      this.refreshDirty();
+      const todo = this.#dirtyTools.filter((t) => typeof t.save === "function");
+      if (!todo.length && !Aura.lang?.dirty) { toast("No hay nada sin guardar."); return; }
+      const done = [], failed = [];
+      for (const tool of todo) {
+        try {
+          await this.busy(tool.save());
+          done.push(tool.dirtyLabel?.() ?? tool.title);
+        } catch (err) {
+          failed.push(`${tool.dirtyLabel?.() ?? tool.title}: ${err.message ?? err}`);
+        }
+      }
+      if (Aura.lang?.dirty) {
+        try {
+          await this.busy(Aura.lang.save());
+          done.push("Textos");
+        } catch (err) {
+          failed.push(`Textos: ${err.message ?? err}`);
+        }
+      }
+      this.refreshDirty();
+      if (failed.length) toast("No pude guardar todo.", { kind: "bad", detail: failed.join("\n") });
+      else toast(`Guardado: ${done.join(" · ")}`, { kind: "ok" });
     }
 
     // -------------------------------------------------------------------------------------------------------------------
@@ -179,6 +228,7 @@
       clear(this.projectName).append(h("b", null, project.name));
       this.projectName.title = `${project.files.size} archivos · ${project.mgcbs.length} .mgcb · ${project.atlases.length} atlas`;
       for (const t of this.tools) if (t.mounted) t.onProject?.(project);
+      this.refreshDirty();
       this.emit("project", project);
       this.setStatus(`${rescan ? "Releída" : "Abierta"} «${project.name}»: ${project.files.size} archivos, ${project.atlases.length} atlas, ${project.mgcbs.length} .mgcb.`, "ok");
     }
@@ -235,6 +285,7 @@
         { id: "studio.palette", title: "Paleta de comandos", group: "Studio", keys: ["Ctrl+K", "Ctrl+Shift+P"], whileTyping: true, hidden: true, run: () => this.commands.openPalette() },
         { id: "studio.keys", title: "Ver atajos de teclado", group: "Studio", keys: ["?"], run: () => this.openKeysheet() },
         { id: "studio.open", title: "Abrir carpeta del proyecto", group: "Studio", keys: ["Ctrl+O"], whileTyping: true, run: () => (this.lastHandle && !this.project ? this.reopenProject() : this.pickProject()) },
+        { id: "studio.saveAll", title: "Guardar todo", group: "Studio", keys: ["Ctrl+Shift+S"], whileTyping: true, enabled: () => !this.dirtyBar.hidden, run: () => this.saveAll() },
         { id: "studio.rescan", title: "Volver a leer la carpeta", group: "Studio", enabled: () => !!this.project, run: () => this.rescan() },
       ]);
     }

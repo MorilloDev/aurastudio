@@ -92,6 +92,47 @@
     return out;
   }
 
+  /**
+   * The comment block a file opens with, which is documentation of its own format and must survive a save. Returns the
+   * verbatim lines when every comment in the file sits in that header (before the first key), and null otherwise: a
+   * comment in the middle of an entry has no place to go back to once the file is rewritten from the parsed tree.
+   */
+  function headerComments(text) {
+    const src = text.replace(/\r\n/g, "\n");
+    const open = src.search(/[[{]/);
+    if (open < 0) return null;
+    let i = open + 1, end = i, inString = false, sawComment = false;
+    for (; i < src.length; i++) {
+      const c = src[i];
+      if (inString) {
+        if (c === "\\") i++;
+        else if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') break;                       // the first key: the header ends here
+      if (c === "/" && src[i + 1] === "/") {
+        i = src.indexOf("\n", i);
+        if (i < 0) i = src.length;
+        end = i;
+        sawComment = true;
+        continue;
+      }
+      if (c === "/" && src[i + 1] === "*") {
+        const close = src.indexOf("*/", i + 2);
+        i = close < 0 ? src.length : close + 1;
+        end = i + 1;
+        sawComment = true;
+        continue;
+      }
+    }
+    if (!sawComment) return null;
+    const header = src.slice(open + 1, end).replace(/^\n+/, "").replace(/\s+$/, "");
+    // Anything after the header must be comment-free, or saving would still lose something.
+    const rest = src.slice(end);
+    if (stripComments(rest) !== rest) return null;
+    return header;
+  }
+
   /** Every tile file of the project, parsed. A file that does not parse is listed with its error and never written. */
   async function loadDocs(project) {
     const entries = project.filter((e) => isTileFile(e) || isItemFile(e)).sort((a, b) => a.path.localeCompare(b.path));
@@ -111,7 +152,8 @@
         // matter: this tool rewrites the file whole, which would silently throw the comments away, so a file that has
         // any is read and shown but never saved (see isDocDirty) and the panel says so.
         const clean = stripComments(text);
-        doc.commented = clean !== text;
+        doc.header = clean !== text ? headerComments(text) : null;
+        doc.commented = clean !== text && doc.header === null;
         doc.root = JSON.parse(clean, floatKeyReviver(doc.style.floatKeys));
         attachList(doc);
         if (isItemDoc(doc)) doc.style.openNested = prefersOpenNested(doc, text);
@@ -136,7 +178,13 @@
   }
 
   // Item files are written fully open, as they are by hand: every object on its own lines, only plain arrays inline.
-  const serialize = (doc) => formatJson(doc.root, "", isItemDoc(doc) ? "open" : null, doc.style).replace(/\n/g, doc.eol) + doc.eol;
+  function serialize(doc) {
+    let text = formatJson(doc.root, "", isItemDoc(doc) ? "open" : null, doc.style);
+    // The file's opening comment block goes back where it was, right under the brace, so documenting a format here
+    // does not mean giving up editing the file in this tool.
+    if (doc.header) text = text.replace(/^([[{])\n/, (_, brace) => brace + "\n" + doc.header + "\n");
+    return text.replace(/\n/g, doc.eol) + doc.eol;
+  }
 
   // Hand-written item files differ on small objects inside an item: food.json opens { "type", "amount" } over four lines,
   // runes.json keeps { "amount": 15 } on one. Whichever way reproduces more of the file as read is kept for that file.

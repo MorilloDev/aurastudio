@@ -9,6 +9,7 @@
   studio.addTool(Aura.recipesTool.recipesTool());
   studio.addTool(Aura.structuresTool.structuresTool());
   studio.addTool(Aura.particlesTool.particlesTool());
+  studio.addTool(Aura.doctorTool.doctorTool());
   studio.registerToolSwitching();
   studio.start();
 
