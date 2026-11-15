@@ -494,19 +494,23 @@ const TIERS = ["crude", "sturdy", "mastered"];
 
 const FAMILIES = [
   { id: "workbench", row: 0, make: workbench },
-  { id: "woodworking_table", row: 1, make: woodworking },
-  { id: "stoneworking_table", row: 2, make: stoneworking },
-  { id: "smithing_table", row: 3, make: smithing },
-  { id: "tanning_rack", row: 4, make: tanning },
-  { id: "scribe_table", row: 5, make: scribe },
-  { id: "crucible", row: 6, make: crucible },
+  { id: "woodworking_table", row: 2, make: woodworking },
+  { id: "stoneworking_table", row: 4, make: stoneworking },
+  { id: "smithing_table", row: 6, make: smithing },
+  { id: "tanning_rack", row: 8, make: tanning },
+  { id: "scribe_table", row: 10, make: scribe },
+  { id: "crucible", row: 12, make: crucible },
 ];
 
-const CAULDRON_ROW = 7;
-const CAMPFIRE_AT = [3, 7];
+// A station gets two rows: the fronts, then the same cells seen from behind. The game mirrors those two for the
+// other two facings, so a bench whose vice, hide or bellows are only on one side needs its own back art.
+const CAULDRON_ROW = 14;
+const CAULDRON_BACK_ROW = 15;
+const CAMPFIRE_AT = [3, 14];
 const CAMPFIRE_FROM = [1, 3];   // where the campfire is in the sheet today
-const ENGRAVING_AT = [4, 7];
-const FURNACE_AT = { crude: [0, 8], sturdy: [4, 8], mastered: [0, 9] };   // [column, row]: front pair, then back pair
+const ENGRAVING_AT = [4, 14];
+const FURNACE_AT = { crude: [0, 16], sturdy: [4, 16], mastered: [0, 17] };   // [column, row]: front pair, then back pair
+const SHEET_ROWS = 18;
 
 // ── Run ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -550,32 +554,41 @@ function main() {
   const campfire = color.read(CAMPFIRE_FROM[0], CAMPFIRE_FROM[1]);
   const campfireNormal = normal.read(CAMPFIRE_FROM[0], CAMPFIRE_FROM[1]);
 
-  color.clear(10);
-  normal.clear(10);
+  color.clear(SHEET_ROWS);
+  normal.clear(SHEET_ROWS);
   const put = (col, row, cell) => { color.paste(col, row, cell.color); normal.paste(col, row, cell.normal); };
 
   const tiles = {};
   for (const family of FAMILIES) {
     for (const [i, tier] of TIERS.entries()) {
       const [far, near] = split(family.make(tier));
-      const col = i * 2;
+      const col = i * 2, back = family.row + 1;
       put(col, family.row, draw(far, "front"));
       put(col + 1, family.row, draw(near, "front"));
+      put(col, back, draw(far, "back"));
+      put(col + 1, back, draw(near, "back"));
       tiles[`${tier}_${family.id}`] = [[col, family.row], [col + 1, family.row]];
+      tiles[`${tier}_${family.id}_back`] = [[col, back], [col + 1, back]];
     }
   }
   for (const [i, tier] of TIERS.entries()) {
     put(i, CAULDRON_ROW, draw(cauldron(tier), "front"));
+    put(i, CAULDRON_BACK_ROW, draw(cauldron(tier), "back"));
     tiles[`${tier}_cauldron`] = [[i, CAULDRON_ROW]];
+    tiles[`${tier}_cauldron_back`] = [[i, CAULDRON_BACK_ROW]];
   }
   color.paste(CAMPFIRE_AT[0], CAMPFIRE_AT[1], campfire);
   normal.paste(CAMPFIRE_AT[0], CAMPFIRE_AT[1], campfireNormal);
   tiles.campfire = [CAMPFIRE_AT];
 
   const [engFar, engNear] = split(engraving());
+  const engBack = CAULDRON_BACK_ROW;
   put(ENGRAVING_AT[0], ENGRAVING_AT[1], draw(engFar, "front"));
   put(ENGRAVING_AT[0] + 1, ENGRAVING_AT[1], draw(engNear, "front"));
+  put(ENGRAVING_AT[0], engBack, draw(engFar, "back"));
+  put(ENGRAVING_AT[0] + 1, engBack, draw(engNear, "back"));
   tiles.crude_engraving_table = [ENGRAVING_AT, [ENGRAVING_AT[0] + 1, ENGRAVING_AT[1]]];
+  tiles.crude_engraving_table_back = [[ENGRAVING_AT[0], engBack], [ENGRAVING_AT[0] + 1, engBack]];
 
   for (const tier of TIERS) {
     const [col, row] = FURNACE_AT[tier];
