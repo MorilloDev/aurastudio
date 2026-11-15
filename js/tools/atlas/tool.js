@@ -349,6 +349,14 @@
           kind: "bad", detail: broken.map((d) => `${d.name}: ${d.error}`).join(" · "),
         });
       }
+
+      // Readable, but guardar would rewrite the file whole and take its comments with it, so they are left alone.
+      const commented = this.docs.filter((d) => d.commented);
+      if (commented.length) {
+        this.studio.toast(`${commented.length} archivo(s) tienen comentarios: los leo pero no los guardo.`, {
+          kind: "warn", detail: `${commented.map((d) => d.name).join(", ")} — quita el comentario del archivo para poder editarlo aquí.`,
+        });
+      }
     }
 
     // -----------------------------------------------------------------------------------------------------------------

@@ -61,6 +61,37 @@
     Object.defineProperty(root, "tiles", { value: list, enumerable: false, writable: true });
   }
 
+  // Takes // and /* */ out of JSON text, leaving everything inside strings alone — a path like "a//b" or a URL in a
+  // description must survive. Character by character on purpose: a regular expression cannot tell a comment from the
+  // same two characters inside a string, and getting that wrong corrupts the file silently.
+  function stripComments(text) {
+    let out = "", i = 0, inString = false;
+    while (i < text.length) {
+      const c = text[i];
+      if (inString) {
+        out += c;
+        if (c === "\\" && i + 1 < text.length) { out += text[i + 1]; i += 2; continue; }
+        if (c === '"') inString = false;
+        i++;
+        continue;
+      }
+      if (c === '"') { inString = true; out += c; i++; continue; }
+      if (c === "/" && text[i + 1] === "/") {
+        while (i < text.length && text[i] !== "\n" && text[i] !== "\r") i++;
+        continue;
+      }
+      if (c === "/" && text[i + 1] === "*") {
+        i += 2;
+        while (i + 1 < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+        i += 2;
+        continue;
+      }
+      out += c;
+      i++;
+    }
+    return out;
+  }
+
   /** Every tile file of the project, parsed. A file that does not parse is listed with its error and never written. */
   async function loadDocs(project) {
     const entries = project.filter((e) => isTileFile(e) || isItemFile(e)).sort((a, b) => a.path.localeCompare(b.path));
@@ -74,7 +105,14 @@
         const text = await file.text();
         doc.eol = text.includes("\r\n") ? "\r\n" : "\n";
         doc.style = { floatKeys: new Set(), openNested: false };
-        doc.root = JSON.parse(text, floatKeyReviver(doc.style.floatKeys));
+
+        // The game reads these with a parser that allows // and /* */; JSON.parse does not, so one comment in an item
+        // file used to make the whole atlas refuse the file. They are taken out for reading. Writing is a different
+        // matter: this tool rewrites the file whole, which would silently throw the comments away, so a file that has
+        // any is read and shown but never saved (see isDocDirty) and the panel says so.
+        const clean = stripComments(text);
+        doc.commented = clean !== text;
+        doc.root = JSON.parse(clean, floatKeyReviver(doc.style.floatKeys));
         attachList(doc);
         if (isItemDoc(doc)) doc.style.openNested = prefersOpenNested(doc, text);
         doc.baseline = serialize(doc);
@@ -122,7 +160,8 @@
 
   // Compared as written text, so undoing back to the loaded state makes the file clean again and a file whose only
   // "change" is our own formatting is never rewritten.
-  const isDocDirty = (doc) => !!doc.root && serialize(doc) !== doc.baseline;
+  // A file with comments in it is never dirty: it is read and shown, and left exactly as it is on disk.
+  const isDocDirty = (doc) => !!doc.root && !doc.commented && serialize(doc) !== doc.baseline;
 
   const docSheet = (doc, tile) => sheetKey(tile?.sheetId ?? doc.root?.sheetId);
   const docCell = (doc) => [doc.root?.tileWidth ?? CELL, doc.root?.tileHeight ?? CELL];
