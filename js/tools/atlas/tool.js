@@ -16,6 +16,7 @@
   const { addToMgcb } = Aura.mgcb;
   const { COMPANIONS, SheetImage } = Aura.atlasLayers;
   const T = Aura.atlasTiles;
+  const PV = Aura.atlasPreview;
   const Tint = Aura.tint;
   const TP = Aura.tintPanel;
 
@@ -2149,12 +2150,56 @@
         artRows.length ? artRows : h("p", { class: "note" }, isItem ? "Sin icono propio (no tiene \"iconCoord\")." : "Sin arte."),
         isItem ? this.#itemIconRow(tile, doc) : this.#addArtRow(tile, doc),
         isItem ? null : this.#partsBlock(tile, doc),
+        isItem || !PV.worthPreview(tile) ? null : this.#previewSection(tile).el,
         h("div", { class: "at-sub" }, "JSON"),
         raw, rawErr,
         h("div", { class: "row" },
           h("button", { class: "grow", onclick: applyRaw, title: "Sustituye la entrada por este JSON (se puede deshacer)" }, "Aplicar JSON"),
           h("button", { onclick: () => this.#openTile(tile, true), title: "Seleccionar sus celdas" }, "Ver celdas"),
           h("button", { class: "danger", onclick: () => this.#deleteTile(tile) }, "Quitar")));
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Preview: the piece put together the way the game puts it. Half a table on its own says nothing about whether the
+    // legs land on its corners, whether the top meets in the middle, or whether the back is just the front again.
+
+    #previewSection(tile) {
+      const doc = this.#docOf(tile);
+      const [tw, th] = T.docCell(doc);
+      const canvas = h("canvas", { class: "at-prev" });
+      const note = h("p", { class: "note" });
+      let cam = this.previewCam | 0;
+
+      const render = () => {
+        const comp = PV.compose(tile, { dir: 0, cam });
+        if (!comp.cells.length) { note.textContent = "Sin arte que componer."; return; }
+        const room = Math.max(160, (this.panel?.clientWidth || 300) - 36);
+        const wide = Math.max(...comp.cells.map((c) => c.x)) - Math.min(...comp.cells.map((c) => c.x)) + tw;
+        PV.draw(canvas, this.img.canvasOf(""), comp, { tw, th, zoom: wide * 2 <= room ? 2 : 1 });
+        note.textContent = [
+          comp.back ? "dibuja la espalda" : "dibuja el frente",
+          comp.flip ? "espejado" : null,
+          comp.swap ? "las mitades intercambian su arte" : null,
+        ].filter(Boolean).join(" · ");
+      };
+
+      const turn = (n) => h("button", {
+        class: ["icon", cam === n && "on"],
+        title: "Girar la cámara",
+        onclick: (e) => {
+          cam = n;
+          this.previewCam = n;
+          for (const b of e.target.parentElement.children) b.classList.toggle("on", b === e.target);
+          render();
+        },
+      }, PV.DIR_LABEL[PV.DIRS[n]]);
+
+      render();
+      return section({ id: "at-prev", title: "Vista previa", extra: `${PV.compose(tile, { dir: 0, cam }).cells.length} celda(s)` },
+        h("div", { class: "row" }, [0, 1, 2, 3].map(turn)),
+        h("div", { class: "at-prev-wrap" }, canvas),
+        note,
+        h("p", { class: "note faint" }, "Las cuatro vistas de la cámara, con las mismas reglas que el juego: espejo, intercambio de mitades y arte de espalda."));
     }
 
     // -----------------------------------------------------------------------------------------------------------------
