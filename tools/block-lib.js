@@ -84,6 +84,26 @@ function faces(make) {
   return tex;
 }
 
+/**
+ * The game's own material textures (Assets/Texture/Materials.png, cells of 64). A table built from these sits in the
+ * world as the same material as the blocks around it, which a texture invented here never quite does.
+ */
+function materials(project, cellSize = 64) {
+  const file = path.join(project, "App", "Content", "Assets", "Texture", "Materials.png");
+  const png = decodePNG(file);
+  const img = { w: png.width, h: png.height, rgba: png.rgba };
+  const cache = new Map();
+  return (col, row) => {
+    const key = col + "," + row;
+    if (!cache.has(key)) {
+      const rect = { x: col * cellSize, y: row * cellSize, w: cellSize, h: cellSize };
+      const face = E.faceTexture(img, rect);
+      cache.set(key, { top: face, left: face, right: face });
+    }
+    return cache.get(key);
+  };
+}
+
 // ── Render ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 // Furniture, not terrain: the ragged edge the engine puts on a block's bottom (grass over a cliff) only frays the
@@ -123,4 +143,4 @@ function stack(layers) {
   return { color, normal };
 }
 
-module.exports = { A, E, Sheet, encodePNG, decodePNG, texture, planks, grainTex, speckle, faces, layer, stack, hex, mix, rng };
+module.exports = { A, E, Sheet, encodePNG, decodePNG, materials, texture, planks, grainTex, speckle, faces, layer, stack, hex, mix, rng };
