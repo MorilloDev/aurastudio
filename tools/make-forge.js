@@ -38,6 +38,12 @@ const PART = {
     I.paint(c, (x, y) => [[14, 24], [50, 24], [14, 40], [50, 40]].some(([px, py]) =>
       (x - px) ** 2 + (y - py) ** 2 < 9) && I.plateShape(x, y), ...m, { shine: 0.9, rim: 0.1, maxDepth: 2 });
   },
+  // The blank rune: a stone tablet with the aura crystal set in it, nothing carved yet.
+  blank: () => (c) => {
+    I.paint(c, (x, y) => Math.abs(x - 32) < 17 && Math.abs(y - 32) < 21
+      && (Math.abs(x - 32) - 13) + (Math.abs(y - 32) - 17) < 4, "#3c3c42", "#8e8e98", { shine: 0.2, maxDepth: 10 });
+    I.paint(c, (x, y) => (x - 32) ** 2 / 36 + (y - 32) ** 2 / 64 < 1, "#2a3a5a", "#7fa8e8", { shine: 0.6, rim: 0.2, maxDepth: 5 });
+  },
   arrow: (m) => (c) => {
     I.paint(c, I.fletchShape, ...FEATHERC, { shine: 0.15 });
     I.paint(c, (x, y) => I.arrowShape(x, y) && y >= 22, ...WOODC, { shine: 0.1 });
@@ -59,6 +65,7 @@ const LAYOUT = [
   ["steel_plate", "plate", "steel", 9, 9],
   ["iron_arrow", "arrow", "iron", 0, 7],
   ["steel_arrow", "arrow", "steel", 1, 7],
+  ["blank_rune", "blank", "iron", 10, 9],
 ];
 
 function main() {
