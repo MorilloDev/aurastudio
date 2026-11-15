@@ -23,6 +23,28 @@
   const ck = (x, y) => x + "," + y;
   const pk = (key) => key.split(",").map(Number);
   const sortCells = (cells) => cells.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+  // Maps whose pixels point somewhere: mirroring the picture has to mirror the direction too, or the light comes from
+  // the wrong side. The generator writes R = screen right, G = screen up (blocks/engine.js), so a horizontal flip
+  // inverts R and a vertical one inverts G.
+  const DIRECTIONAL_LAYERS = new Set(["_n", "_d"]);
+
+  function flipBlock(src, w, h, flipX, flipY, directional) {
+    const out = new Uint8ClampedArray(src.length);
+    for (let y = 0; y < h; y++) {
+      const sy = flipY ? h - 1 - y : y;
+      for (let x = 0; x < w; x++) {
+        const sx = flipX ? w - 1 - x : x;
+        const s = (sy * w + sx) * 4, d = (y * w + x) * 4;
+        const lit = directional && src[s + 3] > 0;
+        out[d] = lit && flipX ? 255 - src[s] : src[s];
+        out[d + 1] = lit && flipY ? 255 - src[s + 1] : src[s + 1];
+        out[d + 2] = src[s + 2];
+        out[d + 3] = src[s + 3];
+      }
+    }
+    return out;
+  }
+
   const TINT_TAG = "biome_tinted";
   const isTinted = (tile) => Array.isArray(tile?.tags) && tile.tags.some((t) => String(t).toLowerCase() === TINT_TAG);
 
@@ -1361,6 +1383,21 @@
         action: () => this.#emptySelection(),
       });
       items.push({
+        label: "Voltear horizontal",
+        disabled: !hasSel || !hasArt,
+        action: () => this.#flipSelection(true, false),
+      });
+      items.push({
+        label: "Voltear vertical",
+        disabled: !hasSel || !hasArt,
+        action: () => this.#flipSelection(false, true),
+      });
+      items.push({
+        label: "Voltear las dos",
+        disabled: !hasSel || !hasArt,
+        action: () => this.#flipSelection(true, true),
+      });
+      items.push({
         label: "Mover a otro atlas…",
         disabled: !hasSel || !otherAtlases.length,
         action: () => this.#promptMoveToOtherAtlas(),
@@ -1456,6 +1493,22 @@
       this.#run(`Vaciar ${cells.length} celda(s)`,
         () => { for (const l of layers) for (const [x, y] of cells) this.img.clear(l, x * w, y * h, w, h); },
         () => this.#writeBlocks(layers, cells, before));
+    }
+
+    /** Mirrors the art of every selected cell, in the colour sheet and in its maps, as one undo step. */
+    #flipSelection(flipX, flipY) {
+      const cells = this.#selectedCells();
+      if (!cells.length) return;
+      const { w, h } = this.grid;
+      const layers = [...this.img.layers.values()];
+      const before = layers.map((l) => cells.map(([x, y]) => this.img.read(l, x * w, y * h, w, h)));
+      const after = layers.map((l, li) =>
+        before[li].map((block) => flipBlock(block, w, h, flipX, flipY, DIRECTIONAL_LAYERS.has(l.suffix))));
+      const what = flipX && flipY ? "Voltear" : flipX ? "Voltear horizontal" : "Voltear vertical";
+      this.#run(`${what} ${cells.length} celda(s)`,
+        () => this.#writeBlocks(layers, cells, after),
+        () => this.#writeBlocks(layers, cells, before));
+      this.#draw();
     }
 
     /** Adds whole rows or columns of cells (transparent) to the sheet and its maps. */
