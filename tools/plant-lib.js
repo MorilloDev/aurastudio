@@ -167,6 +167,22 @@ class Sheet {
     }
   }
 
+  /** A copy of one cell's pixels. */
+  read(col, row) {
+    const c = this.cell, out = new Uint8Array(c * c * 4);
+    for (let y = 0; y < c; y++) {
+      const src = ((row * c + y) * this.width + col * c) * 4;
+      out.set(this.rgba.subarray(src, src + c * 4), y * c * 4);
+    }
+    return out;
+  }
+
+  /** Empties the sheet and sets it to `rows` rows of cells, for a layout that is being drawn from scratch. */
+  clear(rows) {
+    this.height = rows * this.cell;
+    this.rgba = new Uint8Array(this.width * this.height * 4);
+  }
+
   /** True when every pixel of a cell is transparent. */
   isEmpty(col, row) {
     const c = this.cell;
