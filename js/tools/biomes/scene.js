@@ -301,5 +301,102 @@
     return true;
   }
 
-  Aura.biomeScene = { KIND, short, loadStructures, structureTiles, buildScene };
+  /**
+   * A cut-away of a cave biome: a block of its rock with a hollow eaten through it, and its decoration on the floor and
+   * under what is left of the ceiling.
+   *
+   * The hollow is two noise fields, a floor and a roof, rather than the game's 3D carve: the carve is a volume, and a
+   * patch this small would show one slice of one cavern and read as a corridor. Two fields give a room with a rolling
+   * floor and pillars where they meet, which is what a cavern looks like from inside. The roof is kept over the far
+   * half only, so the view can see in from anywhere it is orbited to and the ceiling decoration still has rock to hang
+   * from.
+   */
+  function buildCaveScene(root, info, opts) {
+    const N = opts.size, seed = opts.seed ?? 1, dens = opts.density ?? 1;
+    const FLOOR = 2, ROOF = 2;
+
+    const field = (x, z, sd, scale) => noise2(x / scale, z / scale, sd);
+    const floorAt = (x, z) => FLOOR + Math.round(field(x, z, seed * 13 + 3, 6) * 2.2);
+    const roofAt = (x, z) => floorAt(x, z) + 4 + Math.round(field(x, z, seed * 29 + 7, 5) * 7);
+
+    let highest = 0;
+    for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) highest = Math.max(highest, roofAt(x, z));
+    const H = highest + ROOF + 1;
+
+    const scene = new Scene(N, H);
+    const wall = short(root?.materials?.wall) || "stone";
+    const rock = scene.tileOf(wall, KIND.solid);
+    scene.soil.add(rock);
+
+    // Only the rock that frames the hollow, never a block of it: the ground under the floor, the pillars where the
+    // roof comes down to meet it, a slab of ceiling over the far half and walls along the two far sides. A full block
+    // with a cave eaten out of it is what the game builds, but from outside it is a cube and the cave is the part you
+    // cannot see — so this is the cut-away, open toward the camera.
+    const hollow = [];
+    for (let z = 0; z < N; z++) {
+      for (let x = 0; x < N; x++) {
+        const f = floorAt(x, z), r = Math.min(H - ROOF - 1, roofAt(x, z));
+        for (let y = 0; y <= f; y++) scene.set(x, y, z, rock);
+
+        const backWall = x === N - 1 || z === N - 1;
+        if (r - f < 3 || backWall) {
+          // A pillar, or the rock the room is cut into along its far sides.
+          for (let y = f + 1; y < H; y++) scene.set(x, y, z, rock);
+          continue;
+        }
+
+        const roofed = z >= N / 2;
+        if (roofed) for (let y = r; y < Math.min(H, r + ROOF); y++) scene.set(x, y, z, rock);
+        hollow.push({ x, z, floor: f, roof: roofed ? r : -1 });
+      }
+    }
+
+    const entries = (root?.decoration ?? []).map((d) => ({ d, id: short(d.tile), on: d.on ?? "caveFloor" }));
+    const counts = new Map(), missing = new Set();
+
+    for (const cell of hollow) {
+      const roll = hash(cell.x, cell.z, seed * 7 + 5);
+      let acc = 0;
+      for (const e of entries) {
+        if (e.on === "caveCeiling" && cell.roof < 0) continue;
+        acc += weightOfEntry(e.d, cell.x, cell.z, seed) * dens;
+        if (roll >= acc) continue;
+        const meta = info(e.id);
+        if (!meta) { missing.add(e.id); break; }
+        const y = e.on === "caveCeiling" ? cell.roof - 1 : cell.floor + 1;
+        scene.set(cell.x, y, cell.z, scene.tileOf(e.id, meta.plant ? KIND.plant : KIND.solid));
+        counts.set(e.id, (counts.get(e.id) ?? 0) + 1);
+        break;
+      }
+    }
+
+    return { scene, counts, missing, hollow: hollow.length };
+  }
+
+  /** One entry's chance here, with its clump field when it has one — the same weight the game works out. */
+  function weightOfEntry(entry, x, z, seed) {
+    const chance = Number(entry?.chance) || 0;
+    const c = entry?.cluster;
+    if (!c) return chance;
+    const count = Math.max(0.05, Number(c.count) || 2);
+    const radius = Math.max(1, Number(c.radius) || 6);
+    const falloff = Math.max(0.1, Number(c.falloff) || 1.5);
+    const outside = Math.min(1, Math.max(0, Number(c.outside) || 0));
+    const spacing = Math.max(2, Math.round(32 / Math.sqrt(count)));
+    const cellX = Math.floor(x / spacing), cellZ = Math.floor(z / spacing);
+    let strongest = 0;
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const cx = cellX + dx, cz = cellZ + dz;
+        const centreX = cx * spacing + hash(cx, cz, 0x0c1) * spacing;
+        const centreZ = cz * spacing + hash(cz, cx, 0x0c2) * spacing;
+        const d = Math.hypot(x - centreX, z - centreZ) / radius;
+        if (d >= 1) continue;
+        strongest = Math.max(strongest, Math.pow(1 - d, falloff));
+      }
+    }
+    return chance * (outside + (1 - outside) * strongest);
+  }
+
+  Aura.biomeScene = { KIND, short, loadStructures, structureTiles, buildScene, buildCaveScene, weightOfEntry };
 })(window.Aura ??= {});

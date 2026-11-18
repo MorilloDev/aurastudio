@@ -216,8 +216,9 @@
     }
 
     #select(doc) {
-      // The sample and the 3D patch are built from a surface biome's materials, which a cave biome has none of.
-      if (doc?.cave && this.view !== "depth") { this.view = "depth"; this.viewSeg?.set?.("depth"); }
+      // Only the climate map is about surface biomes alone, and only the depth chart about cave ones; the sample and
+      // the 3D patch now build either, so a view that still fits is left where it is.
+      if (doc?.cave && this.view === "climate") { this.view = "depth"; this.viewSeg?.set?.("depth"); }
       else if (!doc?.cave && this.view === "depth") { this.view = "climate"; this.viewSeg?.set?.("climate"); }
       this.current = doc;
       this.suggestOpen = false;
@@ -851,10 +852,9 @@
     #draw3d() {
       clear(this.legend);
       const say = (text, cls = "faint") => this.legend.append(h("span", { class: cls }, text));
-      const r = this.current?.cave ? null : this.current?.root;
-      if (!r || B.kindOf(r) === "ocean") {
-        say(this.current?.cave ? "Un bioma de cueva no tiene superficie que mostrar: mira la vista de profundidad."
-          : r ? "El mar abierto no tiene suelo que mostrar." : "");
+      const r = this.current?.root;
+      if (!r || (!this.current.cave && B.kindOf(r) === "ocean")) {
+        say(r ? "El mar abierto no tiene suelo que mostrar." : "");
         this.voxel?.setScene?.(new EmptyScene(), () => [0, 0, 0, 1], false);
         return;
       }
@@ -866,6 +866,7 @@
 
       // Every tile the patch can hold, so their sheets are decoded before the colours are read.
       const v = this.view3d;
+      if (this.current.cave) { this.#draw3dCave(r, v, say); return; }
       const ids = new Set(["water", r.materials?.surface, r.materials?.shallow ?? "dirt", r.materials?.deep ?? "stone",
         ...(r.materials?.surfaceVariants ?? []).map((x) => x.tile), ...(r.decoration ?? []).map((d) => d.tile)].filter(Boolean).map(Scene.short));
       if (v.structures)
@@ -913,6 +914,48 @@
       say(`${v.size}×${v.size} · ${Math.round(st.ms)} ms` + (v.structures ? ` · ${placed || "ninguna estructura"}` : " · estructuras ocultas"));
       if (st.missing.size) say(` · no existen o no son de un tipo que el Studio sepa dibujar: ${[...st.missing].join(", ")}`, "bad-text");
       say(" · los colores son el promedio del sprite de cada tile");
+    }
+
+    // A cut-away of the cave: its rock with a hollow eaten through it and its decoration where it grows. The rest of
+    // the 3D path is shared — the same voxel view, the same colours averaged from each tile's sprite.
+    #draw3dCave(r, v, say) {
+      const ids = new Set([Scene.short(r.materials?.wall) || "stone",
+        ...(r.decoration ?? []).map((d) => d.tile)].filter(Boolean).map(Scene.short));
+      const infos = [...ids].map((id) => this.#tileInfo(id)).filter(Boolean);
+      const pending = [...new Set(infos.map((i) => i.sheet))].filter((k) => !this.#sheets.has(k) || this.#sheets.get(k).value === undefined);
+      if (pending.length) {
+        say("Cargando hojas\u2026");
+        Promise.all(pending.map((k) => this.#sheetCanvas(k))).then(() => this.#draw());
+        return;
+      }
+
+      const key = JSON.stringify(["cave", r, v.size, v.seed, v.density]);
+      const reframe = this.scene3dDoc !== this.current || this.scene3dSize !== v.size;
+      if (key !== this.scene3dKey) {
+        const t0 = performance.now();
+        const built = Scene.buildCaveScene(r, (id) => this.#caveTileMeta(id), { size: v.size, seed: v.seed, density: v.density });
+        this.voxel.setScene(built.scene, (p) => this.#tileColor(p, Tint.hexToRgb(Tint.DEFAULT_TINT.hex)), reframe);
+        this.scene3dKey = key;
+        this.scene3dDoc = this.current;
+        this.scene3dSize = v.size;
+        this.scene3dStats = { ...built, ms: performance.now() - t0 };
+      } else {
+        this.voxel.render();
+      }
+
+      const st = this.scene3dStats;
+      const placed = [...st.counts.entries()].map(([id, n]) => `${id} ${n}`).join(" \u00b7 ");
+      say(`${v.size}\u00d7${v.size} \u00b7 ${st.hollow} casillas de hueco \u00b7 ${Math.round(st.ms)} ms \u00b7 ${placed || "nada crece aqu\u00ed"}`);
+      if (st.missing.size) say(` \u00b7 no existen: ${[...st.missing].join(", ")}`, "bad-text");
+      say(" \u00b7 el techo solo cubre la mitad del fondo, para poder ver dentro");
+    }
+
+    #caveTileMeta(id) {
+      const t = this.#tileInfo(id);
+      if (!t) return null;
+      const tags = (t.tile.tags ?? []).map((x) => String(x).toLowerCase());
+      const category = String(t.doc?.root?.category ?? "").toLowerCase();
+      return { plant: category === "foliage" || tags.includes("no_collision") || tags.includes("tiny") };
     }
 
     // A tile's colour: its sprite's average over the opaque pixels — of the top half for blocks, where the lit top is —
@@ -1094,12 +1137,9 @@
      */
     #drawSample(g, W, H) {
       clear(this.legend);
-      const r = this.current?.cave ? null : this.current?.root;
-      if (!r) {
-        if (this.current?.cave)
-          this.legend.append(h("span", { class: "faint" }, "Un bioma de cueva no tiene superficie: mira la vista de profundidad."));
-        return;
-      }
+      const r = this.current?.root;
+      if (!r) return;
+      if (this.current.cave) { this.#drawCaveSample(g, W, H, r); return; }
       const kind = B.kindOf(r);
       const surface = this.#tileInfo(r.materials?.surface);
       if (kind === "ocean" || !surface) {
@@ -1290,6 +1330,85 @@
 
       if (grey.length) this.legend.append(h("span", { class: "bad-text", title: "Se ven grises porque su arte es gris y no tienen el tag biome_tinted: el juego tampoco los tiñe." },
         ` · grises sin biome_tinted: ${grey.slice(0, 6).join(", ")}${grey.length > 6 ? "…" : ""}`));
+    }
+
+    /**
+     * The same cut-away the 3D view builds, drawn with the real sprites in the game's own projection: the cave's floor
+     * of its rock, its pillars, what is left of the roof, and its decoration where it grew. Built from one scene so
+     * the two views cannot disagree about what this biome looks like.
+     */
+    #drawCaveSample(g, W, H, r) {
+      const wallId = Scene.short(r.materials?.wall) || "stone";
+      const wall = this.#tileInfo(wallId);
+      if (!wall) {
+        g.fillStyle = "#f0b45a"; g.font = "13px system-ui";
+        g.fillText(`No encuentro el tile de la roca \u00ab${wallId}\u00bb.`, 20, 30);
+        return;
+      }
+      const decoInfos = (r.decoration ?? []).map((d) => this.#tileInfo(d.tile));
+      const need = new Set([wall, ...decoInfos].filter(Boolean).map((i) => i.sheet));
+      const pending = [...need].filter((k) => !this.#sheets.has(k) || this.#sheets.get(k).value === undefined);
+      if (pending.length) {
+        for (const k of pending) this.#sheetCanvas(k).then(() => this.#draw());
+        g.fillStyle = "#98a0aa"; g.fillText("Cargando hojas\u2026", 20, 30);
+        return;
+      }
+
+      const N = this.sample.size, seed = this.sample.seed, dens = this.sample.density;
+      const built = Scene.buildCaveScene(r, (id) => this.#caveTileMeta(id), { size: N, seed, density: dens });
+      const sc = built.scene;
+
+      const S = wall.tw, E = Aura.blockEngine, BH = E.BLOCK_HEIGHT;
+      const o = E.project([0, 0, 0], S, BH), px = E.project([1, 0, 0], S, BH), py = E.project([0, 1, 0], S, BH), pz = E.project([0, 0, BH], S, BH);
+      const at = (i, j, l) => [i * (px[0] - o[0]) + j * (py[0] - o[0]) + l * (pz[0] - o[0]), i * (px[1] - o[1]) + j * (py[1] - o[1]) + l * (pz[1] - o[1])];
+
+      // Only what can be seen: a cell with solid rock on every side it could be looked at from is never drawn, which
+      // takes a block of N² × 22 cells down to its shell and keeps this as quick as the surface sample.
+      const solid = (x, y, z) => sc.at(x, y, z) !== 0;
+      const pieces = [];
+      for (let y = 0; y < sc.height; y++) {
+        for (let z = 0; z < sc.size; z++) {
+          for (let x = 0; x < sc.size; x++) {
+            const p = sc.at(x, y, z);
+            if (!p) continue;
+            if (solid(x, y + 1, z) && solid(x + 1, y, z) && solid(x, y, z + 1) && x > 0 && z > 0) continue;
+            const id = sc.palette[p].id;
+            const info = this.#tileInfo(id);
+            if (!info) continue;
+            const coord = info.coord ?? info.parts?.[0]?.coord;
+            if (coord) pieces.push({ info, coord, i: x, j: z, l: y, sub: sc.palette[p].kind === Scene.KIND.plant ? 1 : 0 });
+          }
+        }
+      }
+      if (!pieces.length) { g.fillStyle = "#98a0aa"; g.fillText("Nada que dibujar.", 20, 30); return; }
+
+      pieces.sort((a, b) => a.i - a.j - (b.i - b.j) || a.l - b.l || a.sub - b.sub);
+      const pos = pieces.map((p) => at(p.i, p.j, p.l));
+      const minX = Math.min(...pos.map((p) => p[0])), minY = Math.min(...pos.map((p) => p[1]));
+      const maxX = Math.max(...pos.map((p) => p[0])) + S, maxY = Math.max(...pos.map((p) => p[1])) + S;
+      const canvas = new OffscreenCanvas(Math.ceil(maxX - minX), Math.ceil(maxY - minY));
+      const sg = canvas.getContext("2d");
+      pieces.forEach((p, k) => {
+        const img = this.#sprite(p.info, p.coord, null);
+        if (img) sg.drawImage(img, Math.round(pos[k][0] - minX), Math.round(pos[k][1] - minY));
+      });
+
+      // Underground: no sky, just the dark the lighting would leave.
+      const grad = g.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, "#15181f");
+      grad.addColorStop(1, "#0a0c10");
+      g.fillStyle = grad;
+      g.fillRect(0, 0, W, H);
+      const zRaw = Math.min((W - 40) / canvas.width, (H - 50) / canvas.height);
+      const z = zRaw >= 1 ? Math.floor(zRaw * 2) / 2 : zRaw;
+      g.imageSmoothingEnabled = zRaw < 1;
+      g.drawImage(canvas, Math.round((W - canvas.width * z) / 2), Math.round((H - 26 - canvas.height * z) / 2), canvas.width * z, canvas.height * z);
+
+      const placed = [...built.counts.entries()].map(([id, n]) => `${id} \u00d7${n}`).join(", ");
+      this.legend.append(h("span", { class: "faint" },
+        `${N}\u00d7${N} \u00b7 roca ${wallId} \u00b7 ${built.hollow} casillas de hueco \u00b7 ${placed || "nada crece aqu\u00ed"}`));
+      if (built.missing.size)
+        this.legend.append(h("span", { class: "bad-text" }, ` \u00b7 no existen: ${[...built.missing].join(", ")}`));
     }
 
     /** The water block: the project's "water" tile when it has one, else a see-through blue cube top. */
