@@ -197,3 +197,18 @@
 .bm-left .st-create-btn.primary {
   /* keep primary look but same size as siblings */
 }
+
+/* Cave biomes: a decoration row with its clump settings folded under it, and the legend of the depth chart. */
+.bm-cave-row { margin-bottom: 6px; }
+.bm-cave-row .bm-row { margin-bottom: 2px; }
+.bm-cluster { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 6px 37px;
+  padding: 4px 6px; border-left: 2px solid var(--line, #2a2f3a); font-size: 12px; }
+.bm-cluster.off { border-left-color: transparent; padding-left: 0; }
+.bm-cluster label { display: inline-flex; gap: 4px; align-items: center; }
+.bm-cluster input { width: 62px; min-height: 22px; padding: 1px 4px; }
+.bm-cluster .grow { flex: 1; }
+.bm-cluster button.small { font-size: 11px; padding: 1px 6px; }
+.bm-leg { display: inline-flex; gap: 5px; align-items: center; white-space: nowrap; }
+.bm-leg.active { color: var(--fg, #e6e8ee); font-weight: 600; }
+.bm-leg .swatch { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
+.bm-slice { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; }

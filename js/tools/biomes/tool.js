@@ -15,6 +15,7 @@
   const { section, slider, select, checkbox, segmented, help, colorPicker } = Aura.controls;
   const { decodePng } = Aura.png;
   const B = Aura.biomeModel;
+  const CB = Aura.caveBiomeModel;
   const T = Aura.atlasTiles;
   const Tint = Aura.tint;
   const Scene = Aura.biomeScene;
@@ -99,8 +100,9 @@
     }
 
     async #load() {
-      const [docs, tileDocs, structs] = await Promise.all([B.loadBiomes(this.project), T.loadDocs(this.project), Scene.loadStructures(this.project)]);
-      this.docs = docs;
+      const [docs, caveDocs, tileDocs, structs] = await Promise.all([B.loadBiomes(this.project), CB.loadCaveBiomes(this.project),
+        T.loadDocs(this.project), Scene.loadStructures(this.project)]);
+      this.docs = [...docs, ...caveDocs];
       this.structs = structs;
       this.scene3dKey = null;
       this.#indexTiles(tileDocs);
@@ -156,7 +158,8 @@
 
       this.viewSeg = segmented({ label: "Vista", value: this.view, onChange: (v) => { this.view = v; prefs.set("biomes:view", v); this.#renderToolbar(); this.#draw(); },
         options: [["climate", "Mapa de clima", "Qué bioma gana en cada temperatura y humedad"], ["sample", "Muestra", "Un trozo del bioma con sus tiles reales"],
-          ["3d", "3D", "Un trozo más grande con sus estructuras (árboles, casas), cada tile con su color, para girar alrededor"]] });
+          ["3d", "3D", "Un trozo más grande con sus estructuras (árboles, casas), cada tile con su color, para girar alrededor"],
+          ["depth", "Profundidad", "Qué bioma de cueva gana a cada profundidad, con sus huecos"]] });
       this.toolbarExtra = h("div", { class: "row bm-extra" });
       this.undoBtn = h("button", { class: "icon", title: "Deshacer (Ctrl+Z)", onclick: () => this.history.undo() }, "↶");
       this.redoBtn = h("button", { class: "icon", title: "Rehacer (Ctrl+Y)", onclick: () => this.history.redo() }, "↷");
@@ -195,9 +198,9 @@
       clear(this.listEl);
       if (!this.project) { this.listEl.append(h("div", { class: "empty-state" }, "Abre la carpeta del proyecto para ver sus biomas.")); return; }
       if (!this.docs.length) { this.listEl.append(h("div", { class: "empty-state" }, "No hay biomas en Data/Worldgen/Biomes. Crea el primero con «+ Nuevo».")); return; }
-      const groups = [["surface", "Por clima"], ["coast", "Costa"], ["ocean", "Mar abierto"]];
+      const groups = [["surface", "Por clima"], ["coast", "Costa"], ["ocean", "Mar abierto"], ["cave", "Bajo tierra"]];
       for (const [k, title] of groups) {
-        const docs = this.docs.filter((d) => (d.root ? B.kindOf(d.root) : "surface") === k);
+        const docs = this.docs.filter((d) => this.#kindOf(d) === k);
         if (!docs.length) continue;
         this.listEl.append(h("div", { class: "pl-cat" }, title));
         for (const d of docs) {
@@ -213,6 +216,9 @@
     }
 
     #select(doc) {
+      // The sample and the 3D patch are built from a surface biome's materials, which a cave biome has none of.
+      if (doc?.cave && this.view !== "depth") { this.view = "depth"; this.viewSeg?.set?.("depth"); }
+      else if (!doc?.cave && this.view === "depth") { this.view = "climate"; this.viewSeg?.set?.("climate"); }
       this.current = doc;
       this.suggestOpen = false;
       this.#renderAll();
@@ -223,7 +229,15 @@
       this.redoBtn.disabled = !this.history.canRedo;
       this.saveBtn.disabled = !this.isDirty();
       clear(this.toolbarExtra);
-      if (this.view === "climate") {
+      if (this.view === "depth") {
+        this.caveSlice ??= { temperature: 0.5, humidity: 0.5 };
+        for (const [key, label] of [["temperature", "Temperatura"], ["humidity", "Humedad"]]) {
+          const input = h("input", { type: "range", min: 0, max: 1, step: 0.01, value: this.caveSlice[key], title: label + " de la columna",
+            oninput: () => { this.caveSlice[key] = Number(input.value); out.textContent = Number(input.value).toFixed(2); this.#draw(); } });
+          const out = h("span", { class: "mono faint" }, this.caveSlice[key].toFixed(2));
+          this.toolbarExtra.append(h("label", { class: "bm-slice" }, label.slice(0, 4), input, out));
+        }
+      } else if (this.view === "climate") {
         for (const [key, label] of B.PARAMS.slice(2)) {
           const input = h("input", { type: "range", min: 0, max: 1, step: 0.01, value: this.slice[key], title: label,
             oninput: () => { this.slice[key] = Number(input.value); prefs.set("biomes:slice", this.slice); out.textContent = Number(input.value).toFixed(2); this.#draw(); } });
@@ -295,22 +309,32 @@
 
     async #create() {
       if (!this.project) { this.studio.toast("Abre la carpeta del proyecto.", { kind: "warn" }); return; }
-      const name = await this.studio.prompt({ title: "Bioma nuevo", message: "Nombre (el id sale de él).", placeholder: "Swamp",
+      const cave = !!this.current?.cave;
+      const name = await this.studio.prompt({ title: cave ? "Bioma de cueva nuevo" : "Bioma nuevo", message: "Nombre (el id sale de él).", placeholder: cave ? "Crystal Hollows" : "Swamp",
         validate: (v) => (!v ? "Escribe un nombre." : this.docs.some((d) => d.root?.id === T.deriveIdPath(v)) ? "Ya hay un bioma con ese id." : "") });
       if (!name) return;
       const id = T.deriveIdPath(name);
-      const path = B.newBiomePath(this.project, this.docs, id);
-      if (!path) { this.studio.toast("No encuentro Data/Tiles para saber dónde va Data/Worldgen/Biomes.", { kind: "bad" }); return; }
-      const base = this.current?.root && B.kindOf(this.current.root) === "surface" ? structuredClone(this.current.root) : null;
-      const root = base ? { ...base, id, name } : B.blank(id, name);
-      const doc = { entry: null, path, name: baseName(path), root, eol: "\n", baseline: "", error: null, isNew: true };
+      const caveDocs = this.docs.filter((d) => d.cave);
+      const path = cave ? CB.newPath(this.project, caveDocs, id) : B.newBiomePath(this.project, this.docs, id);
+      if (!path) { this.studio.toast("No encuentro Data/Tiles para saber dónde va la carpeta de biomas.", { kind: "bad" }); return; }
+      const base = !cave && this.current?.root && B.kindOf(this.current.root) === "surface" ? structuredClone(this.current.root) : null;
+      const root = cave ? CB.blank(id, name) : base ? { ...base, id, name } : B.blank(id, name);
+      const doc = { entry: null, path, name: baseName(path), root, eol: "\n", baseline: "", error: null, isNew: true, cave };
       this.history.run({ label: `Nuevo bioma ${name}`, redo: () => { this.docs.push(doc); this.current = doc; }, undo: () => { this.docs.splice(this.docs.indexOf(doc), 1); this.current = this.docs[0] ?? null; } });
       this.studio.setStatus(`Bioma «${id}» creado${base ? " a partir de «" + (this.docs.find((d) => d !== doc && d.root?.id === base.id)?.root?.name ?? base.id) + "»" : ""}. Se escribe en ${path} al guardar.`, "ok");
     }
 
+    // A cave biome is told apart by the folder it came from, not by its contents: its "placement" has a depth band
+    // where a surface biome has a climate box, and nothing in the file says which of the two it is.
+    #kindOf(doc) {
+      if (doc?.cave) return "cave";
+      return doc?.root ? B.kindOf(doc.root) : "surface";
+    }
+
     #missingTiles(doc) {
       if (!doc?.root || !this.#tiles.size) return [];
-      return B.tileRefs(doc.root).filter(([id]) => !this.#tileInfo(id));
+      const refs = doc.cave ? CB.tileRefs(doc.root) : B.tileRefs(doc.root);
+      return refs.filter(([id]) => !this.#tileInfo(id));
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -329,6 +353,8 @@
         this.panel.append(h("div", { class: "empty-state" }, `${doc.name} no se puede leer: ${doc.error}`));
         return;
       }
+      if (doc.cave) { this.#renderCavePanel(doc); this.panel.scrollTop = top; return; }
+
       const r = doc.root, kind = B.kindOf(r);
       this.tileList = this.tileList ?? h("datalist", { id: "bm-tiles" });
       this.tileList.replaceChildren(...[...this.#tiles.keys()].sort().map((id) => h("option", { value: id.replace(/^aura:/, "") })));
@@ -441,8 +467,136 @@
       const thumbCell = habitat && habitat !== "land"
         ? h("div", { class: "bm-thumb-cell", title: "Hábitat: " + B.HABITAT_LABEL[habitat] }, thumb, h("span", { class: "bm-hab" }, { submerged: "fondo", emergent: "orilla", floating: "flota" }[habitat]))
         : thumb;
-      return h("div", { class: ["bm-row", withOn && "with-on"] }, thumbCell, tile, chanceCell, on,
+      const row = h("div", { class: ["bm-row", withOn && "with-on"] }, thumbCell, tile, chanceCell, on,
         h("button", { class: "icon ghost", title: "Quitar", onclick: () => edit((list) => { list.splice(i, 1); }) }, "×"));
+      return withOn ? h("div", { class: "bm-cave-row" }, row, this.#clusterRow(entry, i, edit)) : row;
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Cave biomes
+
+    #renderCavePanel(doc) {
+      const r = doc.root;
+      this.tileList = this.tileList ?? h("datalist", { id: "bm-tiles" });
+      this.tileList.replaceChildren(...[...this.#tiles.keys()].sort().map((id) => h("option", { value: id.replace(/^aura:/, "") })));
+      this.panel.append(this.tileList);
+
+      const text = (label, value, apply, title = "") => {
+        const input = h("input", { type: "text", value: value ?? "", spellcheck: false, onchange: () => apply(input.value.trim()) });
+        return h("div", { class: "field" }, h("label", null, label, help(title)), input);
+      };
+      const number = (label, value, apply, { min = 0, max = 512, step = 1, title = "" } = {}) => {
+        const input = h("input", { type: "number", min, max, step, value, onchange: () => apply(Number(input.value)) });
+        return h("div", { class: "field" }, h("label", null, label, help(title)), input);
+      };
+
+      this.panel.append(section({ id: "cb-id", title: "Bioma de cueva", extra: doc.isNew ? "nuevo" : doc.name },
+        text("Nombre", r.name, (v) => this.#edit("Nombre", (x) => { x.name = v; })),
+        text("Id", r.id, (v) => this.#edit("Id", (x) => { x.id = v; })),
+        h("p", { class: "note" }, "Va en Data/Worldgen/CaveBiomes. Sustituye la roca de su franja entera, no una piel alrededor de la cueva: como solo se ve la roca donde una cueva la ha abierto, en pantalla es lo mismo y no deja costuras en los bordes de chunk.")).el);
+
+      const [lo, hi] = CB.bandOf(r), box = CB.boxOf(r);
+      const setDepth = (i, v) => this.#edit("Profundidad", (x) => {
+        const band = CB.bandOf(x).slice();
+        band[i] = v;
+        ((x.placement ??= {}).depth = band);
+      });
+      const setRange = (key, i, v) => this.#edit("Clima", (x) => {
+        const range = CB.boxOf(x)[key].slice();
+        range[i] = v;
+        if (range[0] <= 0 && range[1] >= 1) delete (x.placement ??= {})[key];
+        else ((x.placement ??= {})[key] = range);
+      });
+      const climateRow = (key, label, title) => h("div", { class: "row" },
+        h("label", { class: "faint", title }, label),
+        h("input", { type: "number", min: 0, max: 1, step: 0.05, value: box[key][0], onchange: (e) => setRange(key, 0, Number(e.target.value)) }),
+        h("input", { type: "number", min: 0, max: 1, step: 0.05, value: box[key][1], onchange: (e) => setRange(key, 1, Number(e.target.value)) }));
+
+      this.panel.append(section({ id: "cb-place", title: "Dónde", extra: `${lo}–${hi} · peso ${CB.weightOf(r)}` },
+        h("div", { class: "row" },
+          number("Desde", lo, (v) => setDepth(0, v), { title: "Niveles bajo el nivel del mar, como las menas. Nunca niveles absolutos: world.json puede mover el mar." }),
+          number("Hasta", hi, (v) => setDepth(1, v), { title: "Niveles bajo el nivel del mar." })),
+        climateRow("temperature", "Temperatura", "Del clima de la columna, 0..1. Déjalo en 0–1 para que no limite."),
+        climateRow("humidity", "Humedad", "Del clima de la columna, 0..1. Déjalo en 0–1 para que no limite."),
+        number("Peso", CB.weightOf(r), (v) => this.#edit("Peso", (x) => { (x.placement ??= {}).weight = v; }),
+          { min: 0, max: 20, step: 0.5, title: "Contra los demás que caben en la misma celda. Dos biomas de peso 1 y 2 se reparten un tercio y dos tercios." }),
+        h("p", { class: "note" }, "Una columna atraviesa varias franjas bajando, y eso es lo que hace vertical al bioma: el mismo pozo puede empezar en piedra y acabar en otra cosa.")).el);
+
+      const wall = r.materials?.wall ?? "";
+      this.panel.append(section({ id: "cb-mat", title: "Roca", extra: wall || "la de la columna" },
+        h("div", { class: "bm-row" },
+          this.#tileInput(wall, (v) => this.#edit("Pared", (x) => { if (v) (x.materials ??= {}).wall = v; else delete (x.materials ?? {}).wall; })),
+          h("input", { type: "number", min: 1, max: 8, step: 1, value: r.materials?.wallDepth ?? 1, title: "Sin uso por ahora: la franja se sustituye entera.",
+            onchange: (e) => this.#edit("Grosor", (x) => { (x.materials ??= {}).wallDepth = Number(e.target.value); }) })),
+        h("p", { class: "note" }, "Vacío deja lo que la columna ya puso: piedra tierra adentro, el material hondo del bioma de superficie bajo una playa o un desierto. Se escribe después de las vetas, así que una mena dentro de la franja conserva su tile.")).el);
+
+      this.panel.append(this.#caveDecorationSection(r).el);
+
+      const others = this.docs.filter((d) => d.cave && d !== doc && d.root).map((d) => d.root);
+      const problems = CB.problems(r, others, (id) => this.#tileInfo(id));
+      if (problems.length)
+        this.panel.append(section({ id: "cb-issues", title: "Revisión", extra: String(problems.length) },
+          ...problems.map(([kind, msg]) => h("div", { class: ["at-issue", kind === "bad" ? "bad" : "warn"] }, msg))).el);
+    }
+
+    // "cluster" on one entry: that plant grows in clumps instead of being sprinkled evenly. Folded away until it has
+    // one, because most entries never do, and its own numbers once it does — the chance then reads as the chance in
+    // the middle of a clump, which is the part that trips people up.
+    #clusterRow(entry, i, edit) {
+      const c = entry.cluster;
+      if (!c) {
+        return h("div", { class: "bm-cluster off" },
+          h("button", { class: "ghost small", title: "Que crezca en montoncitos en vez de repartida por todas partes",
+            onclick: () => edit((list) => { list[i].cluster = { count: 2, radius: 5, falloff: 1.5 }; }) }, "+ Montoncitos"));
+      }
+      const field = (key, label, { min, max, step, title, fallback }) => {
+        const input = h("input", { type: "number", min, max, step, value: c[key] ?? fallback, title,
+          onchange: () => edit((list) => { list[i].cluster[key] = Number(input.value); }) });
+        return h("label", { class: "faint" }, label, input);
+      };
+      // The game turns "count" into a spacing over a 32-tile chunk and warns when two clumps of this radius would run
+      // together; say it here instead, while it is still being typed.
+      const count = Math.max(0.05, Number(c.count) || 2), radius = Math.max(1, Number(c.radius) || 6);
+      const spacing = Math.max(2, Math.round(32 / Math.sqrt(count)));
+      const overlap = radius * 2 > spacing;
+      return h("div", { class: "bm-cluster" },
+        field("count", "cuántos", { min: 0.05, max: 40, step: 0.5, fallback: 2, title: "Montoncitos por chunk, de media" }),
+        field("radius", "radio", { min: 1, max: 24, step: 0.5, fallback: 6, title: "Tiles del centro del montoncito a su borde" }),
+        field("falloff", "caída", { min: 0.1, max: 6, step: 0.1, fallback: 1.5, title: "Cuánto se ralea hacia el borde: 1 es recto, más alto aprieta el centro" }),
+        field("outside", "fuera", { min: 0, max: 1, step: 0.05, fallback: 0, title: "Parte de la probabilidad que queda entre montoncitos. 0 = solo en montoncitos" }),
+        h("span", { class: "grow" }),
+        h("span", { class: ["badge", overlap && "warn"], title: overlap ? "De este radio se tocan entre sí: baja la cantidad o el radio" : "Tiles entre un montoncito y el siguiente" }, spacing + " t"),
+        h("button", { class: "icon ghost", title: "Quitar los montoncitos", onclick: () => edit((list) => { delete list[i].cluster; }) }, "×"));
+    }
+
+    #caveDecorationSection(r) {
+      const list = r.decoration ?? [];
+      const edit = (fn) => this.#edit("Decoración", (x) => fn((x.decoration ??= [])));
+      const sums = { caveFloor: 0, caveCeiling: 0 };
+      for (const d of list) if (sums[d?.on ?? ""] !== undefined) sums[d.on] += Number(d.chance) || 0;
+      const fmt = (v) => v.toFixed(3);
+
+      const rows = list.map((d, i) => this.#caveRow(d, i, edit));
+      return section({ id: "cb-deco", title: "Decoración", extra: `${list.length} · suelo ${fmt(sums.caveFloor)} · techo ${fmt(sums.caveCeiling)}` },
+        ...(rows.length ? rows : [h("p", { class: "note" }, "Nada crece aquí todavía.")]),
+        h("div", { class: "row" },
+          h("button", { onclick: () => edit((l) => l.push({ tile: "", chance: 0.05, on: "caveFloor" })) }, "+ Decoración")),
+        h("p", { class: "note" }, "Una columna pasa por varios suelos de cueva y cada uno se sortea aparte, hasta 6 por columna y con 3 niveles de separación. Las probabilidades de cada sitio (suelo, techo) deberían sumar menos de 1."));
+    }
+
+    #caveRow(entry, i, edit) {
+      const chance = h("input", { type: "number", min: 0, max: 1, step: 0.0001, value: entry.chance ?? 0, title: "Probabilidad en cada suelo de cueva (0..1)",
+        onchange: () => edit((list) => { list[i].chance = Number(chance.value); }) });
+      const tile = this.#tileInput(entry.tile, (v) => edit((list) => { list[i].tile = v; }));
+      const on = select({ value: entry.on ?? "caveFloor", options: CB.SURFACES, title: "Dónde crece",
+        onChange: (v) => edit((list) => { list[i].on = v; }) }).input;
+      const info = this.#tileInfo(entry.tile);
+      const thumb = h("canvas", { class: "bm-thumb", width: 32, height: 32 });
+      if (info) this.#paintThumb(thumb, info);
+      return h("div", { class: "bm-cave-row" },
+        h("div", { class: ["bm-row", "with-on"] }, thumb, tile, chance, on,
+          h("button", { class: "icon ghost", title: "Quitar", onclick: () => edit((list) => { list.splice(i, 1); }) }, "\u00d7")),
+        this.#clusterRow(entry, i, edit));
     }
 
     #decorationSection(r) {
@@ -682,7 +836,8 @@
       const g = c.getContext("2d");
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       g.clearRect(0, 0, W, H);
-      if (this.view === "climate") this.#drawClimate(g, W, H);
+      if (this.view === "depth") this.#drawDepth(g, W, H);
+      else if (this.view === "climate") this.#drawClimate(g, W, H);
       else this.#drawSample(g, W, H);
     });
 
@@ -692,8 +847,13 @@
     #draw3d() {
       clear(this.legend);
       const say = (text, cls = "faint") => this.legend.append(h("span", { class: cls }, text));
-      const r = this.current?.root;
-      if (!r || B.kindOf(r) === "ocean") { say(r ? "El mar abierto no tiene suelo que mostrar." : ""); this.voxel?.setScene?.(new EmptyScene(), () => [0, 0, 0, 1], false); return; }
+      const r = this.current?.cave ? null : this.current?.root;
+      if (!r || B.kindOf(r) === "ocean") {
+        say(this.current?.cave ? "Un bioma de cueva no tiene superficie que mostrar: mira la vista de profundidad."
+          : r ? "El mar abierto no tiene suelo que mostrar." : "");
+        this.voxel?.setScene?.(new EmptyScene(), () => [0, 0, 0, 1], false);
+        return;
+      }
       if (!this.voxel) {
         this.voxel = new Aura.voxelView.VoxelView(this.glCanvas);
         new ResizeObserver(() => this.voxel.render()).observe(this.glCanvas);
@@ -786,6 +946,72 @@
     }
 
     // Temperature left → right, humidity bottom → top, each cell coloured by the biome the generator picks there.
+    // -----------------------------------------------------------------------------------------------------------------
+    // Depth chart
+
+    /**
+     * Every depth from the surface to the bottom of the world, with the share of the ground each cave biome takes at
+     * that depth — the same ordered weighted walk the generator does. The climate sliders under it move the column it
+     * asks about, so a biome kept to the humid half shows up only when the humidity slider is inside its range. A black
+     * band is a depth no file claims, where the rock stays as the column laid it.
+     */
+    #drawDepth(g, W, H) {
+      clear(this.legend);
+      const say = (text, cls = "faint") => this.legend.append(h("span", { class: cls }, text));
+      const roots = this.docs.filter((d) => d.cave && d.root).map((d) => d.root);
+      if (!roots.length) { say("No hay biomas de cueva. Crea el primero con \u00ab+ Nuevo\u00bb con uno de ellos elegido."); return; }
+
+      const pad = { l: 56, r: 12, t: 20, b: 26 };
+      const plotW = Math.max(10, W - pad.l - pad.r), plotH = Math.max(10, H - pad.t - pad.b);
+      const max = CB.MAX_DEPTH;
+      const climate = this.caveSlice ?? (this.caveSlice = { temperature: 0.5, humidity: 0.5 });
+      const colorOf = (id) => idColor(id);
+
+      g.fillStyle = "#0b0d11";
+      g.fillRect(pad.l, pad.t, plotW, plotH);
+
+      let gaps = 0;
+      for (let py = 0; py < plotH; py++) {
+        const depth = Math.round((py / Math.max(1, plotH - 1)) * max);
+        const shares = CB.sharesAt(roots, depth, climate.temperature, climate.humidity);
+        if (!shares.length) { gaps++; continue; }
+        let x = pad.l;
+        for (const s of shares) {
+          const w = s.share * plotW;
+          g.fillStyle = colorOf(s.id);
+          g.fillRect(x, pad.t + py, Math.ceil(w), 1);
+          x += w;
+        }
+      }
+
+      // The depth scale, every 64 levels under the sea.
+      g.font = "11px system-ui, sans-serif";
+      g.textAlign = "right";
+      g.textBaseline = "middle";
+      for (let d = 0; d <= max; d += 64) {
+        const y = pad.t + (d / max) * (plotH - 1);
+        g.strokeStyle = "rgba(255,255,255,0.12)";
+        g.beginPath(); g.moveTo(pad.l, y + 0.5); g.lineTo(pad.l + plotW, y + 0.5); g.stroke();
+        g.fillStyle = "rgba(255,255,255,0.55)";
+        g.fillText(String(d), pad.l - 8, y);
+      }
+      // Over the plot, not under it: the legend lives along the bottom edge and the two would sit on each other.
+      g.textAlign = "left";
+      g.textBaseline = "alphabetic";
+      g.fillStyle = "rgba(255,255,255,0.45)";
+      g.fillText("niveles bajo el mar \u2193   reparto del terreno \u2192", pad.l + 6, pad.t - 1);
+
+      const current = this.current?.cave ? CB.idOf(this.current.root) : null;
+      for (const r of roots) {
+        const id = CB.idOf(r);
+        const [lo, hi] = CB.bandOf(r);
+        this.legend.append(h("span", { class: ["bm-leg", id === current && "active"] },
+          h("span", { class: "swatch", style: { background: colorOf(id) } }),
+          `${r.name ?? id} ${lo}\u2013${hi}`));
+      }
+      if (gaps) say(`${Math.round((gaps / plotH) * 100)} % de la profundidad sin ning\u00fan bioma (roca como la deja la columna)`, "faint warn");
+    }
+
     #drawClimate(g, W, H) {
       const biomes = this.#surfaceBiomes();
       clear(this.legend);
@@ -864,8 +1090,12 @@
      */
     #drawSample(g, W, H) {
       clear(this.legend);
-      const r = this.current?.root;
-      if (!r) return;
+      const r = this.current?.cave ? null : this.current?.root;
+      if (!r) {
+        if (this.current?.cave)
+          this.legend.append(h("span", { class: "faint" }, "Un bioma de cueva no tiene superficie: mira la vista de profundidad."));
+        return;
+      }
       const kind = B.kindOf(r);
       const surface = this.#tileInfo(r.materials?.surface);
       if (kind === "ocean" || !surface) {

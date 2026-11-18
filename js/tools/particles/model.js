@@ -235,7 +235,9 @@
     return JSON.stringify(data, null, 2) + "\n";
   }
 
-  const isDirty = (doc) => (doc.isNew ? true : serialize(doc.data) !== doc.baseline);
+  // A file that could not be read falls back to the defaults, which are not what is in it: it must never count as
+  // unsaved, or saving would replace the file with those defaults.
+  const isDirty = (doc) => doc.error ? false : (doc.isNew ? true : serialize(doc.data) !== doc.baseline);
 
   async function loadFiles(project) {
     const docs = [];

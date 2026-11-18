@@ -35,8 +35,18 @@
    */
   function parseCommented(text) {
     const src = text.replace(/\r\n/g, "\n");
-    let i = src.indexOf("[");
-    if (i < 0) throw new Error("no es una lista [ … ]");
+    // The FIRST thing in the file has to be the list. Looking for any "[" found the first array inside an object
+    // (knowledge.json, curing.json and dishes.json are objects), parsed its contents as if they were recipes, and
+    // saving then wrote that fragment back as a top-level list — which is how a save could destroy one of those files.
+    let i = 0;
+    for (;;) {
+      const c = src[i];
+      if (c === " " || c === "\t" || c === "\n" || c === "\r") { i++; continue; }
+      if (c === "/" && src[i + 1] === "/") { const end = src.indexOf("\n", i); i = end < 0 ? src.length : end; continue; }
+      if (c === "/" && src[i + 1] === "*") { const end = src.indexOf("*/", i + 2); i = end < 0 ? src.length : end + 2; continue; }
+      break;
+    }
+    if (src[i] !== "[") throw new Error("no es una lista [ … ] — este archivo no son recetas, no lo toco");
     i++;
     const entries = [];
     let comments = [], gap = false, newlines = 0;
@@ -101,7 +111,9 @@
     return body.replace(/\n/g, doc.eol) + doc.eol;
   }
 
-  const isDirty = (doc) => doc.isNew ? doc.entries.length > 0 : serialize(doc) !== doc.baseline;
+  // A file that could not be read has no baseline to compare against, so it must never count as unsaved: writing it
+  // would replace what is in it with an empty list.
+  const isDirty = (doc) => doc.error ? false : (doc.isNew ? doc.entries.length > 0 : serialize(doc) !== doc.baseline);
 
   async function loadFiles(project) {
     const docs = [];
