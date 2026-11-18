@@ -23,7 +23,15 @@
       try {
         const text = await readText(entry.handle);
         doc.eol = text.includes("\r\n") ? "\r\n" : "\n";
-        doc.root = JSON.parse(text);
+        try {
+          doc.root = JSON.parse(text);
+        } catch (strict) {
+          // The game reads these through Newtonsoft, which takes comments; JSON.parse does not. Rather than leave the
+          // whole tab empty over a "//", read it anyway and mark it. Saving is what would lose the comments, so a
+          // commented file is shown and never written — the same trap that ate the recipe files once.
+          doc.root = JSON.parse(stripComments(text));
+          doc.commented = true;
+        }
         doc.baseline = Aura.biomeModel.serialize(doc);
       } catch (err) {
         doc.error = err.message;
@@ -31,6 +39,28 @@
       docs.push(doc);
     }
     return docs;
+  }
+
+  /** // and /* *\/ outside strings. Only for reading: what is written back has no comments to put back. */
+  function stripComments(text) {
+    let out = "", inString = false, escape = false, line = false, block = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i], next = text[i + 1];
+      if (line) { if (c === "\n") { line = false; out += c; } continue; }
+      if (block) { if (c === "*" && next === "/") { block = false; i++; } continue; }
+      if (inString) {
+        out += c;
+        if (escape) escape = false;
+        else if (c === "\\") escape = true;
+        else if (c === "\"") inString = false;
+        continue;
+      }
+      if (c === "\"") { inString = true; out += c; continue; }
+      if (c === "/" && next === "/") { line = true; i++; continue; }
+      if (c === "/" && next === "*") { block = true; i++; continue; }
+      out += c;
+    }
+    return out;
   }
 
   const num = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
@@ -154,6 +184,6 @@
     return out;
   }
 
-  Aura.caveBiomeModel = { SURFACES, MAX_DEPTH, isCaveBiomeFile, loadCaveBiomes, bandOf, boxOf, weightOf, idOf, blank,
+  Aura.caveBiomeModel = { SURFACES, MAX_DEPTH, stripComments, isCaveBiomeFile, loadCaveBiomes, bandOf, boxOf, weightOf, idOf, blank,
     tileRefs, newPath, fits, sharesAt, at, problems };
 })(window.Aura ??= {});

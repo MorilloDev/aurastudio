@@ -530,6 +530,10 @@
             onchange: (e) => this.#edit("Grosor", (x) => { (x.materials ??= {}).wallDepth = Number(e.target.value); }) })),
         h("p", { class: "note" }, "Vacío deja lo que la columna ya puso: piedra tierra adentro, el material hondo del bioma de superficie bajo una playa o un desierto. Se escribe después de las vetas, así que una mena dentro de la franja conserva su tile.")).el);
 
+      if (doc.commented)
+        this.panel.append(h("div", { class: "at-issue warn" },
+          "Este archivo lleva comentarios. Se lee, pero no se guarda: reescribirlo los borrar\u00eda. Qu\u00edtale los // a mano si quieres editarlo aqu\u00ed."));
+
       this.panel.append(this.#caveDecorationSection(r).el);
 
       const others = this.docs.filter((d) => d.cave && d !== doc && d.root).map((d) => d.root);
@@ -1379,7 +1383,11 @@
     // Saving
 
     async save() {
-      const dirty = this.docs.filter(B.isDirty);
+      const dirty = this.docs.filter((d) => B.isDirty(d) && !d.commented);
+      const held = this.docs.filter((d) => d.commented && B.isDirty(d));
+      if (held.length)
+        this.studio.toast(`No se guarda ${held.map((d) => d.name).join(", ")}: lleva comentarios y reescribirlo se los llevar\u00eda por delante.`,
+          { kind: "warn", detail: "Qu\u00edtale los // a mano y vuelve a abrir la carpeta." });
       if (!dirty.length && !Aura.lang.dirty) return true;
       const written = dirty.map((d) => d.name);
       try {
