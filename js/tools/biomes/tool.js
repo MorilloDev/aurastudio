@@ -559,6 +559,22 @@
           onchange: () => edit((list) => { list[i].cluster[key] = Number(input.value); }) });
         return h("label", { class: "faint" }, label, input);
       };
+      const shape = select({ value: String(c.shape ?? "blob").toLowerCase(),
+        options: [["blob", "mancha"], ["vein", "vena"]],
+        title: "Mancha: parches redondos. Vena: una banda larga que serpentea, como un r\u00edo",
+        onChange: (v) => edit((list) => { if (v === "vein") list[i].cluster.shape = "vein"; else delete list[i].cluster.shape; }) }).input;
+
+      // A vein has no count or radius: it is a band of its own width that wanders over its own scale.
+      if (String(c.shape ?? "").toLowerCase() === "vein") {
+        return h("div", { class: "bm-cluster" }, shape,
+          field("width", "ancho", { min: 1, max: 40, step: 1, fallback: 3, title: "Tiles de ancho de la banda" }),
+          field("scale", "largo", { min: 4, max: 400, step: 5, fallback: 40, title: "Cu\u00e1nto recorre antes de girar: m\u00e1s alto, curvas m\u00e1s largas" }),
+          field("falloff", "ca\u00edda", { min: 0.1, max: 6, step: 0.1, fallback: 1.5, title: "Bajo de 1 deja el centro s\u00f3lido y solo deshilacha los bordes" }),
+          field("outside", "fuera", { min: 0, max: 1, step: 0.05, fallback: 0, title: "Parte de la probabilidad que queda fuera de la vena" }),
+          h("span", { class: "grow" }),
+          h("button", { class: "icon ghost", title: "Quitar", onclick: () => edit((list) => { delete list[i].cluster; }) }, "\u00d7"));
+      }
+
       // The game turns "count" into a spacing over a 32-tile chunk and warns when two clumps of this radius would run
       // together; say it here instead, while it is still being typed.
       const count = Math.max(0.05, Number(c.count) || 2), radius = Math.max(1, Number(c.radius) || 6);

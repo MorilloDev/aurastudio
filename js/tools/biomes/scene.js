@@ -378,6 +378,20 @@
     const chance = Number(entry?.chance) || 0;
     const c = entry?.cluster;
     if (!c) return chance;
+
+    // A vein: a band where one smooth field passes through zero, which draws a line that winds instead of a patch.
+    if (String(c.shape ?? "").toLowerCase() === "vein") {
+      const width = Math.max(1, Number(c.width) || 3);
+      const scale = Math.max(4, Number(c.scale) || 40);
+      const falloff = Math.max(0.1, Number(c.falloff) || 1.5);
+      const outside = Math.min(1, Math.max(0, Number(c.outside) || 0));
+      const field = noise2(x / scale, z / scale, (seed ^ 0x0c1) >>> 0) * 2 - 1;
+      const half = Math.min(0.45, (width * 0.5 / scale) * 2);
+      const d = Math.abs(field) / Math.max(half, 1e-4);
+      const w = d >= 1 ? 0 : Math.pow(1 - d, falloff);
+      return chance * (outside + (1 - outside) * w);
+    }
+
     const count = Math.max(0.05, Number(c.count) || 2);
     const radius = Math.max(1, Number(c.radius) || 6);
     const falloff = Math.max(0.1, Number(c.falloff) || 1.5);
