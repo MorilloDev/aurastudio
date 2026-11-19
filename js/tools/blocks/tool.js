@@ -587,9 +587,28 @@
       const def = Sh.SHAPES[this.piece.shape] ?? Sh.SHAPES.cube;
 
       // Shape: which piece and its sizes.
-      const shapeSel = select({ label: "Forma", value: this.piece.shape,
-        options: Object.entries(Sh.SHAPES).map(([k, s]) => [k, s.label]),
-        onChange: (v) => { this.#resetPreview(); this.#setPiece((p) => { p.shape = v; }, true); } });
+      // Cuarenta formas no caben en un desplegable: se busca por nombre y se eligen en rejilla, agrupadas.
+      const SHAPE_GROUP = {
+        cube: "Básicas", slab: "Básicas", layer: "Básicas", small: "Básicas", quarter: "Básicas", corner: "Básicas",
+        stair: "Escaleras y rampas", stairOuter: "Escaleras y rampas", stairInner: "Escaleras y rampas",
+        ramp: "Escaleras y rampas", rampLow: "Escaleras y rampas", rampHigh: "Escaleras y rampas",
+        rampOuter: "Escaleras y rampas", rampInner: "Escaleras y rampas", steps: "Escaleras y rampas",
+        slopePanel: "Tejados y diagonales", diagonalWall: "Tejados y diagonales", gable: "Tejados y diagonales",
+        roofEdge: "Tejados y diagonales", pyramid: "Tejados y diagonales",
+        pillar: "Columnas y vigas", octagon: "Columnas y vigas", beam: "Columnas y vigas", pedestal: "Columnas y vigas",
+        panel: "Paredes y cierres", fence: "Paredes y cierres", wall: "Paredes y cierres", door: "Paredes y cierres",
+        trapdoor: "Paredes y cierres", ladder: "Paredes y cierres", frame: "Paredes y cierres", frameRound: "Paredes y cierres",
+        sphere: "Curvas", hemisphere: "Curvas", cylinder: "Curvas", semicircle: "Curvas", arch: "Curvas", tube: "Curvas",
+        table: "Muebles", custom: "A mano",
+      };
+      const shapePicker = Aura.picker.gallery({
+        items: Object.entries(Sh.SHAPES)
+          .map(([k, s]) => ({ id: k, label: s.label, group: SHAPE_GROUP[k] ?? "Otras" }))
+          .sort((a, b) => a.group.localeCompare(b.group)),
+        value: this.piece.shape, columns: 2, placeholder: "Buscar forma…",
+        onPick: (v) => { this.#resetPreview(); this.#setPiece((p) => { p.shape = v; }, true); },
+      });
+      const shapeSel = { el: shapePicker.el };
       const params = shapeParamDefs(this.piece.shape).map(([key, label, min, max, title]) => this.#pieceSlider(label, key, min, max, title));
       // Escala de casi todas las formas (no custom a mano).
       if (this.piece.shape !== "custom" && !def.connects) {

@@ -125,44 +125,95 @@
       }).el;
     }
 
+    // Las familias solo ordenan el catálogo: el cuerpo y los parámetros son los mismos para todas.
+    #presetItems() {
+      const FAMILY = {
+        table: "Mesas y apoyos", round_table: "Mesas y apoyos", desk: "Mesas y apoyos", lectern: "Mesas y apoyos",
+        chest: "Guardado", trunk: "Guardado", crate: "Guardado", barrel: "Guardado",
+        wardrobe: "Armarios", cupboard: "Armarios", bookshelf: "Armarios", nightstand: "Armarios",
+        bench: "Asientos y camas", stool: "Asientos y camas", bed: "Asientos y camas",
+      };
+      const KEYS = {
+        chest: "cofre baul arca tesoro", trunk: "arcon baul", crate: "caja cajon embalaje",
+        barrel: "barril tonel tinaja", wardrobe: "armario ropero", cupboard: "alacena vitrina aparador",
+        bookshelf: "estanteria libreria balda", nightstand: "mesilla noche comoda",
+        bed: "cama camastro", bench: "banco escano", stool: "taburete banqueta silla",
+        desk: "escritorio buro pupitre", lectern: "atril facistol pupitre",
+        table: "mesa tablero", round_table: "mesa redonda velador",
+      };
+      return Aura.furnitureParts.KINDS
+        .map(([id, label]) => ({ id, label, group: FAMILY[id] ?? "Otros", keywords: KEYS[id] ?? "" }))
+        .sort((a, b) => a.group.localeCompare(b.group));
+    }
+
+    // Una casilla por esquina. Quitar patas sueltas es lo que convierte una mesa en una repisa o en una barra.
+    #legToggles() {
+      const p = this.p;
+      const names = p.legs === "sled"
+        ? [["Izquierda", 0], ["Derecha", 1]]
+        : [["Frente izq.", 0], ["Frente der.", 1], ["Fondo izq.", 2], ["Fondo der.", 3]];
+      const row = h("div", { class: "fn-legs" });
+      for (const [label, i] of names) {
+        row.appendChild(checkbox({
+          label, value: p.legMask[i] !== 0,
+          onChange: (v) => { p.legMask[i] = v ? 1 : 0; this.#save(); this.#schedule(); },
+        }).el);
+      }
+      return row;
+    }
+
     #buildPanel() {
       Aura.dom.clear(this.panel);
       const p = this.p;
+      const add = (sec) => this.panel.appendChild(sec.el);
 
-      this.panel.appendChild(section({ id: "fn-kind", title: "Pieza" },
-        select({
-          label: "Tipo", value: this.kind, options: P.KINDS.map(([k, label]) => [k, label]),
-          title: "Un tipo solo fija unos valores de partida; después se puede mover todo.",
-          onChange: (v) => {
-            this.kind = v;
-            this.p = P.defaults(v);
-            this.#save();
-            this.#buildPanel();
-            this.#schedule();
-          },
-        }).el,
+      this.picker = Aura.picker.gallery({
+        items: this.#presetItems(), value: this.kind, columns: 2,
+        placeholder: "Buscar mueble…",
+        onPick: (v) => {
+          this.kind = v;
+          this.p = P.defaults(v);
+          this.#save();
+          this.#buildPanel();
+          this.#schedule();
+        },
+      });
+
+      add(section({ id: "fn-kind", title: "Pieza" },
+        this.picker.el,
         select({
           label: "Cuerpo", value: p.body,
           options: [["table", "Mesa (patas y tablero)"], ["box", "Caja (casco cerrado)"], ["shelf", "Estantería"], ["slab", "Tabla (cama, banco)"]],
+          title: "El cuerpo decide qué partes tiene la pieza. Cambiarlo no borra el resto de ajustes.",
           onChange: (v) => { this.#set("body", v); this.#buildPanel(); },
-        }).el));
+        }).el,
+        p.body === "box" ? checkbox({
+          label: "Cuerpo redondo", value: p.round,
+          title: "Duelas abombadas y aros en vez de paredes rectas: un barril o una tinaja.",
+          onChange: (v) => { this.#set("round", v); this.#buildPanel(); },
+        }).el : null));
 
-      this.panel.appendChild(section({ id: "fn-size", title: "Medidas" },
+      add(section({ id: "fn-size", title: "Medidas" },
         this.#num("Ancho", "width", 2, 16),
         this.#num("Fondo", "depth", 2, 16),
         this.#num("Alto", "height", 2, 16)));
 
-      this.panel.appendChild(section({ id: "fn-legs", title: "Patas" },
+      add(section({ id: "fn-legs", title: "Patas" },
         select({
           label: "Forma", value: p.legs,
           options: [["none", "Sin patas"], ["square", "Postes"], ["turned", "Torneadas"], ["splayed", "Abiertas"], ["sled", "Patines"], ["plinth", "Zócalo"]],
-          onChange: (v) => this.#set("legs", v),
+          onChange: (v) => { this.#set("legs", v); this.#buildPanel(); },
         }).el,
-        this.#num("Grosor", "legThick", 1, 5, 0.5),
-        p.body === "table" ? null : this.#num("Altura de la pata", "legHeight", 0, 8, 0.5)));
+        p.legs === "none" || p.legs === "plinth" ? null : this.#legToggles(),
+        p.legs === "none" ? null : this.#num("Grosor", "legThick", 1, 5, 0.5),
+        p.legs === "none" || p.body === "table" || p.body === "slab" ? null : this.#num("Altura de la pata", "legHeight", 0, 8, 0.5),
+        p.body === "table" && p.legs !== "none" && p.legs !== "plinth" ? this.#num("Travesaño", "stretcher", 0, 8, 0.5, "Altura de la barra que une las patas. 0 la quita.") : null,
+        p.body === "table" && p.legs !== "none" && p.legs !== "plinth"
+          ? checkbox({ label: "Zapatas", value: p.feet, title: "Un taco bajo cada pata.", onChange: (v) => this.#set("feet", v) }).el
+          : null));
 
       if (p.body === "table" || p.body === "slab") {
-        this.panel.appendChild(section({ id: "fn-top", title: "Tablero" },
+        add(section({ id: "fn-top", title: "Tablero" },
           this.#num("Grosor", "topThick", 0.5, 5, 0.5),
           p.body === "table" ? this.#num("Voladizo", "overhang", 0, 3, 0.25) : null,
           p.body === "table" ? this.#num("Faldón", "apron", 0, 4, 0.5, "La faja bajo el tablero que une las patas.") : null,
@@ -172,19 +223,19 @@
       }
 
       if (p.body === "box" || p.body === "shelf") {
-        this.panel.appendChild(section({ id: "fn-carcass", title: "Casco" },
-          this.#num("Grosor de pared", "wall", 0.5, 3, 0.25),
-          checkbox({ label: "Con fondo", value: p.back, onChange: (v) => this.#set("back", v) }).el,
+        add(section({ id: "fn-carcass", title: "Casco" },
+          p.round ? null : this.#num("Grosor de pared", "wall", 0.5, 3, 0.25),
+          p.round ? null : checkbox({ label: "Con fondo", value: p.back, onChange: (v) => this.#set("back", v) }).el,
           p.body === "box" ? select({
             label: "Tapa", value: p.lid, options: [["none", "Sin tapa"], ["flat", "Plana"], ["domed", "Abombada"]],
-            onChange: (v) => this.#set("lid", v),
+            onChange: (v) => { this.#set("lid", v); this.#buildPanel(); },
           }).el : null,
-          p.body === "box" && p.lid !== "none" ? this.#num("Grosor de la tapa", "lidThick", 1, 5, 0.5) : null,
-          this.#num("Baldas", "shelves", 0, 4, 1)));
+          p.body === "box" && p.lid !== "none" ? this.#num("Grosor de la tapa", "lidThick", 0.5, 5, 0.5) : null,
+          p.round ? null : this.#num("Baldas", "shelves", 0, 4, 1)));
       }
 
-      if (p.body === "box") {
-        this.panel.appendChild(section({ id: "fn-front", title: "Frente" },
+      if (p.body === "box" && !p.round) {
+        add(section({ id: "fn-front", title: "Frente" },
           this.#num("Puertas", "doors", 0, 2, 1),
           this.#num("Cajones", "drawers", 0, 4, 1),
           p.doors > 0 ? this.#num("Abierta", "open", 0, 1, 0.05, "0 cerrada, 1 abierta del todo. Sirve para el estado abierto del tile.") : null,
@@ -192,22 +243,40 @@
           select({
             label: "Tirador", value: p.handle, options: [["none", "Ninguno"], ["knob", "Pomo"], ["ring", "Argolla"], ["bar", "Barra"]],
             onChange: (v) => this.#set("handle", v),
-          }).el,
+          }).el));
+      }
+
+      if (p.body === "box") {
+        add(section({ id: "fn-iron", title: "Herrajes" },
           this.#num("Bandas de metal", "bands", 0, 4, 1)));
       }
 
-      const mats = section({ id: "fn-mat", title: "Materiales" });
+      // Partes: cada grupo se enciende, se apaga y elige su material por separado. Apagar el cuerpo de un armario
+      // deja el armazón a la vista, que es lo que se quiere para una estructura a medio hacer o una ruina.
+      const hidden = new Set(p.hidden ?? []);
+      const parts = section({ id: "fn-parts", title: "Partes y materiales" });
       for (const [key, label] of PARTS) {
-        mats.appendChild(select({
-          label, value: p.materials[key] ?? "wood", options: M.LIST,
-          onChange: (v) => { p.materials[key] = v; this.#save(); this.#schedule(); },
-        }).el);
+        parts.body.appendChild(h("div", { class: "fn-part" },
+          checkbox({
+            label: "", value: !hidden.has(key), title: "Mostrar " + label.toLowerCase(),
+            onChange: (v) => {
+              const set = new Set(this.p.hidden ?? []);
+              if (v) set.delete(key); else set.add(key);
+              this.p.hidden = [...set];
+              this.#save();
+              this.#schedule();
+            },
+          }).el,
+          select({
+            label, value: p.materials[key] ?? "wood", options: M.LIST,
+            onChange: (v) => { p.materials[key] = v; this.#save(); this.#schedule(); },
+          }).el));
       }
-      mats.appendChild(h("p", { class: "hint" },
+      parts.body.appendChild(h("p", { class: "hint" },
         this.materialsImage
           ? "Texturas de Materials.png del proyecto."
           : "Sin proyecto abierto: texturas pintadas aquí. Abre el proyecto para usar las del juego."));
-      this.panel.appendChild(mats);
+      add(parts);
     }
 
     // -----------------------------------------------------------------------------------------------------------

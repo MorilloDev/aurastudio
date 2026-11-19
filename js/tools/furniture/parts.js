@@ -35,23 +35,29 @@
 
   // ── Patas ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
+  // Las cuatro esquinas, en el orden en que se enumeran en el panel: frente-izq, frente-der, fondo-izq, fondo-der.
+  // Quitar una pata es quitarla de aquí, no un caso especial dentro de cada forma.
+  function corners(p) {
+    const t = p.legThick, { x0, x1, z0, z1 } = inner(p);
+    const all = [[x0, z0], [x1 - t, z0], [x0, z1 - t], [x1 - t, z1 - t]];
+    const mask = p.legMask ?? [1, 1, 1, 1];
+    return all.filter((_, i) => mask[i] !== 0 && mask[i] !== false);
+  }
+
   const LEGS = {
     none: () => [],
 
     // Cuatro postes rectos en las esquinas. Lo más barato de leer y lo que da a una mesa su silueta.
     square: (p, y) => {
-      const t = p.legThick, { x0, x1, z0, z1 } = inner(p);
-      return [
-        box(x0, 0, z0, x0 + t, y, z0 + t), box(x1 - t, 0, z0, x1, y, z0 + t),
-        box(x0, 0, z1 - t, x0 + t, y, z1), box(x1 - t, 0, z1 - t, x1, y, z1),
-      ];
+      const t = p.legThick;
+      return corners(p).map(([cx, cz]) => box(cx, 0, cz, cx + t, y, cz + t));
     },
 
     // Torneadas: estrechan en el medio y vuelven a abrirse, en tres tramos.
     turned: (p, y) => {
-      const t = p.legThick, { x0, x1, z0, z1 } = inner(p);
+      const t = p.legThick;
       const out = [];
-      for (const [cx, cz] of [[x0, z0], [x1 - t, z0], [x0, z1 - t], [x1 - t, z1 - t]]) {
+      for (const [cx, cz] of corners(p)) {
         const m = 0.5;
         out.push(box(cx, 0, cz, cx + t, y * 0.22, cz + t));
         out.push(box(cx + m, y * 0.22, cz + m, cx + t - m, y * 0.78, cz + t - m));
@@ -62,10 +68,11 @@
 
     // Abiertas hacia fuera: cada pata es una escalera de tres pasos que sale de la esquina.
     splayed: (p, y) => {
-      const t = p.legThick, { x0, x1, z0, z1 } = inner(p);
+      const t = p.legThick, { x0, z0 } = inner(p);
       const out = [];
       const steps = 3;
-      for (const [sx, sz, dx, dz] of [[x0, z0, -1, -1], [x1 - t, z0, 1, -1], [x0, z1 - t, -1, 1], [x1 - t, z1 - t, 1, 1]]) {
+      for (const [sx, sz] of corners(p)) {
+        const dx = sx <= x0 + 0.01 ? -1 : 1, dz = sz <= z0 + 0.01 ? -1 : 1;
         for (let s = 0; s < steps; s++) {
           const o = (s * 0.7) * -1;
           const y0 = (y / steps) * (steps - 1 - s), y1 = (y / steps) * (steps - s);
@@ -76,10 +83,15 @@
       return out;
     },
 
-    // Patines: dos tablas de lado a lado, como un arcón o un banco de taller.
+    // Patines: dos tablas de lado a lado, como un arcón o un banco de taller. Usa las dos primeras casillas de la
+    // máscara, que en el panel se leen como "izquierda" y "derecha".
     sled: (p, y) => {
       const t = p.legThick, { x0, x1, z0, z1 } = inner(p);
-      return [box(x0, 0, z0, x0 + t, y, z1), box(x1 - t, 0, z0, x1, y, z1)];
+      const mask = p.legMask ?? [1, 1, 1, 1];
+      const out = [];
+      if (mask[0]) out.push(box(x0, 0, z0, x0 + t, y, z1));
+      if (mask[1]) out.push(box(x1 - t, 0, z0, x1, y, z1));
+      return out;
     },
 
     // Zócalo: un cajón macizo retranqueado, que es como se apoya un armario.
@@ -132,6 +144,19 @@
       g.frame.push(box(x0 + t, ay, z1 - 1, x1 - t, legY, z1));
       g.frame.push(box(x0, ay, z0 + t, x0 + 1, legY, z1 - t));
       g.frame.push(box(x1 - 1, ay, z0 + t, x1, legY, z1 - t));
+    }
+
+    // Travesaños: la barra baja que une las patas. Es lo que separa una mesa de taller de una de comedor.
+    if (p.stretcher > 0 && p.legs !== "none" && p.legs !== "plinth") {
+      const t = p.legThick, sy = clamp(p.stretcher, 0.5, 8);
+      g.frame.push(box(x0 + t, sy, z0 + t * 0.35, x1 - t, sy + 0.8, z0 + t * 0.35 + 0.8));
+      g.frame.push(box(x0 + t, sy, z1 - t * 0.35 - 0.8, x1 - t, sy + 0.8, z1 - t * 0.35));
+    }
+
+    // Zapatas: un taco bajo cada pata, que apoya el mueble en vez de clavarlo en el suelo.
+    if (p.feet && p.legs !== "none" && p.legs !== "plinth") {
+      const t = p.legThick;
+      for (const [cx, cz] of corners(p)) g.frame.push(box(cx - 0.4, 0, cz - 0.4, cx + t + 0.4, 0.8, cz + t + 0.4));
     }
 
     if (p.round) g.top.push(...disc(8, 8, Math.min(x1 - x0, z1 - z0) / 2 + o, legY, h));
@@ -294,6 +319,8 @@
     doors: 0, drawers: 0, shelves: 0, bands: 0,
     lid: "none", lidThick: 2, open: 0,
     handle: "knob", headboard: 0,
+    legMask: [1, 1, 1, 1], stretcher: 0, feet: false,
+    hidden: [],
     materials: { frame: "wood_dark", body: "wood", top: "wood_light", front: "wood", metal: "iron", cloth: "cloth" },
   };
 
@@ -319,7 +346,13 @@
   const PRESETS = Object.fromEntries(KINDS.map(([k, , v]) => [k, v]));
 
   function defaults(kind) {
-    return { ...DEFAULTS, ...structuredClone(PRESETS[kind] ?? {}), materials: { ...DEFAULTS.materials } };
+    return {
+      ...DEFAULTS,
+      ...structuredClone(PRESETS[kind] ?? {}),
+      materials: { ...DEFAULTS.materials },
+      legMask: [1, 1, 1, 1],
+      hidden: [],
+    };
   }
 
   /**
@@ -331,8 +364,9 @@
     (BODIES[p.body] ?? bodyTable)(p, g);
 
     const order = ["frame", "body", "top", "front", "metal", "cloth"];
+    const hidden = new Set(p.hidden ?? []);
     return order
-      .filter((k) => g[k].length)
+      .filter((k) => g[k].length && !hidden.has(k))
       .map((k) => ({ part: k, material: p.materials?.[k] ?? "wood", boxes: g[k] }));
   }
 
