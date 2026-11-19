@@ -1,0 +1,13 @@
+/* Muebles: panel a la izquierda, pieza a la derecha. */
+.fn { position: absolute; inset: 0; display: grid; grid-template-columns: 320px minmax(0, 1fr); min-height: 0; }
+
+.fn-panel { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; min-height: 0; padding-bottom: 12px; }
+
+.fn-stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--canvas-bg); }
+.fn-stage-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.fn-stage-bar .grow { flex: 1; }
+
+.fn-canvas { display: block; margin: auto; image-rendering: pixelated; }
+.fn-status { padding: 6px 10px; border-top: 1px solid var(--line); background: var(--panel); }
+
+.cp-gen-btn.furniture { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }

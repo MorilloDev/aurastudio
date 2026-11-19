@@ -26,6 +26,7 @@
       this.composerHost = h("div", { class: "cr-composer-host" });
       this.blocksHost = h("div", { class: "cr-gen-host" });
       this.plantsHost = h("div", { class: "cr-gen-host" });
+      this.furnitureHost = h("div", { class: "cr-gen-host" });
 
       this.overlayTitle = h("h2", null, "Bloque");
       this.overlayTag = h("span", { class: "cr-overlay-tag" }, "generador");
@@ -40,7 +41,8 @@
             this.overlayHint),
           h("div", { class: "cr-overlay-body" },
             this.blocksHost,
-            this.plantsHost),
+            this.plantsHost,
+            this.furnitureHost),
           h("div", { class: "cr-overlay-foot" },
             h("span", { class: "hint cr-apply-hint" }, "El resultado se añade al Composer (grupo activo)."),
             h("button", { type: "button", onclick: () => this.closeOverlay() }, "Cancelar"),
@@ -61,13 +63,16 @@
       this.composer = Aura.composerTool.composerTool();
       this.blocks = Aura.blocksTool.blocksTool();
       this.plants = Aura.plantsTool.plantsTool();
+      this.furniture = Aura.furnitureTool.furnitureTool();
 
       this.composer.mount(this.composerHost, studio);
       this.blocks.mount(this.blocksHost, studio);
       this.plants.mount(this.plantsHost, studio);
+      this.furniture.mount(this.furnitureHost, studio);
 
       this.blocksHost.hidden = true;
       this.plantsHost.hidden = true;
+      this.furnitureHost.hidden = true;
 
       prefs.set("create:mode", "composer");
     }
@@ -77,12 +82,19 @@
       this.editMode = false;
       this.blocksHost.hidden = mode !== "blocks";
       this.plantsHost.hidden = mode !== "plants";
+      this.furnitureHost.hidden = mode !== "furniture";
       if (mode === "blocks") {
         this.overlayTitle.textContent = "Bloque";
         this.overlayTag.textContent = "generador";
         this.overlayHint.textContent = "AO del motor sí · al aplicar = 1 capa";
         this.blocks.clearEditTarget?.();
         this.blocks.activate?.();
+      } else if (mode === "furniture") {
+        this.overlayTitle.textContent = "Mueble";
+        this.overlayTag.textContent = "carpintería";
+        this.overlayHint.textContent = "Mismo motor que un bloque · varios materiales por pieza";
+        this.furniture.clearEditTarget?.();
+        this.furniture.activate?.();
       } else {
         this.overlayTitle.textContent = "Planta";
         this.overlayTag.textContent = "follaje";
@@ -101,7 +113,15 @@
       this.editMode = true;
       this.blocksHost.hidden = mode !== "blocks";
       this.plantsHost.hidden = mode !== "plants";
-      if (mode === "blocks") {
+      this.furnitureHost.hidden = mode !== "furniture";
+      if (mode === "furniture") {
+        this.overlayTitle.textContent = "Mueble · reeditar capa";
+        this.overlayTag.textContent = "receta";
+        this.overlayHint.textContent = "Al aplicar se actualiza la misma capa en el Composer";
+        this.furniture.editTarget = replaceTarget || null;
+        this.furniture.loadRecipe?.(recipe);
+        this.furniture.activate?.();
+      } else if (mode === "blocks") {
         this.overlayTitle.textContent = "Bloque · reeditar capa";
         this.overlayTag.textContent = "receta";
         this.overlayHint.textContent = "Al aplicar se actualiza la misma capa en el Composer";
@@ -128,8 +148,10 @@
       this.overlay.classList.remove("open");
       this.blocks.clearEditTarget?.();
       this.plants.clearEditTarget?.();
+      this.furniture.clearEditTarget?.();
       this.blocks.deactivate?.();
       this.plants.deactivate?.();
+      this.furniture.deactivate?.();
       if (this.applyBtn) this.applyBtn.textContent = "Aplicar al Composer";
       this.composer.activate?.();
     }
@@ -141,6 +163,8 @@
         ok = this.blocks.applyToComposer?.() ?? false;
       } else if (mode === "plants") {
         ok = this.plants.applyToComposer?.() ?? false;
+      } else if (mode === "furniture") {
+        ok = this.furniture.applyToComposer?.() ?? false;
       }
       if (ok) this.closeOverlay();
     }
@@ -148,6 +172,7 @@
     activate() {
       if (this.overlayMode) {
         if (this.overlayMode === "blocks") this.blocks.activate?.();
+        else if (this.overlayMode === "furniture") this.furniture.activate?.();
         else this.plants.activate?.();
       } else {
         this.composer.activate?.();
@@ -158,6 +183,7 @@
       this.composer.deactivate?.();
       this.blocks.deactivate?.();
       this.plants.deactivate?.();
+      this.furniture.deactivate?.();
     }
 
     onProject(project) {
@@ -165,16 +191,17 @@
       this.composer?.onProject?.(project);
       this.blocks?.onProject?.(project);
       this.plants?.onProject?.(project);
+      this.furniture?.onProject?.(project);
     }
 
     isDirty() {
-      return !!(this.composer?.isDirty?.() || this.blocks?.isDirty?.() || this.plants?.isDirty?.());
+      return !!(this.composer?.isDirty?.() || this.blocks?.isDirty?.() || this.plants?.isDirty?.() || this.furniture?.isDirty?.());
     }
 
     dirtyLabel() { return "Crear"; }
 
     show(id) {
-      if (id === "blocks" || id === "plants") this.openGenerator(id);
+      if (id === "blocks" || id === "plants" || id === "furniture") this.openGenerator(id);
       else this.closeOverlay();
     }
   }
