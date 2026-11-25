@@ -696,8 +696,10 @@
         slopePanel: "Tejados y diagonales", diagonalWall: "Tejados y diagonales", gable: "Tejados y diagonales",
         roofEdge: "Tejados y diagonales", pyramid: "Tejados y diagonales",
         pillar: "Columnas y vigas", octagon: "Columnas y vigas", beam: "Columnas y vigas", pedestal: "Columnas y vigas",
-        panel: "Paredes y cierres", fence: "Paredes y cierres", wall: "Paredes y cierres", door: "Paredes y cierres",
-        trapdoor: "Paredes y cierres", ladder: "Paredes y cierres", frame: "Paredes y cierres", frameRound: "Paredes y cierres",
+        panel: "Paredes y cierres", fence: "Paredes y cierres", wall: "Paredes y cierres", door: "Puertas",
+        trapdoor: "Puertas", ladder: "Paredes y cierres", frame: "Paredes y cierres", frameRound: "Paredes y cierres",
+        doorPlanks: "Puertas", doorBraced: "Puertas", doorBarred: "Puertas", doorSticks: "Puertas",
+        doorPanelled: "Puertas", gate: "Puertas", stickWall: "Paredes y cierres",
         sphere: "Curvas", hemisphere: "Curvas", cylinder: "Curvas", semicircle: "Curvas", arch: "Curvas", tube: "Curvas",
         table: "Muebles", custom: "A mano",
       };

@@ -90,6 +90,35 @@
   // Sizes in sixteenths of the block, like Minecraft's model editor, then divided down.
   const box = (x0, y0, z0, x1, y1, z1) => ({ min: [x0 / 16, y0 / 16, z0 / 16], max: [x1 / 16, y1 / 16, z1 / 16] });
 
+  /** One cell's worth of a piece taller than a cell: everything between y = 16·level and the next, brought down to
+   *  0..1 so it is drawn like any other cell. */
+  function sliceBoxes(boxes, level) {
+    const lo = level, hi = level + 1;
+    const out = [];
+
+    for (const b of boxes) {
+      if (b.max[1] <= lo || b.min[1] >= hi) continue;
+
+      out.push({ ...b,
+        min: [b.min[0], Math.max(lo, b.min[1]) - lo, b.min[2]],
+        max: [b.max[0], Math.min(hi, b.max[1]) - lo, b.max[2]] });
+    }
+
+    return out;
+  }
+
+  /** The boards of a door, floor to lintel, with the seam between them left open so the planking reads. */
+  function doorPlanking(thick) {
+    const out = [];
+    for (let x = 0; x < 16; x += 4) out.push(box(x, 0, 0, x + 3.6, 48, thick));
+    return out;
+  }
+
+  /** A handle and its plate, at the height a hand finds it: two thirds up, on the swinging edge. */
+  function doorHandle(thick) {
+    return [box(11, 22, thick, 14, 25, thick + 1), box(11.5, 23, thick + 1, 13.5, 24, thick + 2)];
+  }
+
   /** Turns local boxes a quarter turn about the cell's vertical centre line, n times (front → right → back → left). */
   function turnLocal(boxes, n) {
     let out = boxes;
@@ -320,6 +349,41 @@
       arm: () => [box(5, 0, 0, 11, 14, 4)],
     },
 
+    // Lo crudo: palos atados, que es lo primero que se levanta antes de serrar un tablón.
+    stickWall: {
+      label: "Pared de palos", connects: true,
+      params: [["stickThick", "Grosor del palo", 1, 4, "Lado de cada palo en dieciseisavos"]],
+      post: (p) => {
+        const t = p.stickThick ?? 2;
+        const c = 8 - t / 2;
+        return [box(c, 0, c, c + t, 16, c + t)];
+      },
+      // Tres palos de pie, con dos ataduras cruzadas que los sujetan: lo que se ve desde el lado.
+      arm: (p) => {
+        const t = p.stickThick ?? 2;
+        const c = 8 - t / 2;
+        const out = [];
+        for (const x of [c - 3, c, c + 3]) out.push(box(x, 0, 0, x + t, 15, t));
+        out.push(box(c - 3, 4, 0, c + 3 + t, 4 + 1, t + 0.5), box(c - 3, 11, 0, c + 3 + t, 11 + 1, t + 0.5));
+        return out;
+      },
+    },
+
+    // Cancela: los dos postes de su celda y la hoja entre ellos. Una sola celda: el juego dibuja la abierta girando
+    // esta misma (ver CellShape.Open), así que no hace falta arte aparte.
+    gate: {
+      label: "Cancela (puerta de valla)", states: ["default"],
+      params: [["gateThick", "Grosor de la hoja", 1, 6, "Grosor de los travesaños en dieciseisavos"]],
+      boxes: (p) => {
+        const t = p.gateThick ?? 2;
+        const z0 = 8 - t / 2, z1 = 8 + t / 2;
+        const boxes = [box(0, 0, z0 - 1, 3, 16, z1 + 1), box(13, 0, z0 - 1, 16, 16, z1 + 1)];
+        for (const [y0, y1] of [[4, 4 + t], [10, 10 + t]]) boxes.push(box(3, y0, z0, 13, y1, z1));
+        boxes.push(box(3, 3, z0, 3 + t, 14, z1), box(13 - t, 3, z0, 13, 14, z1));
+        return boxes;
+      },
+    },
+
     // Curvas y marcos: solid "sphere"|"cylinder"|… se rellena por distancia en el motor;
     // hole: true resta del sólido (agujeros / marcos huecos).
     sphere: {
@@ -479,6 +543,63 @@
       params: [["doorThick", "Grosor", 1, 8, "Grosor de la hoja en dieciseisavos"]],
       // A full-height panel against the front edge of the cell, where a door or a closed trapdoor sits.
       boxes: (p) => [box(0, 0, 0, 16, 16, p.doorThick ?? 3)],
+    },
+    // ── Puertas ───────────────────────────────────────────────────────────────────────────────────────────────
+    // En el juego una puerta son tres celdas, una encima de otra (ver crude_oak_door). Aquí se dibuja entera, de 0 a
+    // 48 de alto, y cada celda se queda con su rebanada; el JSON sale ya como "parts", con su offsetY.
+    doorPlanks: {
+      label: "Puerta · tablones", slices: 3, states: ["default"],
+      params: [["doorThick", "Grosor", 1, 8, "Grosor de la hoja en dieciseisavos"]],
+      boxes: (p) => doorPlanking(p.doorThick ?? 3).concat(doorHandle(p.doorThick ?? 3)),
+    },
+    doorBraced: {
+      label: "Puerta · con refuerzo", slices: 3, states: ["default"],
+      params: [["doorThick", "Grosor", 1, 8, "Grosor de la hoja en dieciseisavos"]],
+      boxes: (p) => {
+        const t = p.doorThick ?? 3;
+        const out = doorPlanking(t);
+        // Dos travesaños y una tranca en diagonal, por fuera de la hoja: lo que no deja que se abarquille.
+        for (const y of [6, 38]) out.push(box(1, y, t, 15, y + 3, t + 1));
+        for (let i = 0; i < 10; i++) out.push(box(1 + i * 1.4, 8 + i * 3, t, 1 + i * 1.4 + 2.5, 8 + i * 3 + 4, t + 1));
+        return out.concat(doorHandle(t));
+      },
+    },
+    doorBarred: {
+      label: "Puerta · de barrotes", slices: 3, states: ["default"],
+      params: [["doorThick", "Grosor", 1, 8, "Grosor del marco en dieciseisavos"]],
+      boxes: (p) => {
+        const t = p.doorThick ?? 3;
+        const out = [box(0, 0, 0, 2, 48, t), box(14, 0, 0, 16, 48, t), box(0, 0, 0, 16, 2, t), box(0, 46, 0, 16, 48, t)];
+        for (const y of [16, 31]) out.push(box(2, y, 0, 14, y + 2, t));
+        for (let x = 3; x <= 12; x += 3) out.push(box(x, 2, t / 4, x + 1.5, 46, t / 4 + t / 2));
+        return out.concat(doorHandle(t));
+      },
+    },
+    doorSticks: {
+      label: "Puerta · de palos", slices: 3, states: ["default"],
+      params: [["stickThick", "Grosor del palo", 1, 4, "Lado de cada palo en dieciseisavos"]],
+      boxes: (p) => {
+        const t = p.stickThick ?? 2;
+        const out = [];
+        // Palos de pie, dos ataduras y una diagonal: una puerta antes de tener sierra.
+        for (let x = 1; x + t <= 15; x += t + 1) out.push(box(x, 0, 0, x + t, 48, t));
+        for (const y of [8, 24, 40]) out.push(box(0, y, t, 16, y + t, t + 1));
+        for (let i = 0; i < 9; i++) out.push(box(1 + i * 1.5, 10 + i * 3, t, 1 + i * 1.5 + 2, 10 + i * 3 + 4, t + 1));
+        return out;
+      },
+    },
+    doorPanelled: {
+      label: "Puerta · con cuarterones", slices: 3, states: ["default"],
+      params: [["doorThick", "Grosor", 1, 8, "Grosor de la hoja en dieciseisavos"]],
+      boxes: (p) => {
+        const t = p.doorThick ?? 3;
+        const out = [box(0, 0, 0, 16, 48, t * 0.6)];
+        // Marco y dos cuarterones hundidos: la puerta buena, la que sustituye a la cruda.
+        for (const [x0, y0, x1, y1] of [[0, 0, 3, 48], [13, 0, 16, 48], [0, 0, 16, 3], [0, 45, 16, 48], [0, 22, 16, 26]]) {
+          out.push(box(x0, y0, 0, x1, y1, t));
+        }
+        return out.concat(doorHandle(t));
+      },
     },
     trapdoor: {
       label: "Trampilla", states: ["default", "inverted"],
@@ -765,6 +886,23 @@
     // Agujeros del usuario (movibles): se restan del sólido; el interior se ilumina como superficie 3D.
     if (opts.holes?.length) boxes = boxes.concat(holeBoxes(opts.holes));
     const iso = hasIso(opts.iso) ? { x: opts.iso.x | 0, y: opts.iso.y | 0, z: opts.iso.z | 0 } : null;
+
+    // A piece taller than its cell (a door) is drawn whole and cut into one cell per floor, bottom first — the order
+    // the tile's "parts" are written in.
+    if (def.slices > 1) {
+      for (let level = 0; level < def.slices; level++) {
+        const cut = sliceBoxes(boxes, level);
+        const label = ["Abajo", "Medio", "Arriba"][level] ?? "Celda " + (level + 1);
+        const front = { id: "part" + level + "_front", label: label + " · frente", boxes: cut, state: "default",
+          facing: "front", iso, art: { key: "part" + level, side: "front" } };
+        const back = { id: "part" + level + "_back", label: label + " · atrás", boxes: cut, state: "default",
+          facing: "back", iso, art: { key: "part" + level, side: "back" } };
+        if (opts.back === false) out.push(front);
+        else out.push(front, back);
+      }
+      return out;
+    }
+
     for (const st of def.states) {
       if (!(opts.states?.[st] ?? st === "default")) continue;
       const front = { id: st + "_front", label: STATE_LABEL[st] + " · frente", boxes, state: st, facing: "front", iso, art: { key: st, side: "front" } };
@@ -799,6 +937,20 @@
       const inner = Object.keys(arms).map((k) => `"${k}": ${pair(arms[k])}`).join(", ");
       if (inner) lines.push(`    "connect": { ${inner} }`);
       return `"art": {\n${lines.join(",\n")}\n},\n"connects": [ "${shape}", "solid" ]`;
+    }
+
+    // A door is three cells, one on top of the other: the tile names them as parts, bottom first.
+    if (def.slices > 1) {
+      const parts = [];
+      for (let level = 0; level < def.slices; level++) {
+        const sides = map["part" + level];
+        if (!sides) continue;
+
+        const art = Object.keys(sides).map((side) => `"${side}": ${pair(sides[side])}`).join(", ");
+        parts.push(`  {\n    "offsetX": 0,\n    "offsetY": ${level},\n    "offsetZ": 0,\n` +
+          `    "art": { "default": { ${art} } }\n  }`);
+      }
+      return `"parts": [\n${parts.join(",\n")}\n]`;
     }
 
     // One state per line, like the atlas tool writes it.
