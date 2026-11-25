@@ -24,6 +24,9 @@
   const MAPS = [["color", ""], ["normal", "_n"], ["depth", "_depth"], ["ao", "_ao"], ["gray", "_gray"]];
   const PREFS_KEY = "blocks:settings";
 
+  // Not a shape of Sh.SHAPES: the entry in the gallery that hands the panel over to the furniture maker.
+  const FURNITURE_ID = "furniture";
+
   // Mineral presets: they only set the mineral's look; the stone is the face textures or the base colours.
   const ORE_PRESETS = [
     ["coal", "Carbón", { style: "NUGGETS", amount: 0.3, size: 0.07, color: "#1a1a1c", tip: "#45454b", shine: 0.3 }],
@@ -175,7 +178,12 @@
       this.#schedule();
     }
 
-    activate() { this.#drawPicker(); this.#drawPreview(); }
+    activate() {
+      if (this.inFurniture) { this.furniture.activate?.(); return; }
+      this.#drawPicker();
+      this.#drawPreview();
+    }
+
     deactivate() {}
     isDirty() { return false; }
 
@@ -185,6 +193,33 @@
       this.#renderList();
       this.#fillTargets();
       this.#loadBiomes();
+      this.furniture?.onProject?.(project);
+    }
+
+    /** Whether the panel is making a piece of furniture rather than a block. */
+    get inFurniture() { return !!this.furniture && !this.furnitureHost.hidden; }
+
+    /** Hands the panel to the furniture maker, building it the first time it is asked for. */
+    openFurniture(kind = null) {
+      if (!this.furniture) {
+        this.furniture = Aura.furnitureTool.furnitureTool();
+        this.furniture.mount(this.furnitureBody, this.studio);
+        if (this.project) this.furniture.onProject?.(this.project);
+      }
+
+      this.furnitureHost.hidden = false;
+      this.root.hidden = true;
+      if (kind) this.furniture.setKind?.(kind);
+      this.furniture.activate?.();
+    }
+
+    closeFurniture() {
+      if (!this.furnitureHost || this.furnitureHost.hidden) return;
+
+      this.furnitureHost.hidden = true;
+      this.root.hidden = false;
+      this.#drawPicker();
+      this.#drawPreview();
     }
 
     async #loadBiomes() {
@@ -199,6 +234,8 @@
 
     /** Snapshot de opciones para guardar en la capa del Composer. */
     getRecipe() {
+      if (this.inFurniture) return this.furniture.getRecipe();
+
       return {
         kind: "blocks",
         o: structuredClone(this.o),
@@ -211,6 +248,14 @@
 
     /** Carga una receta (desde Composer). */
     loadRecipe(recipe) {
+      // A furniture layer comes back to the same panel it was made in.
+      if (recipe?.kind === "furniture") {
+        this.openFurniture();
+        this.furniture.loadRecipe?.(recipe);
+        return;
+      }
+
+      this.closeFurniture();
       if (!recipe || recipe.kind === "plants") return;
       try {
         this.o = E.merge(recipe.o || {});
@@ -226,7 +271,17 @@
       }
     }
 
-    clearEditTarget() { this.editTarget = null; }
+    clearEditTarget() {
+      this.editTarget = null;
+      this.furniture?.clearEditTarget?.();
+    }
+
+    /** The layer being re-edited goes to whichever of the two panels is up. */
+    setEditTarget(target) {
+      if (this.inFurniture) this.furniture.editTarget = target || null;
+      else this.editTarget = target || null;
+    }
+
 
     // ---------------------------------------------------------------------------------------------------------------
     // Layout
@@ -314,7 +369,17 @@
           facesPanel));
 
       this.root = h("div", { class: "bk" }, left, stage, this.#buildPanel());
-      return this.root;
+
+      // A piece of furniture is the same engine with several textures at once instead of one, so it is not another
+      // tool: it is picked like one more shape and takes over the panel while it is the one being made.
+      this.furnitureHost = h("div", { class: "bk-furniture", hidden: true },
+        h("div", { class: "bk-furniture-bar" },
+          h("button", { type: "button", onclick: () => this.closeFurniture() }, "\u2039 Volver al bloque"),
+          h("span", { class: "hint" }, "Cada parte lleva su propia textura.")),
+        this.furnitureBody = h("div", { class: "bk-furniture-body" }));
+
+      this.shell = h("div", { class: "bk-shell" }, this.root, this.furnitureHost);
+      return this.shell;
     }
 
     // Controls bound to an option path ("shade.left", "hair.edges.corner"): every change re-renders and is remembered.
@@ -604,9 +669,14 @@
       const shapePicker = Aura.picker.gallery({
         items: Object.entries(Sh.SHAPES)
           .map(([k, s]) => ({ id: k, label: s.label, group: SHAPE_GROUP[k] ?? "Otras" }))
+          .concat([{ id: FURNITURE_ID, label: "Mueble (mesa, cofre, cama…)", group: "Muebles" }])
           .sort((a, b) => a.group.localeCompare(b.group)),
         value: this.piece.shape, columns: 2, placeholder: "Buscar forma…",
-        onPick: (v) => { this.#resetPreview(); this.#setPiece((p) => { p.shape = v; }, true); },
+        onPick: (v) => {
+          if (v === FURNITURE_ID) { this.openFurniture(); return; }
+          this.#resetPreview();
+          this.#setPiece((p) => { p.shape = v; }, true);
+        },
       });
       const shapeSel = { el: shapePicker.el };
       const params = shapeParamDefs(this.piece.shape).map(([key, label, min, max, title]) => this.#pieceSlider(label, key, min, max, title));
@@ -1263,6 +1333,7 @@
 
     /** Público: usado por el hub Crear (overlay). Devuelve true si se aplicó. */
     applyToComposer() {
+      if (this.inFurniture) return this.furniture.applyToComposer();
       return this.#addToComposer(true);
     }
 

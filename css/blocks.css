@@ -199,3 +199,8 @@
 .blocks-tool button, .bk-panel button {
   border-radius: 999px;
 }
+
+/* El generador de muebles, dentro del de bloques: ocupa su sitio mientras es lo que se está haciendo. */
+.bk-furniture { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
+.bk-furniture-bar { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.bk-furniture-body { position: relative; flex: 1; min-height: 0; }

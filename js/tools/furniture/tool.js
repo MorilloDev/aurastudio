@@ -338,6 +338,17 @@
       return { kind: "furniture", type: this.kind, p: structuredClone(this.p) };
     }
 
+    /** Picks the piece from outside the panel, the same as clicking it in the gallery. */
+    setKind(kind) {
+      if (!kind || kind === this.kind) return;
+
+      this.kind = kind;
+      this.p = P.defaults(kind);
+      this.#save();
+      this.#buildPanel();
+      this.#schedule();
+    }
+
     loadRecipe(recipe) {
       if (!recipe || recipe.kind !== "furniture") return;
       try {
