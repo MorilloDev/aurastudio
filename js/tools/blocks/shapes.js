@@ -214,8 +214,13 @@
   }
 
 
-  // Connection sides of fences and walls, as quarter turns of the arm that points front.
-  const SIDES = [["f", "frente", 0], ["r", "derecha", 1], ["b", "atrás", 2], ["l", "izquierda", 3]];
+  // The four arms of a fence or a wall, named by where they run on screen and given as quarter turns of the arm that
+  // points front. The game knows a neighbour by its world direction and turns it into one of these, so these same four
+  // cells serve the four turns of the camera: nothing has to be drawn again for a turned world.
+  const SIDES = [["sw", "abajo-izquierda", 0], ["se", "abajo-derecha", 1], ["ne", "arriba-derecha", 2], ["nw", "arriba-izquierda", 3]];
+
+  // Drawn far to near, which is also the order the game stacks them in: the two that go up are behind the post.
+  const ARM_ORDER = ["nw", "ne", "se", "sw"];
 
   const SHAPES = {
     cube: {
@@ -736,9 +741,13 @@
     if (def.connects) {
       const post = def.post(p), arm = def.arm(p);
       out.push({ id: "post", label: "Poste", boxes: post, state: "default", facing: "front", art: { key: "post" } });
-      out.push({ id: "arm_front", label: "Brazo · frente", boxes: arm, state: "default", facing: "front", art: { key: "arm", side: "front" } });
-      if (opts.back !== false) {
-        out.push({ id: "arm_back", label: "Brazo · atrás", boxes: arm, state: "default", facing: "back", art: { key: "arm", side: "back" } });
+
+      // One cell per arm, each lit for the side it is really on. Two would do with a mirrored sprite, but the mirror
+      // puts the light on the wrong face, and a rail is mostly its lit faces.
+      for (const name of ARM_ORDER) {
+        const [, label, turns] = SIDES.find(([id]) => id === name);
+        out.push({ id: "arm_" + name, label: "Brazo · " + label, boxes: turnLocal(arm, turns),
+          state: "default", facing: "front", art: { key: "connect", side: name } });
       }
       if (opts.combos) {
         // All 16 joins baked whole, for engines (or tiles) that want one sprite per neighbour pattern.
@@ -781,11 +790,23 @@
       if (!side) { map[key] = cell; continue; }
       (map[key] ??= {})[side] = cell;
     }
-    const body = def.connects ? { parts: map } : { art: map };
+
+    // A fence writes the art the game reads: the post is what it looks like standing alone, and "connect" holds the
+    // four arms. "connects" says what it reaches for — its own kind, and a solid block so a fence closes on a wall.
+    if (def.connects) {
+      const post = map.post, arms = map.connect ?? {};
+      const lines = [`    "default": { "front": ${pair(post)} }`];
+      const inner = Object.keys(arms).map((k) => `"${k}": ${pair(arms[k])}`).join(", ");
+      if (inner) lines.push(`    "connect": { ${inner} }`);
+      return `"art": {\n${lines.join(",\n")}\n},\n"connects": [ "${shape}", "solid" ]`;
+    }
+
     // One state per line, like the atlas tool writes it.
-    const inner = Object.entries(Object.values(body)[0]).map(([k, v]) => `    "${k}": ${JSON.stringify(v).replace(/,/g, ", ").replace(/:/g, ": ")}`);
-    return `"${Object.keys(body)[0]}": {\n${inner.join(",\n")}\n}`;
+    const inner = Object.entries(map).map(([k, v]) => `    "${k}": ${JSON.stringify(v).replace(/,/g, ", ").replace(/:/g, ": ")}`);
+    return `"art": {\n${inner.join(",\n")}\n}`;
   }
+
+  const pair = (cell) => (Array.isArray(cell) ? `[ ${cell[0]}, ${cell[1]} ]` : "[ 0, 0 ]");
 
   Aura.blockShapes = {
     SHAPES, PARAM_DEFAULTS, STATE_LABEL, FACING_LABEL, DIRS,

@@ -651,9 +651,9 @@
       const variantControls = [];
       if (def.connects) {
         variantControls.push(
-          h("p", { class: "note" }, "Poste y brazo por separado, para que el juego los combine según los vecinos."),
-          this.#pieceCheck("Brazo también hacia atrás", () => this.piece.back, (v) => { this.piece.back = v; }),
-          this.#pieceCheck("Las 16 uniones ya montadas", () => this.piece.combos, (v) => { this.piece.combos = v; }));
+          h("p", { class: "note" }, "El poste y sus cuatro brazos por separado: el juego monta la celda con los brazos que tengan a quién llegar, así que una valla nueva son cinco celdas y nunca dieciséis."),
+          this.#pieceCheck("Las 16 uniones ya montadas", () => this.piece.combos, (v) => { this.piece.combos = v; },
+            "Solo si quieres pegarlas a mano: el juego no las necesita"));
       } else {
         variantControls.push(h("div", { class: "bk-zones" }, def.states.map((st) =>
           this.#pieceCheck(Sh.STATE_LABEL[st], () => this.piece.states[st] ?? st === "default", (v) => { this.piece.states[st] = v; },
