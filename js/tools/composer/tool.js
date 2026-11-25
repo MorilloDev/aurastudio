@@ -906,7 +906,6 @@
         this.studio?.toast("Esta capa no tiene receta de generador", { kind: "warn" });
         return;
       }
-      // Furniture is made in the block generator now, so an old furniture layer goes back there too.
       const kind = L.recipe.kind || (L.source === "planta" ? "plants" : "blocks");
       const create = this.studio?.tools?.find?.((x) => x.id === "create");
       if (!create?.openGeneratorForEdit) {

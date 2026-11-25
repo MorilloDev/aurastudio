@@ -24,77 +24,12 @@
   const MAPS = [["color", ""], ["normal", "_n"], ["depth", "_depth"], ["ao", "_ao"], ["gray", "_gray"]];
   const PREFS_KEY = "blocks:settings";
 
-  // Furniture is not another tool and not another engine: it is one more shape here. furniture/parts.js hands over
-  // the boxes already grouped by part, every group goes through this same render, and each part takes its textures
-  // from its own three face slots — so a leg can be oak on one side and iron on the other, like any block.
-  const FN_PREFIX = "fn:";
-
-  const FN_PARTS = [
-    ["frame", "Armazón y patas"], ["body", "Cuerpo"], ["top", "Tablero o tapa"],
-    ["front", "Frente, puertas y cajones"], ["metal", "Herrajes"], ["cloth", "Tela"],
-  ];
-
-  // Only to sort the catalogue: the body and the measurements are the same for all of them.
-  const FN_FAMILY = {
-    table: "Mesas y apoyos", round_table: "Mesas y apoyos", desk: "Mesas y apoyos", lectern: "Mesas y apoyos",
-    chest: "Guardado", trunk: "Guardado", crate: "Guardado", barrel: "Guardado",
-    wardrobe: "Armarios", cupboard: "Armarios", bookshelf: "Armarios", nightstand: "Armarios",
-    bench: "Asientos y camas", stool: "Asientos y camas", bed: "Asientos y camas",
-  };
-
-  const FN_KEYS = {
-    chest: "cofre baul arca tesoro", trunk: "arcon baul", crate: "caja cajon embalaje",
-    barrel: "barril tonel tinaja", wardrobe: "armario ropero", cupboard: "alacena vitrina aparador",
-    bookshelf: "estanteria libreria balda", nightstand: "mesilla noche comoda",
-    bed: "cama camastro", bench: "banco escano", stool: "taburete banqueta silla",
-    desk: "escritorio buro pupitre", lectern: "atril facistol pupitre",
-    table: "mesa tablero", round_table: "mesa redonda velador",
-  };
-
-  // Read when they are needed, not now: furniture/parts.js and its materials load after this file.
-  const fnParts = () => Aura.furnitureParts;
-  const fnMaterials = () => Aura.furnitureMaterials;
-
-  const fnKindOf = (shape) => (typeof shape === "string" && shape.startsWith(FN_PREFIX) ? shape.slice(FN_PREFIX.length) : null);
-
   const emptySlots = () => ({
     top: { key: null, cx: 0, cy: 0, rot: 0, flip: false },
     left: { key: null, cx: 0, cy: 0, rot: 0, flip: false },
     right: { key: null, cx: 0, cy: 0, rot: 0, flip: false },
     ore: { key: null, cx: 0, cy: 0, rot: 0, flip: false },   // the mineral's texture (optional)
   });
-
-  // The maps a render carries, all of them stacked the same way so every view of the strip works for furniture too.
-  const STACKED_MAPS = ["color", "normal", "depth", "ao", "gray"];
-
-  /** Stacks the parts by depth: the nearer pixel wins, ties going to the later group (hinges over the body). */
-  function stackLayers(layers, size) {
-    const n = size * size;
-    const out = { size, mask: new Uint8Array(n) };
-    for (const k of STACKED_MAPS) out[k] = new Uint8ClampedArray(n * 4);
-
-    const best = new Float32Array(n).fill(-1);
-
-    for (const layer of layers) {
-      if (!layer?.mask) continue;
-
-      for (let i = 0; i < n; i++) {
-        if (!layer.mask[i]) continue;
-
-        const d = layer.depth[i * 4];
-        if (d < best[i]) continue;
-
-        best[i] = d;
-        out.mask[i] = 1;
-        for (const k of STACKED_MAPS) {
-          if (!layer[k]) continue;
-          for (let c = 0; c < 4; c++) out[k][i * 4 + c] = layer[k][i * 4 + c];
-        }
-      }
-    }
-
-    return out;
-  }
 
   // Mineral presets: they only set the mineral's look; the stone is the face textures or the base colours.
   const ORE_PRESETS = [
@@ -127,7 +62,6 @@
     rot3d: { x: 0, y: 0, z: 0 },
     holes: [],  // [{ x,y,z,w,h,d, solid }] en dieciseisavos; solid: box|sphere|cylinder
     extras: [], // piezas extra sumadas o restadas a la forma: ver Sh.extraBoxes
-    fn: null,   // medidas del mueble cuando la forma es uno (ver furniture/parts.js)
   };
   const mergePiece = ({ iso, ...p } = {}) => ({
     ...PIECE_DEFAULTS, ...p,
@@ -145,8 +79,6 @@
       solid: h.solid || "box",
     })) : [],
     extras: Array.isArray(p.extras) ? p.extras.map(newExtra) : [],
-    // A piece of furniture travels with its own measurements; anything missing comes from its defaults.
-    fn: fnKindOf(p.shape) ? { ...Aura.furnitureParts.defaults(fnKindOf(p.shape)), ...(p.fn || {}) } : null,
   });
 
   /** An extra piece with every key filled in (old saves and new pieces alike). */
@@ -214,13 +146,7 @@
     project = null;
     sheets = [];
     images = new Map();      // source key -> { key, name, w, h, rgba, sheet }
-    blockSlots = emptySlots();
-
-    // part -> its own faces. A piece of furniture is several blocks at once, so each part keeps its own.
-    partSlots = {};
-    activePart = "frame";
-    materialsImage = null;
-
+    slots = emptySlots();
     activeSlot = "all";
     view = "color";
     result = null;
@@ -229,14 +155,6 @@
     previewId = null;
     previewFacing = "auto";
     #pending = 0;
-
-    /** The faces a click fills and the panel shows: the block's own, or those of the part being worked on. */
-    get slots() { return this.fnKind ? this.#slotsOf(this.activePart) : this.blockSlots; }
-
-    /** The piece being made, when it is furniture rather than a block. */
-    get fnKind() { return fnKindOf(this.piece?.shape); }
-
-    #slotsOf(part) { return (this.partSlots[part] ??= emptySlots()); }
 
     // ---------------------------------------------------------------------------------------------------------------
     // Setup
@@ -269,7 +187,6 @@
       this.#renderList();
       this.#fillTargets();
       this.#loadBiomes();
-      this.#loadMaterials();
     }
 
     async #loadBiomes() {
@@ -296,17 +213,9 @@
 
     /** Carga una receta (desde Composer). */
     loadRecipe(recipe) {
-      if (!recipe || recipe.kind === "plants") return;
+      // Only what this generator makes: a plant, or a piece of furniture from when that lived here, is not a block.
+      if (!recipe || (recipe.kind && recipe.kind !== "blocks")) return;
 
-      // Made before furniture moved in here: the piece and its measurements are all it carried.
-      if (recipe.kind === "furniture") {
-        this.piece = mergePiece({ shape: FN_PREFIX + (recipe.type || "table"), fn: recipe.p });
-        this.#resetPreview();
-        this.#save();
-        this.#rebuildPanel();
-        this.#schedule();
-        return;
-      }
 
       try {
         this.o = E.merge(recipe.o || {});
@@ -354,7 +263,6 @@
         h("div", { class: "bk-pick" },
           h("div", { class: "field" }, h("label", null, "Celda (px)"), this.cellInput),
           this.slotSeg.el,
-          this.partNote = h("div", { class: "bk-part-note", hidden: true }),
           h("div", { class: "bk-picker-wrap scroll" }, this.pickerCanvas),
           this.slotInfo));
 
@@ -698,29 +606,17 @@
         pillar: "Columnas y vigas", octagon: "Columnas y vigas", beam: "Columnas y vigas", pedestal: "Columnas y vigas",
         panel: "Paredes y cierres", fence: "Paredes y cierres", wall: "Paredes y cierres", door: "Puertas",
         trapdoor: "Puertas", ladder: "Paredes y cierres", frame: "Paredes y cierres", frameRound: "Paredes y cierres",
-        doorPlanks: "Puertas", doorBraced: "Puertas", doorBarred: "Puertas", doorSticks: "Puertas",
-        doorPanelled: "Puertas", gate: "Puertas", stickWall: "Paredes y cierres",
+        doorPlanks: "Puertas", doorBraced: "Puertas", doorBarred: "Puertas", doorPanelled: "Puertas",
+        gate: "Puertas",
         sphere: "Curvas", hemisphere: "Curvas", cylinder: "Curvas", semicircle: "Curvas", arch: "Curvas", tube: "Curvas",
-        table: "Muebles", custom: "A mano",
+        custom: "A mano",
       };
       const shapePicker = Aura.picker.gallery({
         items: Object.entries(Sh.SHAPES)
-          // The old "table" is a bare box with four legs; the real one is the furniture below, so it says which is which.
-          .map(([k, s]) => ({ id: k, label: k === "table" ? "Mesa simple (caja)" : s.label, group: SHAPE_GROUP[k] ?? "Otras" }))
-          .concat(fnParts().KINDS.map(([id, label]) => ({
-            id: FN_PREFIX + id, label, group: FN_FAMILY[id] ?? "Muebles", keywords: "mueble " + (FN_KEYS[id] ?? ""),
-          })))
+          .map(([k, s]) => ({ id: k, label: s.label, group: SHAPE_GROUP[k] ?? "Otras" }))
           .sort((a, b) => a.group.localeCompare(b.group)),
         value: this.piece.shape, columns: 2, placeholder: "Buscar forma…",
-        onPick: (v) => {
-          this.#resetPreview();
-          const kind = fnKindOf(v);
-          this.#setPiece((p) => {
-            p.shape = v;
-            // Each piece brings its own measurements; the textures already picked per part stay as they are.
-            if (kind) p.fn = fnParts().defaults(kind);
-          }, true);
-        },
+        onPick: (v) => { this.#resetPreview(); this.#setPiece((p) => { p.shape = v; }, true); },
       });
       const shapeSel = { el: shapePicker.el };
       const params = shapeParamDefs(this.piece.shape).map(([key, label, min, max, title]) => this.#pieceSlider(label, key, min, max, title));
@@ -751,7 +647,7 @@
           this.#resetPreview();
           this.#save(); this.#rebuildPanel(); this.#schedule();
         }) },
-        shapeSel.el, ...(this.fnKind ? [] : params),
+        shapeSel.el, ...params,
         this.#slider("Resolución", "res", 16, 64, 16, "Cubitos por lado del bloque: 32 = uno cada 2 px de un sprite de 64; 64 = uno por pixel (bordes y formas más finos)"),
         this.#rot3dControls(), this.#scale3dControls(), this.#placeControls(),
         this.#choice("Texturas", "texMode", [["auto", "Auto"], ["follow", "Giran"], ["world", "Fijas"]]),
@@ -877,11 +773,8 @@
 
       this.tintUi = TP.tintSection({ id: "bk-tint", state: this.tint, biomes: this.biomes,
         onChange: () => { this.#save(); this.#schedule(); } });
-      // A piece of furniture brings its own measurements instead of the block's zones and states, and goes right under
-      // the shape it was picked from.
-      const forBlock = this.fnKind ? [] : [this.#extrasSection().el, this.#holesSection().el, stone.el, variants.el];
-      this.panelScroll = h("div", { class: "scroll" }, shape.el, ...this.#fnSections(), ...forBlock,
-        maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
+      this.panelScroll = h("div", { class: "scroll" }, shape.el, this.#extrasSection().el, this.#holesSection().el,
+        stone.el, variants.el, maskSection.el, cover.el, hair.el, light.el, pixel.el, this.tintUi.el, output.el);
       for (const sec of [maskSection, cover, hair, light, pixel]) sec.el.classList.add("adv");
       const detail = h("span");
       this.panel = h("div", { class: "bk-panel" },
@@ -895,152 +788,6 @@
         this.panelScroll);
       detail.replaceWith(detailSwitch(this.panel));
       return this.panel;
-    }
-
-    // ---------------------------------------------------------------------------------------------------------------
-    // Muebles
-
-    #fnSet(key, value) {
-      this.piece.fn[key] = value;
-      this.#save();
-      this.#schedule();
-    }
-
-    #fnNum(label, key, min, max, step = 0.5, title = "") {
-      const defaults = fnParts().DEFAULTS;
-      return slider({ label, min, max, step, value: this.piece.fn[key], title, defaultValue: defaults[key],
-        onInput: (v) => this.#fnSet(key, v) }).el;
-    }
-
-    // One box per corner. Taking legs off is what turns a table into a shelf or a counter.
-    #fnLegToggles() {
-      const p = this.piece.fn;
-      const names = p.legs === "sled"
-        ? [["Izquierda", 0], ["Derecha", 1]]
-        : [["Frente izq.", 0], ["Frente der.", 1], ["Fondo izq.", 2], ["Fondo der.", 3]];
-
-      return h("div", { class: "fn-legs" }, names.map(([label, i]) => checkbox({
-        label, value: p.legMask[i] !== 0,
-        onChange: (v) => { p.legMask[i] = v ? 1 : 0; this.#save(); this.#schedule(); },
-      }).el));
-    }
-
-    /** Which part a picked cell belongs to, and whether each one is shown at all. The material beside it is only what
-     *  a part falls back to while none of its own faces has been chosen. */
-    #fnPartsSection() {
-      const p = this.piece.fn;
-      const hidden = new Set(p.hidden ?? []);
-      const parts = section({ id: "bk-fn-parts", title: "Partes" });
-
-      for (const [key, label] of FN_PARTS) {
-        parts.body.appendChild(h("div", { class: "fn-part" },
-          checkbox({
-            label: "", value: !hidden.has(key), title: "Mostrar " + label.toLowerCase(),
-            onChange: (v) => {
-              const set = new Set(this.piece.fn.hidden ?? []);
-              if (v) set.delete(key); else set.add(key);
-              this.piece.fn.hidden = [...set];
-              this.#save();
-              this.#schedule();
-            },
-          }).el,
-          h("button", { class: this.activePart === key ? "primary grow" : "grow",
-            title: "Las celdas que elijas van a esta parte",
-            onclick: () => { this.activePart = key; this.#rebuildPanel(); this.#drawPicker(); this.#updateSlotControls(); } }, label),
-          select({
-            label: "", value: p.materials[key] ?? "wood", options: fnMaterials().LIST,
-            title: "Con qué se pinta mientras esta parte no tenga sus propias celdas",
-            onChange: (v) => { p.materials[key] = v; this.#save(); this.#schedule(); },
-          }).el));
-      }
-
-      parts.body.appendChild(h("p", { class: "note" },
-        "Cada parte lleva sus tres caras, como un bloque: elige la parte aquí y haz clic en la celda de la hoja. ",
-        "Mientras no tenga ninguna, se pinta con el material de al lado",
-        this.materialsImage ? " (Materials.png del proyecto)." : " (pintado aquí: abre el proyecto para usar Materials.png)."));
-      return parts;
-    }
-
-    #fnSections() {
-      if (!this.fnKind) return [];
-
-      const p = this.piece.fn;
-      const out = [];
-      const add = (sec) => out.push(sec.el);
-
-      add(section({ id: "bk-fn-body", title: "Cuerpo" },
-        select({
-          label: "Cuerpo", value: p.body,
-          options: [["table", "Mesa (patas y tablero)"], ["box", "Caja (casco cerrado)"], ["shelf", "Estantería"], ["slab", "Tabla (cama, banco)"]],
-          title: "El cuerpo decide qué partes tiene la pieza. Cambiarlo no borra el resto de ajustes.",
-          onChange: (v) => { this.#fnSet("body", v); this.#rebuildPanel(); },
-        }).el,
-        p.body === "box" ? checkbox({
-          label: "Cuerpo redondo", value: p.round,
-          title: "Duelas abombadas y aros en vez de paredes rectas: un barril o una tinaja.",
-          onChange: (v) => { this.#fnSet("round", v); this.#rebuildPanel(); },
-        }).el : null));
-
-      add(section({ id: "bk-fn-size", title: "Medidas" },
-        this.#fnNum("Ancho", "width", 2, 16),
-        this.#fnNum("Fondo", "depth", 2, 16),
-        this.#fnNum("Alto", "height", 2, 16)));
-
-      add(section({ id: "bk-fn-legs", title: "Patas" },
-        select({
-          label: "Forma", value: p.legs,
-          options: [["none", "Sin patas"], ["square", "Postes"], ["turned", "Torneadas"], ["splayed", "Abiertas"], ["sled", "Patines"], ["plinth", "Zócalo"]],
-          onChange: (v) => { this.#fnSet("legs", v); this.#rebuildPanel(); },
-        }).el,
-        p.legs === "none" || p.legs === "plinth" ? null : this.#fnLegToggles(),
-        p.legs === "none" ? null : this.#fnNum("Grosor", "legThick", 1, 5, 0.5),
-        p.legs === "none" || p.body === "table" || p.body === "slab" ? null : this.#fnNum("Altura de la pata", "legHeight", 0, 8, 0.5),
-        p.body === "table" && p.legs !== "none" && p.legs !== "plinth"
-          ? this.#fnNum("Travesaño", "stretcher", 0, 8, 0.5, "Altura de la barra que une las patas. 0 la quita.") : null,
-        p.body === "table" && p.legs !== "none" && p.legs !== "plinth"
-          ? checkbox({ label: "Zapatas", value: p.feet, title: "Un taco bajo cada pata.", onChange: (v) => this.#fnSet("feet", v) }).el : null));
-
-      if (p.body === "table" || p.body === "slab") {
-        add(section({ id: "bk-fn-top", title: "Tablero" },
-          this.#fnNum("Grosor", "topThick", 0.5, 5, 0.5),
-          p.body === "table" ? this.#fnNum("Voladizo", "overhang", 0, 3, 0.25) : null,
-          p.body === "table" ? this.#fnNum("Faldón", "apron", 0, 4, 0.5, "La faja bajo el tablero que une las patas.") : null,
-          p.body === "table" ? checkbox({ label: "Redondo", value: p.round, onChange: (v) => this.#fnSet("round", v) }).el : null,
-          p.body === "table" ? this.#fnNum("Inclinación", "slope", 0, 1, 0.05, "Un atril: el tablero se corta por un plano en vez de escalonarse.") : null,
-          p.body === "slab" ? this.#fnNum("Cabecero", "headboard", 0, 8, 0.5) : null));
-      }
-
-      if (p.body === "box" || p.body === "shelf") {
-        add(section({ id: "bk-fn-carcass", title: "Casco" },
-          p.round ? null : this.#fnNum("Grosor de pared", "wall", 0.5, 3, 0.25),
-          p.round ? null : checkbox({ label: "Con fondo", value: p.back, onChange: (v) => this.#fnSet("back", v) }).el,
-          p.body === "box" ? select({
-            label: "Tapa", value: p.lid, options: [["none", "Sin tapa"], ["flat", "Plana"], ["domed", "Abombada"]],
-            onChange: (v) => { this.#fnSet("lid", v); this.#rebuildPanel(); },
-          }).el : null,
-          p.body === "box" && p.lid !== "none" ? this.#fnNum("Grosor de la tapa", "lidThick", 0.5, 5, 0.5) : null,
-          p.round ? null : this.#fnNum("Baldas", "shelves", 0, 4, 1)));
-      }
-
-      if (p.body === "box" && !p.round) {
-        add(section({ id: "bk-fn-front", title: "Frente" },
-          this.#fnNum("Puertas", "doors", 0, 2, 1),
-          this.#fnNum("Cajones", "drawers", 0, 4, 1),
-          p.doors > 0 ? this.#fnNum("Abierta", "open", 0, 1, 0.05, "0 cerrada, 1 abierta del todo. Sirve para el estado abierto del tile.") : null,
-          checkbox({ label: "Frente abierto", value: p.openFront, title: "Sin puerta ni tabla: un escritorio o una alacena abierta.",
-            onChange: (v) => this.#fnSet("openFront", v) }).el,
-          select({
-            label: "Tirador", value: p.handle, options: [["none", "Ninguno"], ["knob", "Pomo"], ["ring", "Argolla"], ["bar", "Barra"]],
-            onChange: (v) => this.#fnSet("handle", v),
-          }).el));
-      }
-
-      if (p.body === "box") {
-        add(section({ id: "bk-fn-iron", title: "Herrajes" }, this.#fnNum("Bandas de metal", "bands", 0, 4, 1)));
-      }
-
-      add(this.#fnPartsSection());
-      return out;
     }
 
     #rebuildPanel() {
@@ -1143,12 +890,6 @@
     }
 
     #updateSlotControls() {
-      if (this.partNote) {
-        const label = FN_PARTS.find(([k]) => k === this.activePart)?.[1] ?? this.activePart;
-        this.partNote.textContent = this.fnKind ? "Caras de: " + label : "";
-        this.partNote.hidden = !this.fnKind;
-      }
-
       for (const [k] of SLOTS) {
         if (!this.faceRot?.[k]) continue;
         this.faceRot[k].rot.set(String(this.slots[k].rot));
@@ -1207,31 +948,11 @@
       setTimeout(() => { if (ticket === this.#pending) this.#render(true); }, 30);
     }
 
-    /** The faces of a part, or the painted material when none of its cells has been picked yet: a table still looks
-     *  like a table before a single texture is chosen. */
-    #texturesOf(part, material) {
-      const slots = this.#slotsOf(part);
-      if (!SLOTS.some(([k]) => slots[k].key)) return fnMaterials().source(this.materialsImage)(material);
-
-      return this.#textures(slots);
-    }
-
-    async #loadMaterials() {
-      this.materialsImage = null;
-      try {
-        const entry = this.project?.get?.("App/Content/Assets/Texture/Materials.png");
-        if (entry?.handle) this.materialsImage = await Aura.png.decodePng(await entry.handle.getFile());
-      } catch (err) {
-        console.warn("blocks: Materials.png", err);
-      }
-      if (this.fnKind) this.#schedule();
-    }
-
-    #textures(slots = this.slots) {
+    #textures() {
       const tex = {};
       const fromColors = this.o.base.mode === "color";
       for (const [k] of SLOTS) {
-        const sl = slots[k];
+        const sl = this.slots[k];
         if (fromColors) {
           tex[k] = E.faceTexture(this.#baseImage(k), { x: 0, y: 0, w: 16, h: 16 }, sl.rot, sl.flip);
           continue;
@@ -1240,7 +961,7 @@
         if (!img) return null;
         tex[k] = E.faceTexture(img, this.#cellRect(img, sl.cx, sl.cy), sl.rot, sl.flip);
       }
-      const ore = slots.ore, oreImg = ore.key ? this.images.get(ore.key) : null;
+      const ore = this.slots.ore, oreImg = ore.key ? this.images.get(ore.key) : null;
       if (oreImg) tex.ore = E.faceTexture(oreImg, this.#cellRect(oreImg, ore.cx, ore.cy), ore.rot, ore.flip);
       return tex;
     }
@@ -1306,59 +1027,8 @@
       return { ...v, facing: this.previewFacing === "auto" ? v.facing : this.previewFacing };
     }
 
-    /** A piece of furniture: every part rendered with its own textures and the lot stacked by depth. One variant, the
-     *  piece itself — a table has no facings to choose between. */
-    #renderFurniture() {
-      const P = fnParts();
-      const p = this.piece.fn;
-      let groups;
 
-      try {
-        groups = P.build(p);
-      } catch (err) {
-        this.studio.setStatus("No se pudo construir el mueble: " + err.message, "warn");
-        return;
-      }
-
-      // The bitten edge the engine gives the foot of a block (grass over a cliff) only frays legs and hinges here.
-      const opts = { ...this.o, mask: { ...this.o.mask, enabled: false } };
-      const hidden = new Set(p.hidden ?? []);
-      const layers = [];
-
-      for (const g of groups) {
-        if (hidden.has(g.part)) continue;
-
-        try {
-          const piece = { boxes: Sh.parseCustom(JSON.stringify(g.boxes)), state: "default", facing: "front", rot3d: this.piece.rot3d };
-          layers.push(E.render(opts, this.#texturesOf(g.part, g.material), piece));
-        } catch (err) {
-          console.warn("mueble", g.part, err);
-        }
-      }
-
-      this.variantList = [{ id: "default", label: P.KINDS.find(([id]) => id === this.fnKind)?.[1] ?? "Mueble",
-        state: "default", facing: "front", art: { key: "default", side: "front" } }];
-      this.previewId = "default";
-
-      const r = stackLayers(layers, this.o.size);
-      if (this.tint.enabled) r.color = Tint.toTinted(r.color, TP.resolve(this.tint, this.biomes));
-      r.tinted = this.tint.enabled ? Tint.applyTint(r.color, TP.previewRgb(this.tint, this.biomes)) : r.color;
-
-      this.result = r;
-      this.variantResults.clear();
-      this.variantResults.set("default", r);
-
-      this.previewLabel.textContent = `${this.variantList[0].label} · ${layers.length} partes`;
-      this.#drawPreview();
-      this.#drawStrip();
-      this.#drawVariantStrip();
-      this.#updateContext();
-    }
-
-    /** Renders the preview now; with all = true also refreshes every variant's thumbnail, a few per frame. */
     #render(all) {
-      if (this.fnKind) { this.#renderFurniture(); return; }
-
       const tex = this.#textures();
       this.variantList = this.#variants();
       const piece = tex && this.#previewPiece();

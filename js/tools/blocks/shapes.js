@@ -349,26 +349,6 @@
       arm: () => [box(5, 0, 0, 11, 14, 4)],
     },
 
-    // Lo crudo: palos atados, que es lo primero que se levanta antes de serrar un tablón.
-    stickWall: {
-      label: "Pared de palos", connects: true,
-      params: [["stickThick", "Grosor del palo", 1, 4, "Lado de cada palo en dieciseisavos"]],
-      post: (p) => {
-        const t = p.stickThick ?? 2;
-        const c = 8 - t / 2;
-        return [box(c, 0, c, c + t, 16, c + t)];
-      },
-      // Tres palos de pie, con dos ataduras cruzadas que los sujetan: lo que se ve desde el lado.
-      arm: (p) => {
-        const t = p.stickThick ?? 2;
-        const c = 8 - t / 2;
-        const out = [];
-        for (const x of [c - 3, c, c + 3]) out.push(box(x, 0, 0, x + t, 15, t));
-        out.push(box(c - 3, 4, 0, c + 3 + t, 4 + 1, t + 0.5), box(c - 3, 11, 0, c + 3 + t, 11 + 1, t + 0.5));
-        return out;
-      },
-    },
-
     // Cancela: los dos postes de su celda y la hoja entre ellos. Una sola celda: el juego dibuja la abierta girando
     // esta misma (ver CellShape.Open), así que no hace falta arte aparte.
     gate: {
@@ -575,19 +555,6 @@
         return out.concat(doorHandle(t));
       },
     },
-    doorSticks: {
-      label: "Puerta · de palos", slices: 3, states: ["default"],
-      params: [["stickThick", "Grosor del palo", 1, 4, "Lado de cada palo en dieciseisavos"]],
-      boxes: (p) => {
-        const t = p.stickThick ?? 2;
-        const out = [];
-        // Palos de pie, dos ataduras y una diagonal: una puerta antes de tener sierra.
-        for (let x = 1; x + t <= 15; x += t + 1) out.push(box(x, 0, 0, x + t, 48, t));
-        for (const y of [8, 24, 40]) out.push(box(0, y, t, 16, y + t, t + 1));
-        for (let i = 0; i < 9; i++) out.push(box(1 + i * 1.5, 10 + i * 3, t, 1 + i * 1.5 + 2, 10 + i * 3 + 4, t + 1));
-        return out;
-      },
-    },
     doorPanelled: {
       label: "Puerta · con cuarterones", slices: 3, states: ["default"],
       params: [["doorThick", "Grosor", 1, 8, "Grosor de la hoja en dieciseisavos"]],
@@ -613,16 +580,6 @@
         box(2, 0, 14, 4, 16, 16), box(12, 0, 14, 14, 16, 16),
         box(4, 2, 14.5, 12, 3.5, 15.5), box(4, 6, 14.5, 12, 7.5, 15.5), box(4, 10, 14.5, 12, 11.5, 15.5), box(4, 14, 14.5, 12, 15.5, 15.5),
       ],
-    },
-    table: {
-      label: "Mesa", states: ["default"],
-      params: [["panel", "Grosor tablero", 1, 6, "Grosor del tablero"], ["legs", "Grosor patas", 1, 6, "Lado de cada pata"]],
-      boxes: (p) => {
-        const t = p.panel ?? 2, l = Math.min(6, p.legs ?? 2), top = 16 - t;
-        return [box(0, top, 0, 16, 16, 16),
-          box(1, 0, 1, 1 + l, top, 1 + l), box(15 - l, 0, 1, 15, top, 1 + l),
-          box(1, 0, 15 - l, 1 + l, top, 15), box(15 - l, 0, 15 - l, 15, top, 15)];
-      },
     },
     pedestal: {
       label: "Pedestal", states: ["default", "inverted"],
