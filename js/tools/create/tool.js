@@ -75,22 +75,14 @@
     openGenerator(mode) {
       this.overlayMode = mode;
       this.editMode = false;
-      this.blocksHost.hidden = mode !== "blocks" && mode !== "furniture";
+      this.blocksHost.hidden = mode !== "blocks";
       this.plantsHost.hidden = mode !== "plants";
       if (mode === "blocks") {
         this.overlayTitle.textContent = "Bloque";
         this.overlayTag.textContent = "generador";
         this.overlayHint.textContent = "AO del motor sí · al aplicar = 1 capa";
         this.blocks.clearEditTarget?.();
-        this.blocks.closeFurniture?.();
         this.blocks.activate?.();
-      } else if (mode === "furniture") {
-        // The same generator: a piece of furniture is one more shape in it.
-        this.overlayTitle.textContent = "Mueble";
-        this.overlayTag.textContent = "carpintería";
-        this.overlayHint.textContent = "Mismo motor que un bloque · una textura por parte";
-        this.blocks.clearEditTarget?.();
-        this.blocks.openFurniture?.();
       } else {
         this.overlayTitle.textContent = "Planta";
         this.overlayTag.textContent = "follaje";
@@ -107,10 +99,10 @@
     openGeneratorForEdit(mode, recipe, replaceTarget) {
       this.overlayMode = mode;
       this.editMode = true;
-      this.blocksHost.hidden = mode !== "blocks" && mode !== "furniture";
+      this.blocksHost.hidden = mode !== "blocks";
       this.plantsHost.hidden = mode !== "plants";
-      if (mode === "furniture" || mode === "blocks") {
-        this.overlayTitle.textContent = (mode === "furniture" ? "Mueble" : "Bloque") + " · reeditar capa";
+      if (mode === "blocks") {
+        this.overlayTitle.textContent = "Bloque · reeditar capa";
         this.overlayTag.textContent = "receta";
         this.overlayHint.textContent = "Al aplicar se actualiza la misma capa en el Composer";
 
@@ -147,7 +139,7 @@
     applyGenerator() {
       const mode = this.overlayMode;
       let ok = false;
-      if (mode === "blocks" || mode === "furniture") {
+      if (mode === "blocks") {
         ok = this.blocks.applyToComposer?.() ?? false;
       } else if (mode === "plants") {
         ok = this.plants.applyToComposer?.() ?? false;
@@ -157,7 +149,7 @@
 
     activate() {
       if (this.overlayMode) {
-        if (this.overlayMode === "blocks" || this.overlayMode === "furniture") this.blocks.activate?.();
+        if (this.overlayMode === "blocks") this.blocks.activate?.();
         else this.plants.activate?.();
       } else {
         this.composer.activate?.();
@@ -184,7 +176,7 @@
     dirtyLabel() { return "Crear"; }
 
     show(id) {
-      if (id === "blocks" || id === "plants" || id === "furniture") this.openGenerator(id);
+      if (id === "blocks" || id === "plants") this.openGenerator(id);
       else this.closeOverlay();
     }
   }

@@ -638,11 +638,6 @@
               onclick: () => this.studio?.tools?.find?.((x) => x.id === "create")?.openGenerator?.("plants")
             }, "🌿 Planta"),
             h("button", {
-              type: "button", class: "cp-gen-btn furniture",
-              title: "Abrir generador de muebles",
-              onclick: () => this.studio?.tools?.find?.((x) => x.id === "create")?.openGenerator?.("furniture")
-            }, "🪑 Mueble"),
-            h("button", {
               type: "button", class: "cp-gen-btn form",
               onclick: () => this.addShapeLayer()
             }, "◇ Forma"))),
@@ -911,14 +906,14 @@
         this.studio?.toast("Esta capa no tiene receta de generador", { kind: "warn" });
         return;
       }
-      const kind = L.recipe.kind === "furniture" ? "furniture"
-        : L.recipe.kind || (L.source === "planta" ? "plants" : "blocks");
+      // Furniture is made in the block generator now, so an old furniture layer goes back there too.
+      const kind = L.recipe.kind || (L.source === "planta" ? "plants" : "blocks");
       const create = this.studio?.tools?.find?.((x) => x.id === "create");
       if (!create?.openGeneratorForEdit) {
         this.studio?.toast("Hub Crear no disponible", { kind: "warn" });
         return;
       }
-      create.openGeneratorForEdit(kind === "plants" || kind === "furniture" ? kind : "blocks", L.recipe, {
+      create.openGeneratorForEdit(kind === "plants" ? "plants" : "blocks", L.recipe, {
         groupId: g.id,
         layerId: L.id,
       });

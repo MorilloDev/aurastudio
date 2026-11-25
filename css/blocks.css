@@ -200,7 +200,8 @@
   border-radius: 999px;
 }
 
-/* El generador de muebles, dentro del de bloques: ocupa su sitio mientras es lo que se está haciendo. */
-.bk-furniture { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
-.bk-furniture-bar { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.bk-furniture-body { position: relative; flex: 1; min-height: 0; }
+/* Muebles: la parte cuyas caras se están eligiendo, y la fila de cada parte en el panel. */
+.bk-part-note { font-size: 12px; color: var(--accent); }
+.fn-part { display: grid; grid-template-columns: auto 1fr 120px; gap: 6px; align-items: center; margin-bottom: 4px; }
+.fn-part .field { margin: 0; }
+.fn-legs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
