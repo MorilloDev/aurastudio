@@ -378,9 +378,9 @@
       // file is written again from the parsed tree, so that file stays read-only.
       const commented = this.docs.filter((d) => d.commented);
       if (commented.length) {
-        this.studio.toast(`${commented.length} archivo(s) tienen comentarios por el medio: de esos solo guardo las coordenadas.`, {
-          kind: "warn", detail: `${commented.map((d) => d.name).join(", ")} — mover arte sí se guarda (las coordenadas se escriben en su sitio y los comentarios se quedan); ` +
-            "para editar lo demás aquí, mueve el comentario a la cabecera del archivo.",
+        this.studio.toast(`${commented.length} archivo(s) tienen comentarios por el medio.`, {
+          kind: "info", detail: `${commented.map((d) => d.name).join(", ")} — se guardan igual: solo se reescribe lo que cambia, y lo demás queda como está. ` +
+            "Un comentario dentro de un tile que cambie por algo que no sean sus coordenadas sí se pierde, y el guardado avisa de cuál.",
         });
       }
     }
@@ -3136,19 +3136,25 @@
           written.push(s.mgcb.name);
         }
       }
+      var lost = [];
       for (const doc of this.docs) {
         if (!T.isDocDirty(doc)) continue;
         const text = T.docText(doc);
         backups.push({ name: doc.entry.name, path: doc.path, dir: doc.entry.dir, previous: await doc.entry.handle.getFile() });
         await writeHandle(doc.entry.handle, text);
         // A file with comments keeps its own text: only the coordinates were replaced in it.
-        if (doc.commented) T.markCoordsSaved(doc, text);
+        if (doc.commented) { lost.push(...T.commentsAtRisk(doc)); T.markCoordsSaved(doc, text); }
         else doc.baseline = text;
         doc.stamp = (await doc.entry.handle.getFile()).lastModified;
         written.push(doc.name);
       }
       // The game texts edited in the inspector (Data/Lang), written with the rest.
       written.push(...(await Aura.lang.save()));
+      if (lost.length) {
+        this.studio.toast(`${lost.length} tile(s) perdieron su comentario al guardarse.`, {
+          kind: "warn", detail: `${lost.join(", ")} — cambiaron por algo que no son sus coordenadas, así que su bloque se escribió de nuevo.`,
+        });
+      }
       this.sheet.has = Object.fromEntries(["n", "d", "faces", "height"].map((k) => [k, this.img.has("_" + k)]));
       this.#renderSheets();
       return written;

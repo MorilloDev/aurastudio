@@ -153,9 +153,8 @@
         doc.style = { floatKeys: new Set(), openNested: false };
 
         // The game reads these with a parser that allows // and /* */; JSON.parse does not, so one comment in an item
-        // file used to make the whole atlas refuse the file. They are taken out for reading. Writing is a different
-        // matter: this tool rewrites the file whole, which would silently throw the comments away, so a file that has
-        // any is read and shown but never saved (see isDocDirty) and the panel says so.
+        // file used to make the whole atlas refuse the file. They are taken out for reading. Writing one back is done
+        // piece by piece instead of whole, so the comments stay where they are (see patchedText).
         const clean = stripComments(text);
         doc.header = clean !== text ? headerComments(text) : null;
         doc.commented = clean !== text && doc.header === null;
@@ -163,7 +162,7 @@
         attachList(doc);
         if (isItemDoc(doc)) doc.style.openNested = prefersOpenNested(doc, text);
         doc.baseline = serialize(doc);
-        attachCoordSpans(doc, text);
+        attachSpans(doc, text);
       } catch (err) {
         doc.error = err.message;
         doc.root = null;
@@ -185,17 +184,23 @@
 
   // Item files are written fully open, as they are by hand: every object on its own lines, only plain arrays inline.
   // -------------------------------------------------------------------------------------------------------------------
-  // Coordinates inside a file that has comments
+  // Writing a file that has comments
   //
-  // Rewriting such a file whole would throw its comments away, so it is read and shown but not written (isDocDirty).
-  // Moving art, though, only ever changes the two numbers of a coordinate, and those can be put back into the original
-  // text where they stand. This finds where each one is: the file is walked once, skipping comments but counting every
-  // character, and every array of two whole numbers is noted with the path that leads to it. Walking the parsed tree
-  // down the same path then gives the live array, so a cell moved in the editor knows which characters to replace.
+  // Rewriting such a file whole would throw its comments away. Instead the file is read once, counting every character
+  // and skipping comments, and what is written down is where each piece of it sits in the text: every [ x, y ], and
+  // every tile of the list. Saving then touches only the pieces that changed:
+  //
+  //   · a cell that moved  -> the two numbers are replaced where they stand, and nothing else in the file is touched;
+  //   · a tile that changed in any other way -> that tile's block is written again (a comment inside that one tile is
+  //     lost, and the save says which);
+  //   · a tile added or removed -> inserted at the end of the list, or cut out of it.
+  //
+  // Everything outside those pieces — the header, the blank lines, the comments on other tiles — comes through as it
+  // was on disk.
 
-  /** [{ path, span: [start, end] }] for every [ x, y ] in the text, in the order they are written. */
-  function coordSpans(text) {
-    const out = [];
+  /** Where every value sits in the text. Comments are skipped but counted, so the offsets are into the file as read. */
+  function scanJson(text) {
+    const coords = [], elements = [], arrays = new Map();
     let i = 0;
 
     const skip = () => {
@@ -208,7 +213,7 @@
     };
 
     const string = () => {
-      i++;                                        // the opening quote
+      i++;
       while (i < text.length) {
         if (text[i] === "\\") { i += 2; continue; }
         if (text[i] === '"') { i++; return; }
@@ -216,7 +221,7 @@
       }
     };
 
-    // Returns the value when it is a whole number, and undefined for anything else: enough to spot [ x, y ].
+    // Returns the value when it is a whole number, and undefined otherwise: enough to spot [ x, y ].
     const value = (path) => {
       skip();
       const start = i;
@@ -228,7 +233,7 @@
           skip();
           if (text[i] === "}") { i++; break; }
           if (text[i] === ",") { i++; continue; }
-          if (text[i] !== '"') { i++; continue; }   // malformed; the real parse will have reported it
+          if (text[i] !== '"') { i++; continue; }          // malformed; the real parse reports it
           const from = i;
           string();
           const key = JSON.parse(text.slice(from, i));
@@ -244,11 +249,13 @@
         const items = [];
         for (;;) {
           skip();
-          if (text[i] === "]") { i++; break; }
+          if (text[i] === "]") { arrays.set(path.join("\u0000"), { start, end: i + 1, close: i }); i++; break; }
           if (text[i] === ",") { i++; continue; }
+          const at = i;
           items.push(value(path.concat(items.length)));
+          elements.push({ path: path.concat(items.length - 1), span: [at, i] });
         }
-        if (items.length === 2 && items.every(Number.isInteger)) out.push({ path, span: [start, i] });
+        if (items.length === 2 && items.every(Number.isInteger)) coords.push({ path, span: [start, i] });
         return undefined;
       }
 
@@ -256,55 +263,143 @@
 
       while (i < text.length && !/[\s,}\]]/.test(text[i])) i++;
       const raw = text.slice(start, i);
-      const n = Number(raw);
-      return /^-?\d+$/.test(raw) && Number.isInteger(n) ? n : undefined;
+      return /^-?\d+$/.test(raw) ? Number(raw) : undefined;
     };
 
     skip();
     value([]);
-    return out;
+    return { coords, elements, arrays };
   }
 
   const atPath = (root, path) => path.reduce((v, k) => (v == null ? v : v[k]), root);
 
-  /** Ties each span to the live [x, y] in the parsed tree, and remembers what the file says today. */
-  function attachCoordSpans(doc, text) {
+  // Where the list of tiles or items lives in the text. An item file can be the bare array, and then it is the root.
+  function listPath(doc) {
+    if (doc.kind === "tiles") return ["tiles"];
+    return Array.isArray(doc.root) ? [] : ["items"];
+  }
+
+  // How a value compares: same text, same value. Key order is kept by the parser, so this catches a reorder too.
+  const canonical = (value) => JSON.stringify(value);
+
+  /** Ties the spans to the live tree and remembers what the file says today. */
+  function attachSpans(doc, text) {
+    const scan = scanJson(text);
+    doc.text = text;
     doc.coords = [];
-    for (const { path, span } of coordSpans(text)) {
+    for (const { path, span } of scan.coords) {
       const coord = atPath(doc.root, path);
-      // The two walks go over the same file, so this only misses if the text and the parse disagree — then leave it.
-      if (!isCoord(coord)) continue;
+      if (!isCoord(coord)) continue;                       // text and parse disagree; leave that one alone
       doc.coords.push({ coord, span, was: [coord[0], coord[1]] });
     }
-    doc.text = text;
-  }
 
-  const coordsMoved = (doc) => (doc.coords ?? []).some((c) => c.coord[0] !== c.was[0] || c.coord[1] !== c.was[1]);
-
-  /** Whether the only thing that changed in a commented file is coordinates — the one change that can be patched in. */
-  function coordsOnlyChange(doc) {
-    if (!doc.coords) return false;
-    const now = doc.coords.map((c) => [c.coord[0], c.coord[1]]);
-    for (const c of doc.coords) { c.coord[0] = c.was[0]; c.coord[1] = c.was[1]; }
-    const same = serialize(doc) === doc.baseline;
-    doc.coords.forEach((c, i) => { c.coord[0] = now[i][0]; c.coord[1] = now[i][1]; });
-    return same;
-  }
-
-  /** The file as it stands, with the moved coordinates written over the old ones and everything else left alone. */
-  function patchedText(doc) {
-    let text = doc.text;
-    for (const c of [...doc.coords].sort((a, b) => b.span[0] - a.span[0])) {
-      if (c.coord[0] === c.was[0] && c.coord[1] === c.was[1]) continue;
-      text = text.slice(0, c.span[0]) + `[ ${c.coord[0]}, ${c.coord[1]} ]` + text.slice(c.span[1]);
+    const key = listPath(doc);
+    const prefix = key.join("\u0000");
+    doc.entries = [];
+    for (const { path, span } of scan.elements) {
+      if (path.length !== key.length + 1 || path.slice(0, key.length).join("\u0000") !== prefix) continue;
+      const value = atPath(doc.root, path);
+      if (value == null) continue;
+      doc.entries.push({ value, span, baseline: canonical(value) });
     }
+    doc.listSpan = scan.arrays.get(prefix) ?? null;
+  }
+
+  /** Whether a commented file can be written back at all: it needs the spans, and a list it can add to. */
+  const canPatch = (doc) => !!doc.coords && !!doc.entries && !!doc.listSpan;
+
+  // The tiles whose block has to be written again, and whether any of them carries a comment that will go with it.
+  function rewrites(doc) {
+    const list = doc.root.tiles;
+    const out = [];
+    for (const entry of doc.entries) {
+      if (!list.includes(entry.value)) { out.push({ entry, kind: "remove" }); continue; }
+      if (canonical(entry.value) === entry.baseline) continue;
+
+      // Only the cells moved? Then the numbers are replaced where they stand and the comments stay.
+      const inside = doc.coords.filter((c) => c.span[0] >= entry.span[0] && c.span[1] <= entry.span[1]);
+      const now = inside.map((c) => [c.coord[0], c.coord[1]]);
+      for (const c of inside) { c.coord[0] = c.was[0]; c.coord[1] = c.was[1]; }
+      const coordsOnly = canonical(entry.value) === entry.baseline;
+      inside.forEach((c, k) => { c.coord[0] = now[k][0]; c.coord[1] = now[k][1]; });
+      if (coordsOnly) continue;
+
+      out.push({ entry, kind: "replace" });
+    }
+    return out;
+  }
+
+  /** Which tiles would lose a comment if the file were saved now, by id. Empty when nothing would.</summary> */
+  function commentsAtRisk(doc) {
+    if (!canPatch(doc)) return [];
+    const at = [];
+    for (const { entry, kind } of rewrites(doc)) {
+      const slice = doc.text.slice(entry.span[0], entry.span[1]);
+      if (kind === "replace" && /\/\/|\/\*/.test(slice)) at.push(tileId(entry.value));
+    }
+    return at;
+  }
+
+  const anyChange = (doc) => serialize(doc) !== doc.baseline;
+
+  /** The file as it stands: the text on disk with only the pieces that changed written over. */
+  function patchedText(doc) {
+    const list = doc.root.tiles;
+    const edits = [];
+
+    // Cells that moved, outside any tile that is being written again anyway.
+    const redone = new Set(rewrites(doc).filter((r) => r.kind === "replace").map((r) => r.entry));
+    for (const c of doc.coords) {
+      if (c.coord[0] === c.was[0] && c.coord[1] === c.was[1]) continue;
+      const owner = doc.entries.find((e) => c.span[0] >= e.span[0] && c.span[1] <= e.span[1]);
+      if (owner && (redone.has(owner) || !list.includes(owner.value))) continue;
+      edits.push({ start: c.span[0], end: c.span[1], text: `[ ${c.coord[0]}, ${c.coord[1]} ]` });
+    }
+
+    // Tiles written again or cut out.
+    const indent = indentOf(doc);
+    for (const { entry, kind } of rewrites(doc)) {
+      if (kind === "replace") {
+        edits.push({ start: entry.span[0], end: entry.span[1], text: formatJson(entry.value, indent, isItemDoc(doc) ? "item" : null, doc.style) });
+        continue;
+      }
+      // Out with the comma that held it in the list, so what is left still parses.
+      let start = entry.span[0], end = entry.span[1];
+      let after = end;
+      while (after < doc.text.length && /\s/.test(doc.text[after])) after++;
+      if (doc.text[after] === ",") { end = after + 1; while (end < doc.text.length && doc.text[end] !== "\n") end++; }
+      else { let before = start; while (before > 0 && /\s/.test(doc.text[before - 1])) before--; if (doc.text[before - 1] === ",") start = before - 1; }
+      edits.push({ start, end, text: "" });
+    }
+
+    // Tiles that are new to the list: in at the end, where nothing else has to move.
+    const added = list.filter((value) => !doc.entries.some((e) => e.value === value));
+    if (added.length) {
+      const body = added.map((value) => indent + formatJson(value, indent, isItemDoc(doc) ? "item" : null, doc.style)).join(",\n");
+      const close = doc.listSpan.close;
+      let at = close;
+      while (at > 0 && /\s/.test(doc.text[at - 1])) at--;
+      const lead = doc.entries.length || doc.text[at - 1] !== "[" ? ",\n" : "\n";
+      edits.push({ start: at, end: at, text: lead + body });
+    }
+
+    let text = doc.text;
+    for (const edit of edits.sort((a, b) => b.start - a.start)) text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
     return text;
+  }
+
+  // The indent the list's own entries are written with, taken from the file rather than assumed.
+  function indentOf(doc) {
+    const first = doc.entries[0];
+    if (!first) return "    ";
+    let at = first.span[0];
+    while (at > 0 && (doc.text[at - 1] === " " || doc.text[at - 1] === "\t")) at--;
+    return doc.text.slice(at, first.span[0]) || "    ";
   }
 
   /** Called after a save: what the file says now is what it holds. */
   function markCoordsSaved(doc, text) {
-    doc.text = text;
-    attachCoordSpans(doc, text);
+    attachSpans(doc, text);
   }
 
   function serialize(doc) {
@@ -340,9 +435,9 @@
   // A file with comments in it is never dirty: it is read and shown, and left exactly as it is on disk.
   // A file with comments is only ever written back with its coordinates patched, so for one of those "changed" means
   // a cell moved; anything else it cannot save and the panel says so.
-  const isDocDirty = (doc) => !!doc.root && (doc.commented ? coordsMoved(doc) && coordsOnlyChange(doc) : serialize(doc) !== doc.baseline);
+  const isDocDirty = (doc) => !!doc.root && (doc.commented ? canPatch(doc) && anyChange(doc) : serialize(doc) !== doc.baseline);
 
-  /** The text to write for a doc: the whole file, or the original with the moved coordinates patched into it. */
+  /** The text to write for a doc: the whole file, or the original with only the changed pieces written over. */
   const docText = (doc) => (doc.commented ? patchedText(doc) : serialize(doc));
 
   const docSheet = (doc, tile) => sheetKey(tile?.sheetId ?? doc.root?.sheetId);
@@ -518,7 +613,7 @@
 
   Aura.atlasTiles = {
     CELL, STATES, STATE_LABEL, isCoord, sheetKey, deriveIdPath, tileId, tileLabel,
-    loadDocs, docsChangedOnDisk, serialize, docText, isDocDirty, coordSpans, coordsMoved, coordsOnlyChange, markCoordsSaved,
+    loadDocs, docsChangedOnDisk, serialize, docText, isDocDirty, scanJson, canPatch, commentsAtRisk, markCoordsSaved, attachSpans,
     docSheet, docCell, artOwners, collectRefs, refLabel, refRect, duplicateIds,
     validateTile, validateItem, formatJson, isItemDoc, orderByCoord, DEFAULT_ITEM_SHEET,
   };
