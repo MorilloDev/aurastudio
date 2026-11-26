@@ -41,6 +41,17 @@
   };
   const FACING_LABEL = { front: "Frente", right: "Derecha", back: "Atrás", left: "Izquierda" };
 
+  // Which turn of the piece each side of the game's art is. The game's "front" is the view it uses for a piece facing
+  // west: the tall side up to the left, the low side down to the right. In this editor's frame that is the right-hand
+  // turn, a quarter from the one it calls front. Saving by this map keeps the game's names on the cells.
+  const ART_FACING = { front: "right", back: "left" };
+
+  // The two states that lay the piece's up axis down (a slab on its side, a log on the ground) end up a quarter turn
+  // from the upright ones, so they get their own pair: without it a lying log shows its rings on the wrong face.
+  const ART_FACING_LAID = { front: "left", back: "right" };
+  const LAID = new Set(["vertical", "horizontal"]);
+  const artFacing = (state, side) => (LAID.has(state) ? ART_FACING_LAID : ART_FACING)[side];
+
   // Isometric rotation of the whole piece, in quarter turns about its own axes (local x right, y up, z depth), before
   // its state and facing: the piece is turned like a 3D model — a stair on its side, a slab standing up the other way —
   // and, when textures follow, each face takes its texture along.
@@ -251,6 +262,15 @@
   // Drawn far to near, which is also the order the game stacks them in: the two that go up are behind the post.
   const ARM_ORDER = ["nw", "ne", "se", "sw"];
 
+  // The four turns of a bend, named by the corner of the cell's diamond its quarter lands on, and given as quarter
+  // turns of the piece drawn facing front. The game picks one by projecting the quarter's direction, so these four
+  // cells cover the four turns of the camera without anything being drawn twice.
+  const BENDS = [["n", "arriba", 0], ["e", "derecha", 3], ["s", "abajo", 2], ["w", "izquierda", 1]];
+
+  // Each bend's art key by state, in the order the tile lists them.
+  const BEND_KEYS = { outer: { default: "outer", inverted: "outerInverted" }, inner: { default: "inner", inverted: "innerInverted" } };
+  const BEND_LABEL = { outer: "Esquina ext.", inner: "Esquina int." };
+
   const SHAPES = {
     cube: {
       label: "Cubo", states: ["default", "horizontal"],
@@ -271,17 +291,16 @@
         return [box(o, 0, o, o + s, p.smallHeight, o + s)];
       },
     },
+    // A flight is the straight step plus the two bends it takes where one flight runs into another. The game works
+    // out which bend a cell shows from its neighbours, so all of them come out of the one shape and in one go.
     stair: {
-      label: "Escalera", states: ["default", "inverted"],
+      label: "Escalera", states: ["default", "inverted"], bends: true,
       boxes: () => [box(0, 0, 0, 16, 8, 16), box(0, 8, 8, 16, 16, 16)],
-    },
-    stairOuter: {
-      label: "Escalera esquina ext.", states: ["default", "inverted"],
-      boxes: () => [box(0, 0, 0, 16, 8, 16), box(8, 8, 8, 16, 16, 16)],
-    },
-    stairInner: {
-      label: "Escalera esquina int.", states: ["default", "inverted"],
-      boxes: () => [box(0, 0, 0, 16, 8, 16), box(0, 8, 8, 16, 16, 16), box(8, 8, 0, 16, 16, 8)],
+      // Outside of the bend: the step cut back to the quarter the two flights share.
+      outer: () => [box(0, 0, 0, 16, 8, 16), box(8, 8, 8, 16, 16, 16)],
+      // Inside of it: the quarter that bridges the gap added instead, so what is left open is the same corner the
+      // outer bend keeps — both are then named after that corner and turn together.
+      inner: () => [box(0, 0, 0, 16, 8, 16), box(0, 8, 0, 16, 16, 8), box(0, 8, 8, 8, 16, 16)],
     },
     ramp: {
       label: "Rampa", states: ["default", "inverted"],
@@ -851,9 +870,9 @@
         const cut = sliceBoxes(boxes, level);
         const label = ["Abajo", "Medio", "Arriba"][level] ?? "Celda " + (level + 1);
         const front = { id: "part" + level + "_front", label: label + " · frente", boxes: cut, state: "default",
-          facing: "front", iso, art: { key: "part" + level, side: "front" } };
+          facing: ART_FACING.front, iso, art: { key: "part" + level, side: "front" } };
         const back = { id: "part" + level + "_back", label: label + " · atrás", boxes: cut, state: "default",
-          facing: "back", iso, art: { key: "part" + level, side: "back" } };
+          facing: ART_FACING.back, iso, art: { key: "part" + level, side: "back" } };
         if (opts.back === false) out.push(front);
         else out.push(front, back);
       }
@@ -862,13 +881,28 @@
 
     for (const st of def.states) {
       if (!(opts.states?.[st] ?? st === "default")) continue;
-      const front = { id: st + "_front", label: STATE_LABEL[st] + " · frente", boxes, state: st, facing: "front", iso, art: { key: st, side: "front" } };
-      const back = { id: st + "_back", label: STATE_LABEL[st] + " · atrás", boxes, state: st, facing: "back", iso, art: { key: st, side: "back" } };
+      const front = { id: st + "_front", label: STATE_LABEL[st] + " · frente", boxes, state: st, facing: artFacing(st, "front"), iso, art: { key: st, side: "front" } };
+      const back = { id: st + "_back", label: STATE_LABEL[st] + " · atrás", boxes, state: st, facing: artFacing(st, "back"), iso, art: { key: st, side: "back" } };
       if (opts.back === false) { out.push(front); continue; }
       // The project's sheets keep a vertical slab's far half before its near half (back, then front); every other state
       // reads front first. Save order is sheet order, so this is where that convention lives.
       if (st === "vertical") out.push(back, front);
       else out.push(front, back);
+    }
+
+    // The bends come after the straight steps, grouped the way the tile lists them: every turn of one bend together.
+    if (def.bends) {
+      for (const kind of ["outer", "inner"]) {
+        for (const st of def.states) {
+          if (!(opts.states?.[st] ?? st === "default")) continue;
+          const shape = def[kind](p);
+          for (const [side, label, turns] of BENDS) {
+            out.push({ id: `${BEND_KEYS[kind][st]}_${side}`, label: `${BEND_LABEL[kind]} ${STATE_LABEL[st].toLowerCase()} · ${label}`,
+              boxes: turnLocal(shape, turns), state: st, facing: ART_FACING.front, iso,
+              art: { key: BEND_KEYS[kind][st], side } });
+          }
+        }
+      }
     }
     return out;
   }
@@ -911,11 +945,12 @@
     }
 
     // One state per line, like the atlas tool writes it.
-    const inner = Object.entries(map).map(([k, v]) => `    "${k}": ${JSON.stringify(v).replace(/,/g, ", ").replace(/:/g, ": ")}`);
+    const inner = Object.entries(map).map(([k, v]) => `    "${k}": ${sides(v)}`);
     return `"art": {\n${inner.join(",\n")}\n}`;
   }
 
   const pair = (cell) => (Array.isArray(cell) ? `[ ${cell[0]}, ${cell[1]} ]` : "[ 0, 0 ]");
+  const sides = (v) => (Array.isArray(v) ? pair(v) : `{ ${Object.entries(v).map(([k, c]) => `"${k}": ${pair(c)}`).join(", ")} }`);
 
   Aura.blockShapes = {
     SHAPES, PARAM_DEFAULTS, STATE_LABEL, FACING_LABEL, DIRS,

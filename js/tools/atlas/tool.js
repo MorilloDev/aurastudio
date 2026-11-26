@@ -378,8 +378,9 @@
       // file is written again from the parsed tree, so that file stays read-only.
       const commented = this.docs.filter((d) => d.commented);
       if (commented.length) {
-        this.studio.toast(`${commented.length} archivo(s) tienen comentarios por el medio: los leo pero no los guardo.`, {
-          kind: "warn", detail: `${commented.map((d) => d.name).join(", ")} — mueve el comentario a la cabecera del archivo para poder editarlo aquí.`,
+        this.studio.toast(`${commented.length} archivo(s) tienen comentarios por el medio: de esos solo guardo las coordenadas.`, {
+          kind: "warn", detail: `${commented.map((d) => d.name).join(", ")} — mover arte sí se guarda (las coordenadas se escriben en su sitio y los comentarios se quedan); ` +
+            "para editar lo demás aquí, mueve el comentario a la cabecera del archivo.",
         });
       }
     }
@@ -415,6 +416,8 @@
         h("div", { class: "at-toolbar" },
           this.viewSeg, this.marksBtn, this.coordsBtn, this.pixelsBtn,
           h("button", { title: "Ver la hoja entera (F)", onclick: () => this.#fit() }, "Encajar"),
+          h("button", { title: "Agrupar por material y familia, y ajustar el tamaño de la hoja",
+            onclick: () => this.#reorganize() }, "Reorganizar"),
           h("span", { class: "grow" }),
           this.undoBtn, this.redoBtn, this.saveBtn),
         this.viewEl);
@@ -1478,6 +1481,70 @@
         document.removeEventListener("pointerdown", closer, true);
       };
       setTimeout(() => document.addEventListener("pointerdown", closer, true), 0);
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Laying the sheet out again
+
+    /** Groups the sheet by material and family, moves the pixels and the JSON together, and resizes to fit. */
+    async #reorganize() {
+      if (!this.img || !this.sheet) return;
+      const { w, h } = this.grid;
+      const odd = this.#sheetRefs.find((r) => r.tw !== w || r.th !== h);
+      if (odd) {
+        this.studio.toast("Esta hoja mezcla tamaños de celda.", {
+          kind: "warn", detail: `«${T.tileLabel(odd.tile)}» usa ${odd.tw}×${odd.th} y la cuadrícula es ${w}×${h}.`,
+        });
+        return;
+      }
+      if (!this.#sheetRefs.length) {
+        this.studio.toast("Ningún tile apunta a esta hoja.", { kind: "warn" });
+        return;
+      }
+
+      const used = new Set(this.#sheetRefs.flatMap((r) => this.#cellsOf(r).map((c) => ck(...c))));
+      const orphans = [...this.#artCells].filter((k) => !used.has(k)).map(pk);
+      const plan = Aura.atlasLayout.plan({ refs: this.#sheetRefs, idOf: T.tileId, cell: { w, h }, orphans });
+      if (!plan) return;
+
+      const newW = plan.cols * w, newH = plan.rows * h;
+      const moved = plan.moves.filter((m) => m.from[0] !== m.to[0] || m.from[1] !== m.to[1]).length;
+      const bands = plan.bands.map((b) => `${b.material} (${b.cells})`).join(", ");
+      const ok = await Aura.dialog.confirmDialog({
+        title: "Reorganizar la hoja",
+        message: `${this.img.w}×${this.img.h} → ${newW}×${newH}. Se mueven ${moved} de ${plan.moves.length} celdas` +
+          `${orphans.length ? ` y ${orphans.length} sin referencia, que quedan debajo` : ""}.\n\n` +
+          `Bandas: ${bands}.\n\nSe mueven el color y sus mapas a la vez, y las coordenadas de los JSON con ellos. ` +
+          "Nada sale de esta hoja. Se puede deshacer.",
+        confirm: "Reorganizar",
+      });
+      if (!ok) return;
+
+      const layers = [...this.img.layers.values()];
+      const before = { w: this.img.w, h: this.img.h, data: layers.map((l) => new Uint8ClampedArray(l.rgba)) };
+      const all = [...plan.moves, ...plan.orphanMoves];
+      const blocks = layers.map((l) => all.map((m) => this.img.read(l, m.from[0] * w, m.from[1] * h, w, h)));
+      const coords = plan.moves.map((m) => ({ coord: m.ref.coord, from: m.from, to: m.to }));
+
+      const redo = () => {
+        this.img.resize(newW, newH);
+        for (const l of layers) this.img.clear(l, 0, 0, newW, newH);
+        layers.forEach((l, li) => all.forEach((m, i) => this.img.write(l, m.to[0] * w, m.to[1] * h, w, h, blocks[li][i])));
+        for (const c of coords) { c.coord[0] = c.to[0]; c.coord[1] = c.to[1]; }
+      };
+      const undo = () => {
+        this.img.resize(before.w, before.h);
+        layers.forEach((l, li) => l.rgba.set(before.data[li]));
+        for (const l of layers) l.stale = true;
+        for (const c of coords) { c.coord[0] = c.from[0]; c.coord[1] = c.from[1]; }
+      };
+
+      this.#run(`Reorganizar «${this.sheet.id}» (${newW}×${newH})`, redo, undo);
+      this.selection.clear();
+      this.#changed();
+      this.#fit();
+      this.studio.setStatus(`«${this.sheet.id}» reorganizada: ${plan.cols}×${plan.rows} celdas, ${newW}×${newH} px, ` +
+        `${plan.bands.length} banda(s). Guarda para escribirlo.`, "ok");
     }
 
     async #emptySelection() {
@@ -3071,10 +3138,12 @@
       }
       for (const doc of this.docs) {
         if (!T.isDocDirty(doc)) continue;
-        const text = T.serialize(doc);
+        const text = T.docText(doc);
         backups.push({ name: doc.entry.name, path: doc.path, dir: doc.entry.dir, previous: await doc.entry.handle.getFile() });
         await writeHandle(doc.entry.handle, text);
-        doc.baseline = text;
+        // A file with comments keeps its own text: only the coordinates were replaced in it.
+        if (doc.commented) T.markCoordsSaved(doc, text);
+        else doc.baseline = text;
         doc.stamp = (await doc.entry.handle.getFile()).lastModified;
         written.push(doc.name);
       }
@@ -3130,6 +3199,7 @@
         { id: "atlas.up", title: "Mover selección arriba", group: "Atlas", keys: ["ArrowUp"], enabled: sel, hidden: true, run: arrow(0, -1) },
         { id: "atlas.down", title: "Mover selección abajo", group: "Atlas", keys: ["ArrowDown"], enabled: sel, hidden: true, run: arrow(0, 1) },
         { id: "atlas.gap", title: "Colocar en el primer hueco libre", group: "Atlas", enabled: () => !!this.pending, run: () => this.#findGap(true) },
+        { id: "atlas.reorganize", title: "Reorganizar la hoja (agrupar y ajustar el tamaño)", group: "Atlas", enabled: has, run: () => this.#reorganize() },
       ], this.id);
     }
 

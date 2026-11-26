@@ -13,7 +13,12 @@
 
   // TileArtState, in the order the editor lists them.
   const STATES = ["default", "inverted", "vertical", "horizontal", "wall"];
-  const STATE_LABEL = { default: "normal", inverted: "invertido", vertical: "vertical", horizontal: "horizontal", wall: "pared", icon: "icono" };
+  const STATE_LABEL = { default: "normal", inverted: "invertido", vertical: "vertical", horizontal: "horizontal", wall: "pared", icon: "icono",
+    connect: "unión", outer: "esquina ext.", outerInverted: "esquina ext. invertida", inner: "esquina int.", innerInverted: "esquina int. invertida" };
+
+  // Sides that are not a front or a back: a corner of the cell's diamond (a bend) or a direction an arm runs to.
+  const SIDE_LABEL = { front: "", back: "espalda", n: "arriba", e: "derecha", s: "abajo", w: "izquierda",
+    nw: "arriba-izq.", ne: "arriba-der.", se: "abajo-der.", sw: "abajo-izq." };
 
   // ItemRegistry.DefaultItemSheet: the atlas of an item file that names none (the old plain-array files).
   const DEFAULT_ITEM_SHEET = "items";
@@ -158,6 +163,7 @@
         attachList(doc);
         if (isItemDoc(doc)) doc.style.openNested = prefersOpenNested(doc, text);
         doc.baseline = serialize(doc);
+        attachCoordSpans(doc, text);
       } catch (err) {
         doc.error = err.message;
         doc.root = null;
@@ -178,6 +184,129 @@
   }
 
   // Item files are written fully open, as they are by hand: every object on its own lines, only plain arrays inline.
+  // -------------------------------------------------------------------------------------------------------------------
+  // Coordinates inside a file that has comments
+  //
+  // Rewriting such a file whole would throw its comments away, so it is read and shown but not written (isDocDirty).
+  // Moving art, though, only ever changes the two numbers of a coordinate, and those can be put back into the original
+  // text where they stand. This finds where each one is: the file is walked once, skipping comments but counting every
+  // character, and every array of two whole numbers is noted with the path that leads to it. Walking the parsed tree
+  // down the same path then gives the live array, so a cell moved in the editor knows which characters to replace.
+
+  /** [{ path, span: [start, end] }] for every [ x, y ] in the text, in the order they are written. */
+  function coordSpans(text) {
+    const out = [];
+    let i = 0;
+
+    const skip = () => {
+      for (;;) {
+        while (i < text.length && /\s/.test(text[i])) i++;
+        if (text[i] === "/" && text[i + 1] === "/") { const e = text.indexOf("\n", i); i = e < 0 ? text.length : e + 1; continue; }
+        if (text[i] === "/" && text[i + 1] === "*") { const e = text.indexOf("*/", i + 2); i = e < 0 ? text.length : e + 2; continue; }
+        return;
+      }
+    };
+
+    const string = () => {
+      i++;                                        // the opening quote
+      while (i < text.length) {
+        if (text[i] === "\\") { i += 2; continue; }
+        if (text[i] === '"') { i++; return; }
+        i++;
+      }
+    };
+
+    // Returns the value when it is a whole number, and undefined for anything else: enough to spot [ x, y ].
+    const value = (path) => {
+      skip();
+      const start = i;
+      const c = text[i];
+
+      if (c === "{") {
+        i++;
+        for (;;) {
+          skip();
+          if (text[i] === "}") { i++; break; }
+          if (text[i] === ",") { i++; continue; }
+          if (text[i] !== '"') { i++; continue; }   // malformed; the real parse will have reported it
+          const from = i;
+          string();
+          const key = JSON.parse(text.slice(from, i));
+          skip();
+          if (text[i] === ":") i++;
+          value(path.concat(key));
+        }
+        return undefined;
+      }
+
+      if (c === "[") {
+        i++;
+        const items = [];
+        for (;;) {
+          skip();
+          if (text[i] === "]") { i++; break; }
+          if (text[i] === ",") { i++; continue; }
+          items.push(value(path.concat(items.length)));
+        }
+        if (items.length === 2 && items.every(Number.isInteger)) out.push({ path, span: [start, i] });
+        return undefined;
+      }
+
+      if (c === '"') { string(); return undefined; }
+
+      while (i < text.length && !/[\s,}\]]/.test(text[i])) i++;
+      const raw = text.slice(start, i);
+      const n = Number(raw);
+      return /^-?\d+$/.test(raw) && Number.isInteger(n) ? n : undefined;
+    };
+
+    skip();
+    value([]);
+    return out;
+  }
+
+  const atPath = (root, path) => path.reduce((v, k) => (v == null ? v : v[k]), root);
+
+  /** Ties each span to the live [x, y] in the parsed tree, and remembers what the file says today. */
+  function attachCoordSpans(doc, text) {
+    doc.coords = [];
+    for (const { path, span } of coordSpans(text)) {
+      const coord = atPath(doc.root, path);
+      // The two walks go over the same file, so this only misses if the text and the parse disagree — then leave it.
+      if (!isCoord(coord)) continue;
+      doc.coords.push({ coord, span, was: [coord[0], coord[1]] });
+    }
+    doc.text = text;
+  }
+
+  const coordsMoved = (doc) => (doc.coords ?? []).some((c) => c.coord[0] !== c.was[0] || c.coord[1] !== c.was[1]);
+
+  /** Whether the only thing that changed in a commented file is coordinates — the one change that can be patched in. */
+  function coordsOnlyChange(doc) {
+    if (!doc.coords) return false;
+    const now = doc.coords.map((c) => [c.coord[0], c.coord[1]]);
+    for (const c of doc.coords) { c.coord[0] = c.was[0]; c.coord[1] = c.was[1]; }
+    const same = serialize(doc) === doc.baseline;
+    doc.coords.forEach((c, i) => { c.coord[0] = now[i][0]; c.coord[1] = now[i][1]; });
+    return same;
+  }
+
+  /** The file as it stands, with the moved coordinates written over the old ones and everything else left alone. */
+  function patchedText(doc) {
+    let text = doc.text;
+    for (const c of [...doc.coords].sort((a, b) => b.span[0] - a.span[0])) {
+      if (c.coord[0] === c.was[0] && c.coord[1] === c.was[1]) continue;
+      text = text.slice(0, c.span[0]) + `[ ${c.coord[0]}, ${c.coord[1]} ]` + text.slice(c.span[1]);
+    }
+    return text;
+  }
+
+  /** Called after a save: what the file says now is what it holds. */
+  function markCoordsSaved(doc, text) {
+    doc.text = text;
+    attachCoordSpans(doc, text);
+  }
+
   function serialize(doc) {
     let text = formatJson(doc.root, "", isItemDoc(doc) ? "open" : null, doc.style);
     // The file's opening comment block goes back where it was, right under the brace, so documenting a format here
@@ -209,7 +338,12 @@
   // Compared as written text, so undoing back to the loaded state makes the file clean again and a file whose only
   // "change" is our own formatting is never rewritten.
   // A file with comments in it is never dirty: it is read and shown, and left exactly as it is on disk.
-  const isDocDirty = (doc) => !!doc.root && !doc.commented && serialize(doc) !== doc.baseline;
+  // A file with comments is only ever written back with its coordinates patched, so for one of those "changed" means
+  // a cell moved; anything else it cannot save and the panel says so.
+  const isDocDirty = (doc) => !!doc.root && (doc.commented ? coordsMoved(doc) && coordsOnlyChange(doc) : serialize(doc) !== doc.baseline);
+
+  /** The text to write for a doc: the whole file, or the original with the moved coordinates patched into it. */
+  const docText = (doc) => (doc.commented ? patchedText(doc) : serialize(doc));
 
   const docSheet = (doc, tile) => sheetKey(tile?.sheetId ?? doc.root?.sheetId);
   const docCell = (doc) => [doc.root?.tileWidth ?? CELL, doc.root?.tileHeight ?? CELL];
@@ -263,8 +397,10 @@
               continue;
             }
             if (!frame || typeof frame !== "object") continue;
-            for (const side of ["front", "back"]) {
-              if (isCoord(frame[side])) refs.push({ doc, tile, owner, where, state, side, coord: frame[side], sheet, tw, th });
+            // Every side the frame names, not just front and back: a fence keeps its four arms in here, and a flight
+            // of stairs its four bends, and leaving those out would lose track of the cells they point at.
+            for (const [side, coord] of Object.entries(frame)) {
+              if (isCoord(coord)) refs.push({ doc, tile, owner, where, state, side, coord, sheet, tw, th });
             }
           }
         }
@@ -273,7 +409,7 @@
     return refs;
   }
 
-  const refLabel = (ref) => [STATE_LABEL[ref.state] ?? ref.state, ref.side === "back" ? "espalda" : "", ref.where].filter(Boolean).join(" · ");
+  const refLabel = (ref) => [STATE_LABEL[ref.state] ?? ref.state, SIDE_LABEL[ref.side] ?? ref.side, ref.where].filter(Boolean).join(" · ");
   const refRect = (ref) => ({ x: ref.coord[0] * ref.tw, y: ref.coord[1] * ref.th, w: ref.tw, h: ref.th });
 
   /** Ids declared more than once: TileInfo.Load stops on the second. Tiles and items are separate registries, so the
@@ -382,7 +518,8 @@
 
   Aura.atlasTiles = {
     CELL, STATES, STATE_LABEL, isCoord, sheetKey, deriveIdPath, tileId, tileLabel,
-    loadDocs, docsChangedOnDisk, serialize, isDocDirty, docSheet, docCell, artOwners, collectRefs, refLabel, refRect, duplicateIds,
+    loadDocs, docsChangedOnDisk, serialize, docText, isDocDirty, coordSpans, coordsMoved, coordsOnlyChange, markCoordsSaved,
+    docSheet, docCell, artOwners, collectRefs, refLabel, refRect, duplicateIds,
     validateTile, validateItem, formatJson, isItemDoc, orderByCoord, DEFAULT_ITEM_SHEET,
   };
 })(window.Aura ??= {});

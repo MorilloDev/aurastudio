@@ -598,7 +598,7 @@
       // Cuarenta formas no caben en un desplegable: se busca por nombre y se eligen en rejilla, agrupadas.
       const SHAPE_GROUP = {
         cube: "Básicas", slab: "Básicas", layer: "Básicas", small: "Básicas", quarter: "Básicas", corner: "Básicas",
-        stair: "Escaleras y rampas", stairOuter: "Escaleras y rampas", stairInner: "Escaleras y rampas",
+        stair: "Escaleras y rampas",
         ramp: "Escaleras y rampas", rampLow: "Escaleras y rampas", rampHigh: "Escaleras y rampas",
         rampOuter: "Escaleras y rampas", rampInner: "Escaleras y rampas", steps: "Escaleras y rampas",
         slopePanel: "Tejados y diagonales", diagonalWall: "Tejados y diagonales", gable: "Tejados y diagonales",
