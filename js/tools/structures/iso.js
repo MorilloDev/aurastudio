@@ -8,6 +8,7 @@
 (function (Aura) {
   const { SHAPE, AIR, CELL } = Aura.structTiles;
   const { key, parse, rotateOffset } = Aura.structModel;
+  const CONNECT = Aura.structConnect;
   const AO = Aura.ao;
 
   const HALF_W = 32, HALF_H = 16, LAYER_STEP = 32;
@@ -251,6 +252,13 @@
       return piece?.rotatable ? this.#resolvePieceArt(id, dir) : { id, flip: false };
     }
 
+    // WorldQuery.DoorFacing: an open door is drawn as the closed one turned a quarter — the panel swings to the next
+    // side of the cell. The other way with Upper, so the two leaves of a double door open apart.
+    #doorFacing(tile, dir, shape) {
+      if (!tile?.door || !(shape & SHAPE.OPEN)) return dir;
+      return (dir + (shape & SHAPE.UPPER ? 3 : 1)) & 3;
+    }
+
     // WorldQuery.ResolvePieceArt: the facing rules alone, for any art tile.
     #resolvePieceArt(id, dir) {
       const reg = this.host.registry;
@@ -272,10 +280,21 @@
     }
 
     // The sprites one cell draws, as DrawListBuilder.BuildTiles emits them. Two for a double slab, far half first.
-    #cellSprites(id, dir, shape) {
+    // at = the cell's position, which the pieces that read their neighbours need; null for a cell outside the template.
+    #cellSprites(id, dir, shape, at = null) {
       const tile = this.host.registry.get(id);
       if (!tile) return [{ id, flip: false, flipV: false, dy: 0 }];
       const one = (art, dy = 0, flipV = false) => ({ ...art, flipV, dy });
+      const toScreen = (dx, dz) => this.#dirToScreen(dx, dz);
+
+      // DrawListBuilder: the cell is the post plus an arm for every neighbour it reaches, the two far arms drawn
+      // before the post and the two near ones after. None of them is flipped — each is drawn for its own side.
+      const joined = (sprites) => {
+        if (!tile.armIds || !at) return sprites;
+        const arms = CONNECT.armsAt(this.host.registry, this.host.doc, tile, ...at, toScreen);
+        const arm = (i) => (arms[i] && tile.armIds[i] ? [{ id: tile.armIds[i], flip: false, flipV: false, dy: 0 }] : []);
+        return [...arm(0), ...arm(1), ...sprites, ...arm(2), ...arm(3)];
+      };
       if (tile.slab && (shape & SHAPE.VERTICAL) && tile.verticalId) {
         if (!(shape & SHAPE.DOUBLE)) return [one(this.#resolvePieceArt(tile.verticalId, dir))];
         const opposite = (dir + 2) & 3;
@@ -285,21 +304,48 @@
       }
       if (tile.wallId && !tile.slab && (shape & SHAPE.WALL)) return [one(this.#resolvePieceArt(tile.wallId, dir))];
       if (tile.horizontalId && !tile.slab && (shape & SHAPE.HORIZONTAL)) return [one(this.#resolvePieceArt(tile.horizontalId, dir))];
+
+      // WorldQuery.ResolveTrapdoorArt: flat closed, standing like a shut door when it is open. Without vertical art it
+      // keeps the flat one.
+      if (tile.trapdoor) {
+        const artId = (shape & SHAPE.OPEN) && tile.verticalId ? tile.verticalId : id;
+        return [one(this.#resolvePieceArt(artId, dir))];
+      }
+
+      // Before the inverted art: a bend already carries its own upside-down drawing, and belonging to one corner of the
+      // diamond it is never flipped nor swapped for a back.
+      if (tile.cornerIds && tile.rotatable && at) {
+        const upsideDown = tile.rotatableVertical && !!(shape & SHAPE.UPPER);
+        const bend = CONNECT.stairCorner(this.host.doc, tile, ...at, dir, upsideDown, toScreen);
+        const art = bend == null ? null : tile.cornerIds[bend];
+        if (art) return [one({ id: art, flip: false })];
+      }
+
       if (tile.rotatableVertical && (shape & SHAPE.UPPER)) {
         if (tile.invertedId) return [one(tile.rotatable ? this.#resolvePieceArt(tile.invertedId, dir) : { id: tile.invertedId, flip: false })];
         return [one(this.#resolveTileArt(id, dir), 0, true)];
       }
-      const art = this.#resolveTileArt(id, dir);
+      const art = this.#resolveTileArt(id, this.#doorFacing(this.host.registry.pieceOf(id), dir, shape));
       if (tile.slab && (shape & SHAPE.DOUBLE)) return [one(art), one(art, UPPER_HALF_OFFSET)];
       if (tile.slab && (shape & SHAPE.UPPER)) return [one(art, UPPER_HALF_OFFSET)];
-      return [one(art)];
+      return joined([one(art)]);
+    }
+
+    /** The drawings one cell of the template puts on screen under the camera as it stands, in the order they are
+     * painted: the arms of a joining piece around its post, the bend of a step, the two halves of a double slab. */
+    spritesAt(x, y, z) {
+      const k = key(x, y, z);
+      const id = this.host.doc.blocks.get(k);
+      if (!id) return [];
+      return this.#cellSprites(id, this.host.doc.dirs.get(k) ?? 0, this.host.doc.shapes.get(k) ?? 0, [x, y, z])
+        .map((a) => a.id + (a.flip ? "|flip" : "") + (a.flipV ? "|flipv" : ""));
     }
 
     /** ao: shade it with the occlusion of the cells around it (only the cells of the template itself, not ghosts or carried ones). */
     #drawCell(x, y, z, id, alpha, dir = 0, shape = 0, ao = false) {
       const reg = this.host.registry, tile = reg.get(id);
       const foliage = this.host.foliage;
-      const sprites = tile && id !== AIR ? this.#cellSprites(id, dir, shape).map((a) => ({ ...a, img: reg.sprite(a.id, foliage) })).filter((a) => a.img) : [];
+      const sprites = tile && id !== AIR ? this.#cellSprites(id, dir, shape, [x, y, z]).map((a) => ({ ...a, img: reg.sprite(a.id, foliage) })).filter((a) => a.img) : [];
       if (!sprites.length) { this.#placeholder(x, y, z, id === AIR, alpha); return; }
       const [px, py] = this.#project(x, y, z);
       const z0 = this.zoom, g = this.g;

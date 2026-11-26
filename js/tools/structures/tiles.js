@@ -14,7 +14,13 @@
   const CELL = 64;
 
   // CellShape flags, as stored per cell in the game.
-  const SHAPE = { UPPER: 1, DOUBLE: 2, VERTICAL: 4, HORIZONTAL: 8, WALL: 64 };
+  const SHAPE = { UPPER: 1, DOUBLE: 2, VERTICAL: 4, HORIZONTAL: 8, WALL: 64, OPEN: 128 };
+
+  // ConnectArm, named by the way each arm runs on screen, and the four corners of the diamond a stair bend lands on
+  // (CornerVertex). Both are read through the projection, so the same four drawings serve the four turns of the camera.
+  const ARMS = ["nw", "ne", "se", "sw"];
+  const CORNER_STATES = ["outer", "outerInverted", "inner", "innerInverted"];
+  const VERTICES = ["n", "e", "s", "w"];
 
   // TileArt states and the per-state keys the registry reads them into.
   const ART_STATES = [
@@ -88,6 +94,25 @@
     }
 
     isLeaf(id) { return !!this.get(id)?.tags.includes("leaf") || /leaves$/.test(short(id)); }
+
+    /** TileConnections.Joins: whether this piece puts out an arm towards that neighbour. */
+    joins(tile, other) {
+      if (!tile?.connects?.length || !other) return false;
+      return tile.connects.some((want) => (want === "solid" ? this.#solidFace(other) : other.tags.includes(want)));
+    }
+
+    // TileConnections.IsSolidFace: a block that fills its cell, so a fence closes against a wall but not against a
+    // torch, a slab or another fence's gap. Leaves are a full cube too and are left out on purpose.
+    #solidFace(t) {
+      return t.id !== AIR && !t.air && !this.#nonOccluder(t) && !t.slab && !t.liquid && !this.isLeaf(t.id)
+        && !t.carved && !t.multiPart && !t.anchor;
+    }
+
+    // TileInfo.IsNonOccluder, as far as the editor can tell: the layer siblings the game generates never reach a template.
+    #nonOccluder(t) {
+      return t.category === "foliage" || t.category === "furniture" || t.category === "tables"
+        || t.tags.includes("see_through") || t.tags.includes("tiny");
+    }
     isLog(id) { const t = this.get(id); return !!t && !this.isLeaf(id) && (t.tags.includes("log") || /_log$/.test(t.id)); }
 
     /** What the 3D view draws a tile as: "plant" (crossed quads), "water", "glass", "slab" or "solid". */
@@ -107,7 +132,13 @@
     shapeOptions(id) {
       const tile = this.get(id);
       const options = [[0, "Normal"]];
-      if (!tile || tile.parts) return options;
+      if (!tile) return options;
+
+      // A door or a trapdoor can be saved open: the game draws and collides it as the closed one turned a quarter, and
+      // a double door's second leaf turns the other way so the two open apart.
+      if (tile.door) return [...options, [SHAPE.OPEN, "Abierta"], [SHAPE.OPEN | SHAPE.UPPER, "Abierta al otro lado"]];
+      if (tile.trapdoor) return [...options, [SHAPE.OPEN, "Abierta"]];
+      if (tile.parts) return options;
       if (tile.slab) {
         options.push([SHAPE.UPPER, "Losa arriba"], [SHAPE.DOUBLE, "Losa doble"]);
         if (tile.verticalId) options.push([SHAPE.VERTICAL, "Losa vertical"], [SHAPE.VERTICAL | SHAPE.DOUBLE, "Vertical doble"]);
@@ -142,7 +173,8 @@
         const t = this.get(id);
         if (!t) continue;
         keys.add(t.sheet);
-        for (const sib of [t.backId, t.invertedId, t.verticalId, t.horizontalId, t.wallId, ...(t.parts ?? []).map((p) => p.id)])
+        for (const sib of [t.backId, t.invertedId, t.verticalId, t.horizontalId, t.wallId,
+          ...(t.armIds ?? []), ...(t.cornerIds ?? []), ...(t.parts ?? []).map((p) => p.id)])
           if (sib) keys.add(this.get(sib)?.sheet);
       }
       await Promise.all([...keys].filter(Boolean).map((k) => this.#sheet(k)));
@@ -226,6 +258,13 @@
         rotatable: o.rotatable === true,
         slab: tags.includes("slab"),
         rotatableVertical: o.rotatableVertical === true || Array.isArray(o.invertedCoord),
+        door: tags.includes("door"),
+        trapdoor: tags.includes("trapdoor") && !tags.includes("door"),
+        // What this piece reaches for, and what a neighbour has to be for a fence to close against it.
+        connects: (Array.isArray(o.connects) ? o.connects : []).map((c) => String(c).toLowerCase()),
+        air: String(o.type ?? "").toLowerCase() === "air",
+        // TileInfo.IsSolidFace asks for a cell with no boxes of its own: anything with a "collision" key is carved.
+        carved: o.collision !== undefined,
       };
       const cells = new Map([[id, tile]]);
 
@@ -252,6 +291,8 @@
       this.#swapPartners(tile, cells);
       this.#backTiles(o, tile, cells, shared);
       if (!o.parts || o.parts.length <= 1) this.#shapeArt(o, tile, shared);
+      this.#joinArt(o, tile, shared);
+      tile.multiPart = (tile.parts?.length ?? 0) > 1;
 
       for (const flow of Array.isArray(o.flow) ? o.flow : [])
         this.#add({ ...shared, id: short(flow.id ?? deriveIdPath(flow.name ?? "")), name: flow.name, coord: coordOf(flow.tileCoord), tint: null, inPalette: false });
@@ -303,6 +344,31 @@
       tile.horizontalId = pair("_horizontal", "acostado", o.horizontalCoord, o.horizontalBackCoord);
       tile.wallId = pair("_wall", "en pared", o.wallCoord, o.wallBackCoord);
     }
+
+    // TileInfo.RegisterArms / RegisterCorners: one render-only sibling per arm and per bend the file names. Never a back
+    // sibling — the drawing already belongs to its side of the screen, so mirroring it would light the wrong face.
+    #joinArt(o, tile, shared) {
+      const sibling = (suffix, label, coord) => {
+        const art = { ...shared, id: tile.id + suffix, name: `${tile.name} (${label})`, coord: coordOf(coord), tint: null, inPalette: false };
+        this.#add(art);
+        return art.id;
+      };
+
+      if (o.connectCoords) {
+        const ids = ARMS.map((arm) => (Array.isArray(o.connectCoords[arm]) ? sibling("_connect_" + arm, arm, o.connectCoords[arm]) : null));
+        if (ids.some(Boolean)) tile.armIds = ids;
+      }
+
+      if (o.cornerCoords) {
+        const ids = [];
+        for (const state of CORNER_STATES)
+          for (const vertex of VERTICES) {
+            const coord = o.cornerCoords[state]?.[vertex];
+            ids.push(Array.isArray(coord) ? sibling(`_${state.toLowerCase()}_${vertex}`, `${state} ${vertex}`, coord) : null);
+          }
+        if (ids.some(Boolean)) tile.cornerIds = ids;
+      }
+    }
   }
 
   const shapeKeepsFacing = (shape) => (shape & (SHAPE.VERTICAL | SHAPE.HORIZONTAL | SHAPE.WALL)) !== 0;
@@ -334,6 +400,16 @@
       if (front) obj[s.front] = front;
       if (back) obj[s.back] = back;
     }
+
+    // "connect" and the four bend states are keyed by arm and by vertex instead of front/back: each drawing already
+    // belongs to one side of the screen, so there is nothing to mirror and no back to swap to.
+    const connect = byState.get("connect");
+    if (connect && typeof connect === "object" && !Array.isArray(connect)) obj.connectCoords = connect;
+    for (const state of CORNER_STATES) {
+      const frame = byState.get(state.toLowerCase());
+      if (frame && typeof frame === "object" && !Array.isArray(frame)) (obj.cornerCoords ??= {})[state] = frame;
+    }
+
     delete obj.art;
   }
 

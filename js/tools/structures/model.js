@@ -139,9 +139,10 @@
       const sh = this.registry.shapeOptions(id).some(([v]) => v === shape) ? shape : 0;
       const dir = tile?.rotatable || shapeKeepsFacing(sh) ? facing : 0;
       if (tile?.parts) {
+        // An open door is open in every cell of the piece, as the game stores it; nothing else with parts takes a shape.
         for (const p of tile.parts) {
           const [rx, rz] = rotateOffset(p.dx, p.dz, dir);
-          changes.set(key(x + rx, y + p.dy, z + rz), { id: p.id, dir, shape: 0 });
+          changes.set(key(x + rx, y + p.dy, z + rz), { id: p.id, dir, shape: sh });
         }
         return;
       }
