@@ -137,7 +137,11 @@
       out = out.map((b) => {
         // (x, z) → (1 - z, x): what faced front (z = 0) now faces the piece's right (x = 1).
         const p = [1 - b.min[2], b.min[1], b.min[0]], q = [1 - b.max[2], b.max[1], b.max[0]];
-        return { min: [Math.min(p[0], q[0]), p[1], Math.min(p[2], q[2])], max: [Math.max(p[0], q[0]), q[1], Math.max(p[2], q[2])] };
+        const turned = { ...b, min: [Math.min(p[0], q[0]), p[1], Math.min(p[2], q[2])], max: [Math.max(p[0], q[0]), q[1], Math.max(p[2], q[2])] };
+        // The slices turn with the box. Putting x = z' and z = 1 - x' into n·p ≤ d leaves (-nz, ny, nx)·p' ≤ d - nz;
+        // without this a turned ramp comes out a plain cube, because its slope would be left behind.
+        if (b.cuts) turned.cuts = b.cuts.map(({ n, d }) => ({ n: [-n[2], n[1], n[0]], d: d - n[2] }));
+        return turned;
       });
     }
     return out;
@@ -302,10 +306,16 @@
       // outer bend keeps — both are then named after that corner and turn together.
       inner: () => [box(0, 0, 0, 16, 8, 16), box(0, 8, 0, 16, 16, 8), box(0, 8, 8, 8, 16, 16)],
     },
+    // A roof or a ramp bends where one run meets another, the same way a flight of stairs does: a hip on the outside
+    // of the turn and a valley on the inside. All of it comes out of the one shape, like the stair's.
     ramp: {
-      label: "Rampa", states: ["default", "inverted"],
+      label: "Rampa", states: ["default", "inverted"], bends: true,
       // Rises from the front edge (bottom) to the back edge (top).
       boxes: () => [cut(FULL, [[0, 1, -1], 0])],
+      // Hip: two slopes meeting, so only the back-right corner reaches the top.
+      outer: () => [cut(FULL, [[0, 1, -1], 0], [[-1, 1, 0], 0])],
+      // Valley: high everywhere but that same corner, which is the one the name points at.
+      inner: () => [cut(FULL, [[0, 1, 1], 1]), cut(FULL, [[1, 1, 0], 1])],
     },
     rampLow: {
       label: "Rampa larga (abajo)", states: ["default", "inverted"],
@@ -316,16 +326,6 @@
       label: "Rampa larga (arriba)", states: ["default", "inverted"],
       // Second half: from half height to the top.
       boxes: () => [cut(FULL, [[0, 1, -0.5], 0.5])],
-    },
-    rampOuter: {
-      label: "Rampa esquina ext.", states: ["default", "inverted"],
-      // Two slopes meeting at an outside corner (hip roof): only the back-right corner reaches the top.
-      boxes: () => [cut(FULL, [[0, 1, -1], 0], [[-1, 1, 0], 0])],
-    },
-    rampInner: {
-      label: "Rampa esquina int.", states: ["default", "inverted"],
-      // Two slopes meeting at an inside corner (valley): the union of both ramps.
-      boxes: () => [cut(FULL, [[0, 1, -1], 0]), cut(FULL, [[-1, 1, 0], 0])],
     },
     slopePanel: {
       label: "Panel inclinado", states: ["default", "inverted"],
@@ -501,12 +501,23 @@
       },
     },
     gable: {
-      label: "Tejado a dos aguas", states: ["default", "inverted"],
+      label: "Tejado a dos aguas", states: ["default", "inverted"], bends: "symmetric",
       params: [["shapeHeight", "Altura", 2, 16, "Altura de la cumbrera en dieciseisavos"]],
       // Two slopes meeting along a ridge that runs left–right through the middle of the cell.
       boxes: (p) => {
         const k = 2 * (p.shapeHeight ?? 16) / 16;
         return [cut(box(0, 0, 0, 16, p.shapeHeight ?? 16, 16), [[0, 1, -k], 0], [[0, 1, k], k])];
+      },
+      // Where two ridges meet: the hip is the roof cut both ways, which is a pyramid, and the valley is the two of
+      // them put together. Both come out the same whichever way the corner turns, so one drawing serves the four.
+      outer: (p) => {
+        const h = p.shapeHeight ?? 16, k = 2 * h / 16;
+        return [cut(box(0, 0, 0, 16, h, 16), [[0, 1, -k], 0], [[0, 1, k], k], [[-k, 1, 0], 0], [[k, 1, 0], k])];
+      },
+      inner: (p) => {
+        const h = p.shapeHeight ?? 16, k = 2 * h / 16;
+        return [cut(box(0, 0, 0, 16, h, 16), [[0, 1, -k], 0], [[0, 1, k], k]),
+          cut(box(0, 0, 0, 16, h, 16), [[-k, 1, 0], 0], [[k, 1, 0], k])];
       },
     },
     roofEdge: {
@@ -896,6 +907,13 @@
         for (const st of def.states) {
           if (!(opts.states?.[st] ?? st === "default")) continue;
           const shape = def[kind](p);
+          if (def.bends === "symmetric") {
+            // El giro sale igual mire a donde mire, así que un dibujo vale para los cuatro lados.
+            out.push({ id: BEND_KEYS[kind][st], label: `${BEND_LABEL[kind]} ${STATE_LABEL[st].toLowerCase()}`,
+              boxes: shape, state: st, facing: ART_FACING.front, iso,
+              art: { key: BEND_KEYS[kind][st], side: "*" } });
+            continue;
+          }
           for (const [side, label, turns] of BENDS) {
             out.push({ id: `${BEND_KEYS[kind][st]}_${side}`, label: `${BEND_LABEL[kind]} ${STATE_LABEL[st].toLowerCase()} · ${label}`,
               boxes: turnLocal(shape, turns), state: st, facing: ART_FACING.front, iso,
@@ -917,7 +935,9 @@
     for (const { variant, cell } of cells) {
       const { key, side } = variant.art;
       if (!side) { map[key] = cell; continue; }
-      (map[key] ??= {})[side] = cell;
+      // "*" es un giro que sale igual mire a donde mire: se escribe en los cuatro lados.
+      if (side === "*") for (const [k] of BENDS) (map[key] ??= {})[k] = cell;
+      else (map[key] ??= {})[side] = cell;
     }
 
     // A fence writes the art the game reads: the post is what it looks like standing alone, and "connect" holds the

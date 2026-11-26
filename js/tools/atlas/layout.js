@@ -22,13 +22,13 @@
 
   // Longest first: "oak_trapdoor" must not be read as a door.
   const FAMILY_SUFFIX = [
-    "thatchetroof", "trapdoor", "stairs", "planks", "ladder", "fence", "slab", "wall", "door", "gate", "log",
+    "thatchetroof", "trapdoor", "log_wall", "stairs", "planks", "ladder", "fence", "slab", "wall", "door", "gate", "log",
     "leaves", "torch", "sapling", "button", "plate", "sign", "bars", "pane", "post", "beam",
   ];
 
   // The order a band reads in: the whole block first, then what is cut out of it, then what is built with it.
   const FAMILY_ORDER = [
-    "log", "block", "planks", "slab", "stairs", "fence", "wall", "gate", "door", "trapdoor", "ladder",
+    "log", "block", "planks", "slab", "stairs", "fence", "log_wall", "wall", "gate", "door", "trapdoor", "ladder",
     "thatchetroof", "post", "beam", "bars", "pane", "button", "plate", "sign", "torch", "sapling", "leaves",
   ];
 

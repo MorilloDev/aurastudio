@@ -600,7 +600,7 @@
         cube: "Básicas", slab: "Básicas", layer: "Básicas", small: "Básicas", quarter: "Básicas", corner: "Básicas",
         stair: "Escaleras y rampas",
         ramp: "Escaleras y rampas", rampLow: "Escaleras y rampas", rampHigh: "Escaleras y rampas",
-        rampOuter: "Escaleras y rampas", rampInner: "Escaleras y rampas", steps: "Escaleras y rampas",
+        steps: "Escaleras y rampas",
         slopePanel: "Tejados y diagonales", diagonalWall: "Tejados y diagonales", gable: "Tejados y diagonales",
         roofEdge: "Tejados y diagonales", pyramid: "Tejados y diagonales",
         pillar: "Columnas y vigas", octagon: "Columnas y vigas", beam: "Columnas y vigas", pedestal: "Columnas y vigas",
